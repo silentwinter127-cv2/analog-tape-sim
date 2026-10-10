@@ -106,8 +106,20 @@ def subsample_411(cb: np.ndarray, cr: np.ndarray
     quartered in BOTH axes.  The asymmetry matters visually: 4:1:1 smears colour
     sideways on a scanline while keeping vertical colour detail, whereas 4:2:0
     loses colour detail in both directions.
+
+    Odd widths are padded rather than truncated.  `w // 2` silently drops the last
+    column of an odd-width frame, and the reconstructed chroma then comes back one
+    pixel narrower than the luma -- which surfaced as a broadcast error deep in the
+    colour conversion (`(223,279)` against `(223,278)`) whenever the preview scale
+    produced an odd width.  DV codes chroma in units of two pixels, so a frame with
+    an odd width cannot be represented exactly; duplicating the final column is the
+    honest approximation, and it keeps the two planes the same size.
     """
     h, w = cb.shape
+    if w % 2:
+        cb = np.concatenate([cb, cb[:, -1:]], axis=1)
+        cr = np.concatenate([cr, cr[:, -1:]], axis=1)
+        w += 1
     hw = w // 2
     cb_s = cb[:, 0:hw * 2:2] * 0.5 + cb[:, 1:hw * 2:2] * 0.5
     cr_s = cr[:, 0:hw * 2:2] * 0.5 + cr[:, 1:hw * 2:2] * 0.5
@@ -116,31 +128,70 @@ def subsample_411(cb: np.ndarray, cr: np.ndarray
 
 def upsample_411(cb_s: np.ndarray, cr_s: np.ndarray,
                  shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
-    """Reconstruct 4:1:1 chroma by sample-and-hold, like a real DV decoder."""
+    """
+    Reconstruct 4:1:1 chroma by sample-and-hold, like a real DV decoder.
+
+    Both planes are forced to the requested shape.  The previous version padded the
+    width but only truncated the height, so an odd-width input came out with chroma
+    one column short of the luma and crashed the colour conversion downstream.
+    """
     h, w = shape
-    cb = np.repeat(cb_s, 2, axis=1)[:, :w]
-    cr = np.repeat(cr_s, 2, axis=1)[:, :w]
-    if cb.shape[0] != h:
-        cb = cb[:h]
-        cr = cr[:h]
-    return cb.astype(np.float32), cr.astype(np.float32)
+    cb = np.repeat(cb_s, 2, axis=1)
+    cr = np.repeat(cr_s, 2, axis=1)
+    if cb.shape[0] < h:
+        cb = np.concatenate([cb, cb[-1:]] * (h - cb.shape[0]), axis=0)
+        cr = np.concatenate([cr, cr[-1:]] * (h - cr.shape[0]), axis=0)
+    if cb.shape[1] < w:
+        cb = np.concatenate([cb, cb[:, -1:]] * (w - cb.shape[1]), axis=1)
+        cr = np.concatenate([cr, cr[:, -1:]] * (w - cr.shape[1]), axis=1)
+    return cb[:h, :w].astype(np.float32), cr[:h, :w].astype(np.float32)
 
 
 def subsample_420(cb: np.ndarray, cr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """4:2:0 chroma subsampling (625/50 DV): halved in both axes."""
+    """
+    4:2:0 chroma subsampling (625/50 DV): halved in both axes.
+
+    Odd height or width is padded, not truncated.  This is the same defect the 4:1:1
+    path had in one axis, but in both: `h // 2` and `w // 2` silently drop the last
+    row and column, and the reconstruction does not put them back.  It affected
+    *every* size, not only odd ones -- a 223-row frame subsampled and upsampled came
+    back with 222 rows -- which is why the check that found it reported a mismatch on
+    all eight widths tested.
+    """
     h, w = cb.shape
+    if w % 2:
+        cb = np.concatenate([cb, cb[:, -1:]], axis=1)
+        cr = np.concatenate([cr, cr[:, -1:]], axis=1)
+        w += 1
+    if h % 2:
+        cb = np.concatenate([cb, cb[-1:]], axis=0)
+        cr = np.concatenate([cr, cr[-1:]], axis=0)
+        h += 1
     hh, hw = h // 2, w // 2
-    blk = cb[:hh * 2, :hw * 2].reshape(hh, 2, hw, 2).mean(axis=(1, 3))
-    blkr = cr[:hh * 2, :hw * 2].reshape(hh, 2, hw, 2).mean(axis=(1, 3))
+    blk = cb.reshape(hh, 2, hw, 2).mean(axis=(1, 3))
+    blkr = cr.reshape(hh, 2, hw, 2).mean(axis=(1, 3))
     return blk.astype(np.float32), blkr.astype(np.float32)
 
 
 def upsample_420(cb_s: np.ndarray, cr_s: np.ndarray,
                  shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Reconstruct 4:2:0 chroma, forcing both planes to the requested shape.
+
+    Like the 4:1:1 path: doubling only recovers an even count, so a frame with an odd
+    height or width needs the last row or column repeated.  Without that the chroma
+    came back short and the colour conversion failed on shapes.
+    """
     h, w = shape
-    cb = np.repeat(np.repeat(cb_s, 2, axis=0), 2, axis=1)[:h, :w]
-    cr = np.repeat(np.repeat(cr_s, 2, axis=0), 2, axis=1)[:h, :w]
-    return cb.astype(np.float32), cr.astype(np.float32)
+    cb = np.repeat(np.repeat(cb_s, 2, axis=0), 2, axis=1)
+    cr = np.repeat(np.repeat(cr_s, 2, axis=0), 2, axis=1)
+    if cb.shape[0] < h:
+        cb = np.concatenate([cb, cb[-1:]] * (h - cb.shape[0]), axis=0)
+        cr = np.concatenate([cr, cr[-1:]] * (h - cr.shape[0]), axis=0)
+    if cb.shape[1] < w:
+        cb = np.concatenate([cb, cb[:, -1:]] * (w - cb.shape[1]), axis=1)
+        cr = np.concatenate([cr, cr[:, -1:]] * (w - cr.shape[1]), axis=1)
+    return cb[:h, :w].astype(np.float32), cr[:h, :w].astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +553,17 @@ class DVCodec:
         # subsampled image (that is what the recorder has to work with)
         cb_c = self._code_channel(cb_u, chroma=True)
         cr_c = self._code_channel(cr_u, chroma=True)
+
+        # Check the three planes agree *here*, where the reason is knowable, rather
+        # than letting the colour conversion fail with a shape mismatch.  The bug
+        # this catches produced `(223,279)` against `(223,278)` from an odd preview
+        # width: the subsampler dropped a column and the reconstruction never put it
+        # back, so the luma and chroma planes disagreed by one pixel.
+        if not (y_c.shape == cb_c.shape == cr_c.shape):
+            raise ValueError(
+                "DV 编码后亮度与色度平面尺寸不一致：亮度 %s，色度 %s/%s。"
+                "这通常意味着输入宽高不是偶数（4:1:1 以两个像素为单位编码色度）。"
+                % (y_c.shape, cb_c.shape, cr_c.shape))
 
         rgb_out = ycbcr_to_rgb(y_c, cb_c, cr_c)
         out = SignalFrame.from_rgb(np.clip(rgb_out, 0.0, 1.0), self.std)

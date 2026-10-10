@@ -235,6 +235,37 @@ class Renderer:
     # ------------------------------------------------------------------
     # frame rendering
     # ------------------------------------------------------------------
+    def _fit_source(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Force the incoming frame to the size this renderer actually renders.
+
+        The chain's stages build their spatial noise fields from the context
+        dimensions, but a source can hand back something else.  When it did, the two
+        were added together and failed:
+
+            ValueError: operands could not be broadcast together with shapes (480,640) (178,236)
+
+        which names two shapes and explains nothing.  Sources that honour the scale
+        never hit this; a synthetic source has no scale to honour, so the size is
+        enforced here instead of being an unstated precondition.
+
+        Nearest-neighbour is used on purpose: it is the same convention as the rest
+        of the preview path, and it cannot invent detail that a metric computed from
+        the frame would then attribute to a mechanism.
+        """
+        h, w = frame.shape[:2]
+        if (w, h) == (int(self.width), int(self.height)):
+            return frame
+        arr = np.asarray(frame, dtype=np.float32)
+        ys = np.clip((np.arange(int(self.height)) + 0.5) * h / max(1, int(self.height)),
+                     0, h - 1).astype(np.int32)
+        xs = np.clip((np.arange(int(self.width)) + 0.5) * w / max(1, int(self.width)),
+                     0, w - 1).astype(np.int32)
+        out = arr[ys][:, xs]
+        if out.ndim == 2 and frame.ndim == 3:
+            out = np.repeat(out[:, :, None], frame.shape[2], axis=2)
+        return out
+
     def _render_index(self, index: int, src_frame: np.ndarray | None) -> np.ndarray:
         if self.chain is None:
             self._build_chain()
@@ -255,6 +286,7 @@ class Renderer:
         if start == 0:
             if src_frame is None:
                 src_frame = self.source.frame(index)
+            src_frame = self._fit_source(src_frame)
             cam: CameraStage = self.stage["camera"]  # type: ignore[assignment]
             # The camera's shutter integrates the *previous* field, so it needs
             # the previous source frame.  The source keeps a small LRU, so this
@@ -264,6 +296,8 @@ class Renderer:
                     self._prev_src = self.source.frame(index - 1)
                 except Exception:
                     self._prev_src = None
+            if self._prev_src is not None:
+                self._prev_src = self._fit_source(self._prev_src)
             cam.set_previous(self._prev_src)
             buf = FrameBuffer(np.asarray(src_frame, dtype=np.float32), None, index,
                               index / max(1e-6, self.fps), self.std,

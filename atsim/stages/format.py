@@ -63,6 +63,45 @@ class FormatStage(Stage):
         self._noise_env = ValueNoise3D(
             seed=ctx.seed * 3 + 2, height=ctx.height, width=ctx.width,
             spatial_scale=40.0 / sc, time_scale=max(2.0, ctx.fps / 6.0))
+        self._noise_shape = (ctx.height, ctx.width)
+
+    # ------------------------------------------------------------------
+    def _resize_noise(self, shape: tuple[int, int]) -> None:
+        """
+        Rebuild the noise fields for the shape actually being rendered.
+
+        The fields are built in `prepare()` from the context's dimensions, but the
+        frame that arrives in `apply()` can be a different size -- preview scaling
+        rounds the height to an even number, so a 480-row source previewed at scale
+        0.37 arrives as 178 rows while the noise was built for 480.  Subtracting the
+        two raised
+
+            ValueError: operands could not be broadcast together with shapes (178,236) (480,1)
+
+        which names two shapes and says nothing about the cause.  Resampling per shape
+        keeps the noise aligned with the picture, and a stage that is handed a
+        different frame size mid-run is a normal thing in this application.
+        """
+        h, w = int(shape[0]), int(shape[1])
+        if getattr(self, "_noise_shape", None) == (h, w):
+            return
+        sc = max(1e-6, self.ctx.scale)
+        seed = self.ctx.seed
+        self._noise_field = ValueNoise3D(
+            seed=seed * 3 + 1, height=h, width=w,
+            spatial_scale=2.6 / sc, time_scale=max(1.5, self.ctx.fps / 3.0))
+        self._noise_env = ValueNoise3D(
+            seed=seed * 3 + 2, height=h, width=w,
+            spatial_scale=40.0 / sc, time_scale=max(2.0, self.ctx.fps / 6.0))
+        self._noise_shape = (h, w)
+
+    def _noise_for(self, shape: tuple[int, int], index: int) -> np.ndarray:
+        self._resize_noise(shape)
+        return self._noise_field.sample(index).astype(np.float32)
+
+    def _noise_env_for(self, shape: tuple[int, int], index: int) -> np.ndarray:
+        self._resize_noise(shape)
+        return self._noise_env.sample(index).astype(np.float32)
 
     # ------------------------------------------------------------------
     def _choice(self) -> FilterChoice:
@@ -153,8 +192,8 @@ class FormatStage(Stage):
             cos_p = np.cos(ph)[:, None].astype(np.float32)
             sin_p = np.sin(ph)[:, None].astype(np.float32)
             amp = self.color_noise * 0.018
-            n = self._noise_field.sample(buf.index).astype(np.float32)
-            env = 0.55 + 0.75 * np.abs(self._noise_env.sample(buf.index).astype(np.float32))
+            n = self._noise_for(i.shape, buf.index)
+            env = 0.55 + 0.75 * np.abs(self._noise_env_for(i.shape, buf.index))
             # injected in the I/Q plane with a rotating phase, which is why VHS
             # colour noise reads as coloured crawling speckle, not grey grain
             i = i + amp * (n * env) * cos_p

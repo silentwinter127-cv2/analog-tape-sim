@@ -581,6 +581,53 @@ def check_preset_independence() -> None:
     record("presets differ from each other", "each preset is a distinct state",
            f"hi8_shuttle vs family_archive_1992 differ={changed}", changed)
 
+
+def check_dv_odd_size() -> None:
+    """
+    The 4:1:1 codec must round-trip frames whose width is odd.
+
+    Preview scaling produces odd dimensions routinely (scale 0.37 of 640 is 236.8,
+    rounded to 237), and the DV path is the only one that subsamples chroma, so it
+    is the only place that can lose a column.  It did, and the symptom appeared two
+    functions later as a broadcast error naming two shapes -- which says nothing
+    about the cause, and crashed the whole render rather than one frame.
+    """
+    from atsim.codecs.dv import subsample_411, subsample_420, upsample_411, upsample_420
+
+    widths = [237, 279, 278, 360, 361, 481, 719, 720]
+    bad = []
+    for w in widths:
+        cb = np.zeros((223, w), np.float32)
+        cr = np.zeros((223, w), np.float32)
+        for sub, up in ((subsample_411, upsample_411), (subsample_420, upsample_420)):
+            cs, crs = sub(cb, cr)
+            cu, cru = up(cs, crs, cb.shape)
+            if cu.shape != cb.shape or cru.shape != cb.shape:
+                bad.append(f"w={w}: {sub.__name__} -> {cu.shape} != {cb.shape}")
+    record("DV chroma survives odd sizes", "4:1:1 and 4:2:0 keep the luma shape",
+           f"{len(widths)} widths checked, {len(bad)} mismatched", not bad,
+           "; ".join(bad[:3]))
+
+    # and the same through a whole rendered frame at an odd preview scale
+    from atsim.io.source import SyntheticSource
+    from atsim.render.renderer import Renderer as _R
+
+    small = SyntheticSource(width=640, height=480, frames=12)
+    grew = None
+    for scale in (0.37, 0.5):
+        w = max(2, int(round(640 * scale / 2)) * 2)
+        h = max(2, int(round(480 * scale / 2)) * 2)
+        try:
+            rr = _R(small, w, h, small.fps, _neutral({}), seed=5,
+                    preview=True, scale=scale)
+            rr.render_frame(8)
+        except Exception as exc:                     # noqa: BLE001 - reported below
+            grew = "scale %s (%dx%d) raised %s: %s" % (
+                scale, w, h, type(exc).__name__, exc)
+            break
+    record("odd-scale preview renders", "an odd preview width must render",
+           grew or "scales 0.37 and 0.5 both rendered", grew is None)
+
 # ---------------------------------------------------------------------------
 def contact_sheet() -> str:
     """One image showing every headline effect, for eyeballing."""
@@ -635,6 +682,7 @@ def main(argv: list[str] | None = None) -> int:
         check_rf()
         check_deck_osd()
         check_graph_wiring()
+        check_dv_odd_size()
         check_preset_independence()
         check_broadcast_noise()
         check_head_switch()

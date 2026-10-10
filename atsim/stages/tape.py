@@ -954,10 +954,55 @@ class TapeStage(Stage):
             q = q * (1.0 - kill)
         return y, i, q
 
+    def _fields_for(self, shape: tuple[int, int]) -> None:
+        """
+        Make the cached noise fields match the frame actually being rendered.
+
+        `prepare()` builds them from the context's dimensions, but `apply()` can
+        receive a differently sized frame: preview scaling rounds the height to an
+        even number, so a 480-row source previewed at scale 0.37 arrives as 178 rows
+        while the fields were built for 480.  Adding them raised
+
+            ValueError: operands could not be broadcast together with shapes (480,640) (178,236)
+
+        Cropping is preferred when the fields are larger, because it preserves the
+        particle texture the seed produced; rebuilding is the fallback when they are
+        smaller.  A stage handed a different frame size mid-run is normal in this
+        application, so this cannot be a precondition.
+        """
+        h, w = int(shape[0]), int(shape[1])
+        if getattr(self, "_fields_shape", None) == (h, w):
+            return
+
+        def field_shape(obj):
+            """ValueNoise3D exposes height/width; a plain array exposes shape."""
+            if obj is None:
+                return None
+            if hasattr(obj, "shape"):
+                return tuple(obj.shape[:2])
+            return (int(getattr(obj, "height", 0)), int(getattr(obj, "width", 0)))
+
+        rebuild = False
+        for name in ("_grain", "_static_grain"):
+            arr = getattr(self, name, None)
+            sh = field_shape(arr)
+            if sh is None or sh[0] < h or sh[1] < w:
+                rebuild = True
+                continue
+            if hasattr(arr, "shape"):        # a materialised field can be cropped
+                setattr(self, name, np.ascontiguousarray(arr[:h, :w]))
+        if rebuild:
+            self.prepare()
+            arr = getattr(self, "_static_grain", None)
+            if arr is not None and arr.shape[0] >= h and arr.shape[1] >= w:
+                self._static_grain = np.ascontiguousarray(arr[:h, :w])
+        self._fields_shape = (h, w)
+
     def _apply_noise_floor(self, comp: np.ndarray, frame_index: int) -> np.ndarray:
         if self.noise_floor <= 1e-4:
             return comp
         assert self._grain is not None and self._static_grain is not None
+        self._fields_for(comp.shape)
         dyn = self._grain.sample(frame_index)
         # fixed particle texture + slowly drifting component
         mixed = 0.45 * self._static_grain + 0.55 * dyn.astype(np.float32)
