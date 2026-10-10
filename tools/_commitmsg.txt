@@ -1,0 +1,22 @@
+add a start/stop tool for the server
+
+There was no way to start or stop the server except by hand, and stopping it by name
+(Get-Process python | Stop-Process) killed every Python process on the machine,
+including one the user was running themselves.  server.py records the PID it created
+and signals only that PID.
+
+    python server.py start | stop | restart | status | logs
+    server.bat            (double-click, equivalent to start --open)
+
+It refuses to start a second server on the same port, refuses to start when an
+unrelated server already answers there, and `status` names any port that answers HTTP
+but was not started by the tool, so another server is not mistaken for this one.
+
+Writing it exposed a smaller bug in itself worth recording: the liveness check read a
+process command line with `wmic`, which current Windows builds no longer ship, so a
+healthy server was reported as "gone" while it was answering on its port.  It now
+falls back to `tasklist` plus a port probe.  Three checks cover the tool, including
+that a bogus PID is not reported alive -- misreporting liveness is what invites the
+by-name kill this exists to prevent.
+
+The README documents it, and .server/ (PID file and log) is ignored.

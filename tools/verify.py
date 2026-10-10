@@ -628,6 +628,38 @@ def check_dv_odd_size() -> None:
     record("odd-scale preview renders", "an odd preview width must render",
            grew or "scales 0.37 and 0.5 both rendered", grew is None)
 
+
+def check_server_control() -> None:
+    """
+    The start/stop tool must exist, and its liveness check must not lie.
+
+    It reported a healthy server as "gone" because the command-line lookup used
+    `wmic`, which current Windows builds no longer ship.  A control tool that
+    misreports liveness invites exactly the mistake it was written to prevent:
+    stopping processes by name because the precise check appeared to find nothing.
+    """
+    import importlib.util
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "server.py")
+    if not os.path.exists(path):
+        record("server control exists", "a start/stop tool is present", "missing", False)
+        return
+    spec = importlib.util.spec_from_file_location("atsim_server_control", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)                     # type: ignore[union-attr]
+
+    me = os.getpid()
+    record("server control sees a live pid", "_pid_exists is accurate for this process",
+           "pid %d -> %s" % (me, mod._pid_exists(me)), mod._pid_exists(me))
+    record("server control rejects a dead pid", "a bogus pid is not reported alive",
+           "pid 99999999 -> %s" % mod._pid_exists(99999999),
+           not mod._pid_exists(99999999))
+    record("server control has all commands", "start/stop/restart/status/logs",
+           "bound", all(hasattr(mod, n) for n in
+                        ("cmd_start", "cmd_stop", "cmd_restart", "cmd_status",
+                         "cmd_logs")))
+
 # ---------------------------------------------------------------------------
 def contact_sheet() -> str:
     """One image showing every headline effect, for eyeballing."""
@@ -684,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
         check_graph_wiring()
         check_dv_odd_size()
         check_preset_independence()
+        check_server_control()
         check_broadcast_noise()
         check_head_switch()
 

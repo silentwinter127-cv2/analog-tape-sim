@@ -1,3 +1,6 @@
+# server control state (PID file and log)
+.server/
+
 # render jobs, uploaded clips and project state: machine-specific, large, regenerable
 runs/
 

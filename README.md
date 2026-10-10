@@ -6,6 +6,7 @@
 **拍摄 → 编码 → 记录 → 读取 → 解码 → 显示** 信号链，VHS / Hi8 是这条链上不同参数与
 不同记录机制的系统，而不是几个预设。
 
+
 ```bash
 python -m atsim.web.server --port 8931 --open          # 启动 WebUI
 python -m atsim.web.server --clip 我的录像.mp4          # 启动时载入素材
@@ -86,6 +87,39 @@ E 显示设备   扫描线/隔行闪烁/辉光/失焦/几何畸变/伽马/色温
 
 预览使用降分辨率代理 + **分阶段缓存**：只改显示层参数时，成像/编码/介质/读取的结果会被
 复用，因此调 CRT 参数几乎不用重算重活。
+
+---
+
+### Start / stop
+
+Use `server.py` rather than starting the server by hand. It records the PID it
+created and `stop` signals only that PID. That matters: stopping the server by name
+(`Get-Process python | Stop-Process`) has already killed unrelated Python processes
+on this machine, including a server the user was running themselves.
+
+```bash
+python server.py start          # start (default port 8947)
+python server.py start --open   # start and open a browser
+python server.py status         # process, port, whether it answers
+python server.py stop           # stop only the server this tool started
+python server.py restart
+python server.py logs           # tail the server log
+
+python server.py start --port 9000 --data-dir runs
+```
+
+On Windows, double-clicking **`server.bat`** is equivalent to `start --open`;
+`server.bat stop` and `server.bat status` also work.
+
+PID and log live in `.server/`:
+
+| file | contents |
+|---|---|
+| `.server/pid.json` | recorded PID, port, start time |
+| `.server/server.log` | server output (read by `logs`) |
+
+`status` also names any port that answers HTTP but was *not* started by this tool,
+so another server is not mistaken for this one.
 
 ---
 
