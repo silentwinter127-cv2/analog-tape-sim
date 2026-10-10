@@ -582,6 +582,14 @@ PROFILE_LIBRARY = {
     "camera": CAMERA_PROFILES,
 }
 
+# NOTE on `rf.broadcast_noise` absolute level:
+#   Three calibration attempts against the 1992 off-air reference all compared the
+#   model against something it is not (a bright pattern against a near-black frame,
+#   twice, then a dark pattern with different content).  The reference is also the
+#   *sum* of the RF link, a VHS recording and a capture, and its original scene
+#   detail is unknown, so its absolute noise level is underdetermined by that
+#   material.  The mechanism's direction and character are verified (see
+#   tools/verify.py); its absolute level is a modelling choice, not a measurement.
 # The reference camcorder this project was largely calibrated against.
 SONY_DCR_TRV310E = {"label": "Sony DCR-TRV310E", "layers": {
     "camera": {"sensor_type": 0.0, "sensor_noise": 0.07, "sharpness": 0.85,
@@ -672,10 +680,12 @@ FACTORY_PRESETS = {
         }},
     "broadcast_1992_weak": {
         "label": "1992 电视台弱信号录像",
-        "note": "广播链路信噪比不足：宽带噪声同时淹没亮度与色度",
+        "note": "广播链路信噪比不足：宽带噪声把亮度与色度一起淹没（与磁带劣化的"
+                "「色度先死」相反）。绝对噪声电平是建模选择而非实测，见 profiles.py 中的说明",
         "layers": {
-            "rf": {"signal_dbm": -78.0, "adjacent_channel": 0.25},
-            "tape": {"noise_floor": 0.55, "shed_grain": 0.45, "dropout_rate": 0.8},
+            "rf": {"signal_dbm": -74.0, "adjacent_channel": 0.20,
+                   "broadcast_noise": 0.45},
+            "tape": {"noise_floor": 0.30, "dropout_rate": 0.6},
             "display": {"enabled": 0.0},
         }},
     "minidv_clean": {
