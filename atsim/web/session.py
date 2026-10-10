@@ -45,6 +45,38 @@ def _scaled_synthetic(width: int, height: int, frames: int, fps: float,
     return SyntheticSource(width=w, height=h, frames=frames, fps=fps, variant=variant)
 
 
+# The state a factory preset is expanded over.  Presets are written as deltas
+# against this, so it has to be fixed rather than inherited from the screen.
+_PRESET_BASELINE_LAYERS = {
+    "camera": {"noise_grain": 0.0, "sensor_type": 0.0},
+    "format": {"filter_kind": 1.0, "chroma_gain": 1.0,
+               "chroma_vertical_averaging": 0.9},
+    "codec": {"dv_enabled": 0.0, "dv_quality": 1.0, "dv_base_step": 0.0125},
+    "tape": {"shuttle_speed": 0.0, "shuttle_stale": 0.0, "binder_loss": 0.0,
+             "shed_grain": 0.0, "luma_pedestal": 0.0, "drum_speed": 1.0,
+             "head_clog": 0.0, "debris": 0.0, "surface_damage": 0.0,
+             "chroma_loss": 0.0, "tracking_noise_rows": 0.0,
+             "tracking_noise_wave": 0.0, "tracking_noise_snow": 0.0},
+    "player": {"blue_screen": 0.0, "blue_osd": 0.0},
+}
+
+
+def _preset_baseline() -> dict:
+    """
+    Schema defaults, plus the preset-specific baseline above.
+
+    Two sources, because both are needed: the schema defaults guarantee every
+    parameter exists and is in range, and the explicit layer values pin the handful
+    of settings the presets assume without restating them.
+    """
+    base: dict = {name: {} for name in SCHEMA.layer_names()}
+    for name in SCHEMA.layer_names():
+        layer = SCHEMA.layer(name)
+        for key in layer.keys():
+            base[name][key] = float(layer.specs[key].default)
+    return merge_values(base, _PRESET_BASELINE_LAYERS)
+
+
 @dataclass
 class Project:
     id: str = ""
@@ -203,9 +235,20 @@ class SessionStore:
         return {}
 
     def apply_preset(self, project: Project, key: str) -> Project:
+        """
+        Apply a preset as a complete state, not as an adjustment to the screen.
+
+        Expanding over `_preset_baseline()` rather than over `project.params` is the
+        whole point: a partial preset (one that defines only the parameters it is
+        about) then produces the same result every time, instead of inheriting the
+        previous selection's unmentioned layers.  Applying "Hi8 shuttle" after "worn
+        rental tape" used to give the rental tape's camera, format, player and
+        display settings plus Hi8 shuttle residue -- and clicking the same preset
+        twice in a different order gave a different picture.
+        """
         layers = self.preset_layers(key)
         if layers:
-            project.params = merge_values(project.params or {}, layers)
+            project.params = merge_values(_preset_baseline(), layers)
             project.preset = key
         return project
 

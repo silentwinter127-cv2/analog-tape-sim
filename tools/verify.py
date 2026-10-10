@@ -539,6 +539,48 @@ def check_graph_wiring() -> None:
            f"errors={len(build([]).render_frame(2).errors)}",
            not build([]).render_frame(2).errors)
 
+
+def check_preset_independence() -> None:
+    """
+    A factory preset must produce the same state whatever was selected before it.
+
+    This was a real user-facing bug: `apply_preset` merged a preset's layers into the
+    *current* parameters, and most presets define only the layers they are about --
+    `hi8_shuttle` sets five tape parameters and nothing else.  So applying it after
+    "worn rental tape" kept the rental tape's camera, format, player and display
+    settings, and the same button gave a different picture depending on the order of
+    clicks.  That is what "some presets work and some do nothing" looked like.
+
+    The check drives the real store rather than re-implementing the merge, because
+    the bug was in the store.
+    """
+    import tempfile
+
+    from atsim.web.session import Project, SessionStore
+
+    store = SessionStore(tempfile.mkdtemp())
+    target = "hi8_shuttle"
+    histories = ([target],
+                 ["rental_tape_worn", target],
+                 ["mouldy_archive", "pro_transfer_svhs", target])
+
+    states = []
+    for history in histories:
+        project = Project()
+        for key in history:
+            store.apply_preset(project, key)
+        states.append(project.params)
+
+    same = all(s == states[0] for s in states[1:])
+    record("preset is order-independent", "a preset means the same thing every time",
+           f"{len(histories)} click histories, identical={same}", same,
+           "applying a partial preset must not inherit the previous selection")
+
+    # and a preset must actually change something, or the button is decorative
+    changed = states[0] != store.apply_preset(Project(), "family_archive_1992").params
+    record("presets differ from each other", "each preset is a distinct state",
+           f"hi8_shuttle vs family_archive_1992 differ={changed}", changed)
+
 # ---------------------------------------------------------------------------
 def contact_sheet() -> str:
     """One image showing every headline effect, for eyeballing."""
@@ -593,6 +635,7 @@ def main(argv: list[str] | None = None) -> int:
         check_rf()
         check_deck_osd()
         check_graph_wiring()
+        check_preset_independence()
         check_broadcast_noise()
         check_head_switch()
 
