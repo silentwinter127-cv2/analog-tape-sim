@@ -1,0 +1,24 @@
+# render jobs, uploaded clips and project state: machine-specific, large, regenerable
+runs/
+
+# generated analysis and contact sheets
+tools/out/
+tools/ref*/
+tools/seq*/
+tools/scan*/
+
+# snapshots taken during recovery (superseded by git itself)
+tools/_snapshot*.zip
+tools/_snapshot*.py
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

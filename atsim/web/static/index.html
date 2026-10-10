@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>模拟磁带信号仿真工具</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>模拟磁带信号仿真工具</h1>
+    <span class="sub">virtual signal chain · VHS / Hi8 · WebUI</span>
+  </div>
+  <div class="actions">
+    <input id="clipFile" type="file" accept="video/*,image/*" hidden>
+    <button id="btnImport">导入素材</button>
+    <input id="seed" type="number" title="随机种子：相同种子与参数产生完全相同的影像" value="20240101">
+    <button id="btnCanvas">接线画布</button>
+    <button id="btnTimeline">缺陷时间线</button>
+    <button id="btnMatrix">效果矩阵</button>
+    <button id="btnFaults">故障速查</button>
+    <button id="btnStill">导出静帧</button>
+    <button id="btnSave">保存工程</button>
+    <button id="btnRender" class="primary">离线渲染</button>
+  </div>
+</header>
+
+<div id="chainbar" class="chainbar"></div>
+
+<main>
+  <aside id="panelLeft" class="panel">
+    <div class="tabs" id="presetTabs"></div>
+    <div id="presetList" class="list"></div>
+    <div class="paletteWrap">
+      <div class="palGroup">设备目录（点选加入画布）</div>
+      <div id="palette" class="palette"></div>
+      <div class="palGroup">整套接线</div>
+      <div id="graphPresets" class="presetRow"></div>
+      <button id="btnGraphRefresh" class="ghost wide">刷新画布状态</button>
+    </div>
+  </aside>
+
+  <section class="stage">
+    <div class="viewer" id="viewer">
+      <img id="previewImg" alt="preview">
+      <img id="originalImg" class="overlay" alt="original">
+      <div class="divider" id="divider"></div>
+      <div class="badge" id="badge">等待渲染…</div>
+      <div class="hint" id="hint">拖动分隔线对比：左侧为仿真结果，右侧为原始素材</div>
+    </div>
+    <div class="scrub">
+      <input id="timeSlider" type="range" min="0" max="100" value="12" step="0.5">
+      <span id="timeLabel" class="mono">t = 0.40 s</span>
+      <label class="chk"><input id="abToggle" type="checkbox" checked> A/B 对比</label>
+      <label class="chk"><input id="autoRefresh" type="checkbox" checked> 自动刷新</label>
+      <label class="chk"><input id="engineGraph" type="checkbox"> 用节点图渲染</label>
+    </div>
+    <div class="timeline" id="tlStrip">
+      <div class="tl-label">信号链</div>
+      <div class="tl-track" id="tlTrack"></div>
+      <div class="tl-label">失落密度</div>
+      <div class="tl-track small" id="tlDefects"></div>
+    </div>
+  </section>
+
+  <aside id="panelRight" class="panel">
+    <div class="tabs" id="layerTabs"></div>
+    <div id="paramList" class="params"></div>
+  </aside>
+</main>
+
+<!-- node graph canvas: a full-viewport overlay, so it never competes with the
+     preview for height (it was previously squeezed below the fold) -->
+<section class="canvasPane hidden" id="canvasPane">
+  <div class="canvasHead">
+    <b>设备接线画布</b>
+    <span class="mono" id="canvasMsg"></span>
+    <span class="spacer"></span>
+    <span class="hint2">拖动输出端口到输入端口连线 · 点击连线断开 · 滚轮缩放 · 拖动空白平移</span>
+    <button id="btnFitView" class="ghost">适配视野</button>
+    <button id="btnRemove" class="ghost">删除所选节点</button>
+    <button id="btnCanvasClose" class="ghost">关闭画布</button>
+  </div>
+  <div class="canvasBody">
+    <div class="canvasLeft">
+      <div class="paletteWrap">
+        <div class="palGroup">整套接线</div>
+        <div id="graphPresets" class="presetRow"></div>
+      </div>
+      <div class="paletteWrap">
+        <div class="palGroup">设备目录（点选加入画布）</div>
+        <div id="palette" class="palette"></div>
+      </div>
+    </div>
+    <svg id="canvas"></svg>
+    <div class="inspector">
+      <div class="palGroup">节点参数</div>
+      <div id="nodeInspector"></div>
+      <div class="palGroup">校验</div>
+      <div id="canvasIssues" class="issues"></div>
+    </div>
+  </div>
+</section>
+
+<div id="jobbar" class="jobbar hidden">
+  <div class="bar"><div id="jobFill"></div></div>
+  <span id="jobText" class="mono">渲染中…</span>
+  <a id="jobDownload" class="hidden" download>下载文件</a>
+  <button id="jobClose" class="ghost">关闭</button>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="sheet">
+    <h2>缺陷时间线 <span class="mono" id="tlSeed"></span></h2>
+    <p class="note">这里列出的是介质模型实际生成的离散缺陷事件：每一次失落都有开始时间、持续时间、位置与严重程度。相同种子与参数会重现完全相同的时间线。</p>
+    <div id="tlBody" class="tlbody"></div>
+    <button id="tlClose" class="ghost">关闭</button>
+  </div>
+</div>
+
+<div id="faultModal" class="modal hidden">
+  <div class="sheet wide">
+    <h2>故障速查 <span class="mono" id="faultCoverage"></span></h2>
+    <p class="note">
+      整条链条的故障对照：<b>故障现象 → 主要原因 → 物理因素</b>。
+      每一条都标注了本工具是「已建模 / 近似 / 未建模」——未建模的会明确说明，
+      而不是假装完整。点击某条可跳到对应的参数页。
+    </p>
+    <div id="faultBody" class="faultbody"></div>
+    <button id="faultClose" class="ghost">关闭</button>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script src="/static/canvas.js"></script>
+<script src="/static/faults.js"></script>
+<div id="mxModal" class="modal hidden">
+  <div class="sheet wide">
+    <h2>效果矩阵 <span class="mono" id="mxInfo"></span></h2>
+    <p class="note">
+      选一个参数，用若干取值各渲一帧、拼成一页看完——不用来回拖滑块去记上一个位置。
+      取值范围优先用<b>物理区间</b>（琥珀色之外的部分），因为那才是模型声明为真实的范围。
+      点任意一格即可把该取值应用到工程。
+    </p>
+    <div class="mxbar">
+      <select id="mxParam"></select>
+      <select id="mxParam2"></select>
+      <button id="mxRun" class="primary">渲染矩阵</button>
+      <button id="mxClose" class="ghost">关闭</button>
+    </div>
+    <div id="mxBody" class="mxbody"></div>
+  </div>
+</div>
+
+<script src="/static/matrix.js"></script>
+
+</body>
+</html>
