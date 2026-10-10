@@ -242,26 +242,23 @@ def check_acc_gain() -> None:
 
 def check_binder_loss() -> None:
     """
-    Binder breakdown: patch loss, and chroma hit harder than luma.
+    Binder breakdown: colour loses more than luma, by a margin that grows.
 
-    The original check here asserted that colour loss is *observable* before luma
-    loss inside the damage.  It cannot be, in this construction: the mixing law
-    `y*(1-drop) + floor*drop` pins the output at the substitution floor once
-    `y*(1-drop)` falls below it, so a damaged pixel goes straight from intact to
-    destroyed.  Measured, the luma-change histogram has no entries between 0.0 and
-    0.2 -- and that stayed true through a graduated mask, a bounded weight, and
-    three different chroma decay rates, because none of those is the cause.
+    Measured in the signal domain (tools/probe.py).  This has to be done on Y/I/Q
+    rather than on RGB pictures: converting back to RGB clips at zero, and with luma
+    attenuated while chroma is not, that clip removes exactly the partially-damaged
+    values the check depends on.  Measuring in RGB is what made several earlier
+    rounds of parameter tuning look like they changed nothing.
 
-    So the check now asserts what is actually established: the loss removes signal,
-    and it is applied to the colour carrier harder than to the luma.  The stronger
-    temporal claim is recorded as open rather than quietly dropped.
+    Two things are asserted, because either alone can pass vacuously:
+
+    * a partially-damaged population exists at mid settings -- without one, an
+      ordering between chroma and luma is not observable at any decay rate;
+    * chroma retention is below luma retention, and the gap widens with damage.
     """
     from atsim.core.pipeline import FrameBuffer, RenderContext
-    from atsim.core.signal import SignalFrame, composite_encode
+    from atsim.core.signal import composite_encode
     from atsim.core.standards import NTSC_525_60 as std
-    from atsim.stages.camera import CameraStage
-    from atsim.stages.codec import CodecStage
-    from atsim.stages.format import FormatStage
     from atsim.stages.tape import TapeStage
 
     scene = MovingScene()
@@ -270,41 +267,53 @@ def check_binder_loss() -> None:
     record("loss removes signal", "mean level falls",
            f"{clean:.4f} -> {gone:.4f}", gone < clean - 0.05)
 
-    # Drive the mechanism directly, so the measurement is of the mechanism and not
-    # of whatever the render path happens to do downstream of it.
     H, W = 240, 360
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
-    y_plane = 0.45 + 0.10 * np.cos(xx / 17.0)
-    i_plane = 0.30 * np.cos(yy / 11.0)
-    q_plane = 0.30 * np.sin(yy / 11.0)
-    ctx = RenderContext(std=std, params=_neutral({"tape": {"binder_loss": 0.7}}),
-                        seed=20240101, frame_count=10, fps=25.0, width=W, height=H)
-    buf = FrameBuffer(np.zeros((H, W, 3), np.float32),
-                      composite_encode(y_plane, i_plane, q_plane, std, chroma_gain=0.63),
-                      3, 0.12, std, {"field": 0})
-    for st in (CameraStage(ctx), FormatStage(ctx), CodecStage(ctx)):
-        buf = st.apply(buf)
-    out = TapeStage(ctx).apply(buf)
-    if "signal" not in out.meta:
-        record("chroma hit harder than luma", "colour carrier decays faster",
-               "stage chain published no signal", False)
-        return
-    oy = out.meta["signal"].y
-    oi, oq = out.meta["signal"].i, out.meta["signal"].q
-    hit = np.abs(oy - y_plane) > 0.05
-    if hit.sum() < 50:
-        record("chroma hit harder than luma", "colour carrier decays faster",
-               "no damaged pixels found", False)
-        return
-    chroma_kept = float(np.sqrt(oi[hit] ** 2 + oq[hit] ** 2).mean()
-                        / max(1e-6, np.sqrt(i_plane[hit] ** 2 + q_plane[hit] ** 2).mean()))
-    luma_kept = float(oy[hit].mean() / max(1e-6, y_plane[hit].mean()))
-    record("chroma hit harder than luma", "chroma decays faster than luma",
-           f"chroma kept {chroma_kept:.2f}, luma kept {luma_kept:.2f}",
-           chroma_kept <= luma_kept + 0.02,
-           "open: whether colour loss is *observable* before luma loss cannot be "
-           "shown, because the mixing law is a step and no partial-damage "
-           "population exists")
+    y_plane = 0.42 + 0.06 * (xx / W)
+    i_plane = 0.16 * np.cos(yy / 13.0)
+    q_plane = 0.16 * np.sin(yy / 13.0)
+    comp = composite_encode(y_plane, i_plane, q_plane, std, chroma_gain=0.63)
+    c0 = np.sqrt(i_plane ** 2 + q_plane ** 2)
+
+    rows = []
+    for amt in (0.2, 0.4, 0.7, 1.0):
+        ctx = RenderContext(std=std,
+                            params=_neutral({"tape": {"binder_loss": amt}}),
+                            seed=20240101, frame_count=10, fps=25.0,
+                            width=W, height=H)
+        stage = TapeStage(ctx)
+        stage.prepare()
+        buf = FrameBuffer(np.zeros((H, W, 3), np.float32), comp, 3, 0.12, std,
+                          {"field": 0})
+        out = stage.apply(buf)
+        if out.composite is None:
+            record("chroma dies first", "colour loses more than luma",
+                   "stage published no composite", False)
+            return
+        oy, oi, oq = stage._decompose(out.composite)
+        if oy.shape != y_plane.shape:
+            record("chroma dies first", "colour loses more than luma",
+                   f"shape mismatch {oy.shape} vs {y_plane.shape}", False)
+            return
+        dy = np.abs(oy - y_plane)
+        partial = float(((dy > 0.01) & (dy < 0.6 * y_plane.mean())).mean())
+        rows.append((amt,
+                     float(oy.mean() / max(1e-6, y_plane.mean())),
+                     float(np.sqrt(oi ** 2 + oq ** 2).mean() / max(1e-6, c0.mean())),
+                     partial))
+
+    partial_ok = any(p > 0.15 for _a, _l, _c, p in rows)
+    record("partial damage exists", "a partly-damaged population must be measurable",
+           "partial fractions " + ", ".join("%.0f%%" % (100 * p) for _a, _l, _c, p in rows),
+           partial_ok,
+           "without this the ordering below is unobservable, whatever the mechanism")
+
+    ordering_ok = all(c < l for _a, l, c, _p in rows)
+    gaps = [l - c for _a, l, c, _p in rows]
+    widening = gaps[-1] > gaps[0]
+    record("chroma dies first", "colour loses more than luma, by a widening margin",
+           "gap " + " -> ".join("%.3f" % g for g in gaps),
+           ordering_ok and widening)
 
 def check_rf() -> None:
     print("\nRF link  (HDMI -> AV -> RF -> TV)")
