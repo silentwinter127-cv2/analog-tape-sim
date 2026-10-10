@@ -485,6 +485,51 @@ def check_broadcast_noise() -> None:
     record("broadcast noise adds grain", "high-frequency energy rises",
            f"{rows[0][1]:.5f} -> {rows[1][1]:.5f}", grew)
 
+
+def check_graph_wiring() -> None:
+    """
+    An unwired converter must produce a readable error naming every such node.
+
+    The previous behaviour was an `assert` deep in the executor, which surfaced as
+    `rf_tuner: AssertionError: rf_tuner has no input` -- an internal-sounding message
+    naming one node, when the useful answer is which nodes need connecting.  It also
+    contradicted the graph validator, which treated the same condition as a warning.
+    """
+    from atsim.core.standards import get_standard
+    from atsim.graph import GRAPH_PRESETS, GraphExecutor
+    from atsim.graph.graph import CATALOG
+    from atsim.io.source import SyntheticSource
+
+    src = SyntheticSource(width=240, height=160, frames=12)
+    params = _neutral({})
+    kinds = {c.kind for c in CATALOG}
+
+    def build(extra: list[str]):
+        g = GRAPH_PRESETS["vhs_consumer"]["build"]()
+        for kind in extra:
+            g.add(kind, kind)
+        return GraphExecutor(g, get_standard("ntsc"), params, src, 240, 160,
+                             src.fps, seed=5)
+
+    # pick two converter kinds that exist, whatever they are called
+    converters = sorted(k for k in kinds if k in ("rf_tuner", "hdmi_out", "tv_out"))
+    if not converters:
+        record("unwired nodes reported", "readable error naming each node",
+               "no converter kinds in the catalogue", False)
+        return
+
+    ex = build(converters)
+    run = ex.render_frame(2)
+    pending = ex.pending_nodes()
+    text = " ".join(run.errors)
+    named_all = all(c in text for c in converters)
+    record("unwired nodes reported", "every unwired node must be named",
+           f"pending={pending}, named_all={named_all}",
+           bool(run.errors) and named_all and set(pending) == set(converters))
+    record("wired graph still renders", "the check must not break normal graphs",
+           f"errors={len(build([]).render_frame(2).errors)}",
+           not build([]).render_frame(2).errors)
+
 # ---------------------------------------------------------------------------
 def contact_sheet() -> str:
     """One image showing every headline effect, for eyeballing."""
@@ -538,6 +583,7 @@ def main(argv: list[str] | None = None) -> int:
         check_binder_loss()
         check_rf()
         check_deck_osd()
+        check_graph_wiring()
         check_broadcast_noise()
         check_head_switch()
 

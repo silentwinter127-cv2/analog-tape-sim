@@ -198,7 +198,11 @@ class GraphExecutor:
                               {"field": index % 2})
             return out, out.rgb
 
-        assert buf is not None, f"{name} has no input"
+        if buf is None:
+            # unreachable for a validated graph: `render_frame` refuses
+            # unwired nodes up front.  Kept as a defensive check with a
+            # readable message rather than an assert.
+            raise RuntimeError(f"节点 {name} 没有输入，无法渲染")
 
         stage = self.stages.get(name)
         if stage is not None:
@@ -327,6 +331,24 @@ class GraphExecutor:
                 and self._cache_key[name].get(index) == self.hashes[name])
 
     # ------------------------------------------------------------------
+    def pending_nodes(self) -> list[str]:
+        """
+        Nodes that declare an input but have nothing connected to them.
+
+        Such a node cannot run: there is no buffer to hand its stage.  The graph's
+        own validator only warns about this ("an input is not connected"), so a graph
+        with an unwired converter passed validation and then died inside the executor
+        on a bare `assert` -- the check said fine and the render said crash, which is
+        the worst combination for anyone trying to work out what is wrong.
+        """
+        out: list[str] = []
+        for name, node in self.graph.nodes.items():
+            if not node.spec.inputs:
+                continue
+            if not self.graph.inputs_of(name):
+                out.append(name)
+        return out
+
     def render_frame(self, index: int, use_cache: bool = True) -> GraphRun:
         """
         Execute the graph for one frame, node by node.
@@ -339,6 +361,18 @@ class GraphExecutor:
         subtree runs instead of the whole chain.
         """
         run = GraphRun(rgb=np.zeros((self.height, self.width, 3), np.float32))
+
+        # Refuse before doing any work, and report *every* unwired node rather than
+        # failing on the first one encountered.  A user with two unconnected
+        # converters should not have to fix them one restart at a time.
+        pending = self.pending_nodes()
+        if pending:
+            names = "、".join(pending)
+            run.errors.append(
+                f"以下节点没有接入输入，无法渲染：{names}。"
+                f"请在画布上把它们连起来，或删除它们。")
+            return run
+
         src_rgb = None
         for name in self.order:
             if use_cache and self.node_is_cached(name, index):
