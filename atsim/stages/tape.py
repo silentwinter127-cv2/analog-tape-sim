@@ -1043,6 +1043,14 @@ class TapeStage(Stage):
         mask = np.clip((pat - cut) / spread, 0.0, 1.0).astype(np.float32)
         if float(mask.max()) <= 1e-4:
             return y, i, q
+        # The mask has to be *graduated*, not a step.  A coating does not shed all
+        # at once: it thins, and the head reads progressively less signal from it.
+        # An earlier version produced an effectively binary mask -- the luma-change
+        # histogram had no entries at all below 0.20, every affected pixel being
+        # completely destroyed -- which meant there was no partially-damaged region
+        # in which to see the colour carrier fail before the luma.  The mechanism
+        # claimed chroma dies first and gave no way to observe it.
+        mask = np.sqrt(mask) * (0.55 + 0.45 * mask)
 
         # Lost signal reads as dense noise *near black*.  The floor matters: an
         # earlier version used `0.03 + 0.30*|noise|`, which averages about 0.13 and

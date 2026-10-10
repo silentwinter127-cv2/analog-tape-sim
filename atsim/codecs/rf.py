@@ -156,7 +156,13 @@ class RFLink:
         cnr = self.cnr_db
         # C/N of 45 dB is a clean picture; below ~30 dB it is visibly noisy
         severity = float(np.clip((45.0 - cnr) / 30.0, 0.0, 2.0))
-        if severity <= 1e-4:
+        bn = float(np.clip(self.p.broadcast_noise, 0.0, 1.0))
+        # The early return has to account for *both* sources.  It tested only the
+        # C/N-derived severity, so a strong signal (severity 0) returned before the
+        # off-air noise was ever reached -- the control read 0.9 on the object and
+        # changed nothing about the output.  A guard on one of two independent
+        # inputs is the bug, not the noise code below it.
+        if severity <= 1e-4 and bn <= 1e-4:
             return comp
         amp = 0.012 * severity
         noise = rng.standard_normal(comp.shape).astype(np.float32)
@@ -173,7 +179,6 @@ class RFLink:
         # 0.178, i.e. the picture is destroyed by noise right across the frame
         # rather than shifted in colour -- which is why it cannot be expressed by
         # the chroma-side controls that handle tape damage.
-        bn = float(np.clip(self.p.broadcast_noise, 0.0, 1.0))
         if bn > 1e-4:
             # The noise must be band-limited to roughly the *chroma* bandwidth, not
             # to the whole channel.  Broadband noise on the composite put most of
@@ -192,7 +197,7 @@ class RFLink:
                                           comp.shape[1] // 4 + 1)).astype(np.float32)
             coarse = np.repeat(np.repeat(coarse, 4, axis=0), 4, axis=1)[
                 :comp.shape[0], :comp.shape[1]]
-            out = out + (0.10 + 0.85 * bn) * fine + 0.20 * bn * coarse
+            out = out + (0.05 + 0.90 * bn) * fine + 0.22 * bn * coarse
         return out.astype(np.float32)
 
     def _sync_lock_artefacts(self, comp: np.ndarray, frame_index: int,
