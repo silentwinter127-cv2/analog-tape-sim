@@ -2054,5 +2054,76 @@ def check_fault_citations() -> None:
            not dupes,
            "eighteen of the nineteen pairs had drifted before this was found, so the UI "
            "explained parameters with words written for another version")
+def check_device_dna() -> None:
+    """
+    A device identity must produce one machine, deterministically, and change nothing without one.
+
+    The third property is the one worth testing hardest. A dimension added to a calibrated model has
+    to be inert when it is not in use, or every existing preset, capture and measurement shifts by a
+    few per cent for reasons unrelated to what any of them test -- which is how a model quietly stops
+    being the thing that was calibrated.
+
+    The first property is what makes the dimension useful rather than decorative: the same serial
+    gives the same machine forever, so a fault stays reproducible and a tape can be revisited. That is
+    the same requirement as the seeded defect timeline, and it is why the deviations are drawn from a
+    generator seeded by the identity rather than from a random number.
+    """
+    import tempfile
+
+    from atsim.core.profiles import SCHEMA
+    from atsim.core.units import DeviceUnit, apply_unit, bind_ranges, spreads_from_schema
+    from atsim.web.session import Project
+
+    bind_ranges(SCHEMA)
+    spreads = spreads_from_schema(SCHEMA)
+    if len(spreads) < 8:
+        record("some parameters declare a per-unit spread",
+               "a device-identity dimension with nothing to vary is not a dimension",
+               "only %d parameter(s) declare a spread" % len(spreads), False)
+        return
+
+    # --- 1. inert with no identity
+    p = Project(id="t", params={})
+    nominal = p.resolved_params()
+    raw = SCHEMA.resolve_all({})
+    untouched = all(abs(nominal[l][k] - raw[l][k]) < 1e-12 for l in raw for k in raw[l])
+    record("a project with no device identity is the nominal model",
+           "adding the dimension must not move any existing preset, capture or measurement",
+           "%d parameters unchanged by the absence of an identity" % len(spreads),
+           untouched,
+           "an anonymous unit perturbing every spread parameter is the failure that would "
+           "invalidate every calibration silently")
+
+    # --- 2. deterministic per identity
+    ids = {"camcorder": "Panasonic NV-GS78 A39482", "deck": "JVC HR-J600 11223"}
+    a = Project(id="a", params={}, unit_identities=dict(ids)).resolved_params()
+    b = Project(id="b", params={}, unit_identities=dict(ids)).resolved_params()
+    stable = all(abs(a[l][k] - b[l][k]) < 1e-12 for l in a for k in a[l])
+    changed = sum(1 for l in a for k in a[l] if abs(a[l][k] - nominal[l][k]) > 1e-12)
+    record("one serial number is one machine, every time",
+           "a fault must stay reproducible and a tape revisitable",
+           "the same two identities give identical parameters: %s; %d parameters deviate from "
+           "nominal" % (stable, changed),
+           stable and changed > 5,
+           "a random machine per render would make every capture unrepeatable")
+
+    # --- 3. distinct machines
+    c = Project(id="c", params={},
+                unit_identities={**ids, "deck": "JVC HR-J600 99887"}).resolved_params()
+    differs = sum(1 for l in a for k in a[l] if abs(a[l][k] - c[l][k]) > 1e-12)
+    record("a different serial is a different machine",
+           "two units of one model must not render identically",
+           "changing only the deck serial alters %d parameter(s)" % differs,
+           differs > 3,
+           "a dimension that yields identical machines is not a dimension")
+
+    # --- 4. and the spread table must not name a parameter that does not exist
+    from atsim.core.profiles import UNIT_SPREADS
+    unknown = [k for k in UNIT_SPREADS
+               if not any(k in SCHEMA.layer(l).keys() for l in SCHEMA.layer_names())]
+    record("every declared spread names a real parameter",
+           "a spread for a non-existent parameter is documentation of nothing",
+           "%d spreads declared; unknown: %s" % (len(UNIT_SPREADS), unknown or "none"),
+           not unknown)
 if __name__ == "__main__":
     raise SystemExit(main())

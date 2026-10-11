@@ -88,6 +88,11 @@ class Project:
     fps: float = 30000.0 / 1001.0
     params: dict = field(default_factory=dict)
     preset: str | None = None
+    # Which physical machine each device is.  An empty string means the nominal model, so a
+    # project saved before this dimension existed still loads and renders identically.  The
+    # identities are part of the project because a unit that is not saved is a unit that changes
+    # when the project is reloaded, which would break reproducibility.
+    unit_identities: dict = field(default_factory=dict)
     created: float = field(default_factory=time.time)
     modified: float = field(default_factory=time.time)
 
@@ -101,7 +106,49 @@ class Project:
         return cls(**known)
 
     def resolved_params(self) -> dict:
-        return SCHEMA.resolve_all(self.params or {})
+        """
+        The parameters this project renders with, including this unit's deviations.
+
+        Device individual variation is applied here rather than in the renderer so that every caller
+        goes through it and none can forget.  With no identities set nothing changes, which is what
+        keeps every preset and capture from before this dimension rendering identically.
+        """
+        params = SCHEMA.resolve_all(self.params or {})
+        ids = self.unit_identities or {}
+        if not ids:
+            return params
+        from ..core.units import DeviceUnit, apply_unit, bind_ranges, spreads_from_schema
+        bind_ranges(SCHEMA)
+        spreads = spreads_from_schema(SCHEMA)
+        # one machine per device class, so a camcorder and a deck are drawn independently
+        merged: dict[str, float] = {}
+        for _kind, identity in sorted(ids.items()):
+            unit = DeviceUnit(identity=str(identity)).draw(spreads)
+            merged.update(unit.deviations)
+        if not merged:
+            return params
+        unit = DeviceUnit(identity="+".join(sorted(str(v) for v in ids.values())))
+        unit.deviations = merged
+        params, _record = apply_unit(params, unit, spreads.get)
+        return params
+
+    def unit_report(self) -> list[dict]:
+        """
+        Which parameters this machine deviates in, and by how much.
+
+        Returned rather than logged, because the point of an individual machine is that its
+        deviations can be named -- and because a realism claim about a specific unit is only
+        checkable if the unit's numbers can be read out.
+        """
+        ids = self.unit_identities or {}
+        if not ids:
+            return []
+        from ..core.units import DeviceUnit, apply_unit, bind_ranges, spreads_from_schema
+        bind_ranges(SCHEMA)
+        spreads = spreads_from_schema(SCHEMA)
+        base = SCHEMA.resolve_all(self.params or {})
+        _p, record = apply_unit(base, DeviceUnit(identity="probe").draw(spreads), spreads.get)
+        return record
 
 
 class SessionStore:

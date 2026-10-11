@@ -36,6 +36,13 @@ class ParamSpec:
     # provenance of the default value, per the "device profile library" idea
     source: str = "estimate"
 
+    #: How far a *particular machine* may sit from nominal, as a fraction of the
+    #: parameter's own value.  Zero means this parameter does not vary between units of
+    #: the same model.  Set it from measured service tolerances where they are known and
+    #: leave it at zero where they are not -- an invented spread is worse than none,
+    #: because it looks like provenance.
+    unit_spread: float = 0.0
+
     def clamp(self, value: float) -> float:
         return float(min(self.maximum, max(self.minimum, value)))
 

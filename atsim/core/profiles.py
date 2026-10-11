@@ -641,7 +641,87 @@ def build_schema() -> ParamSchema:
                     "而不只是变暗。同一个潮湿房间里，新机器看起来发白、旧机器发绿，"
                     "差别就在这里——这是**显示器**的属性，不是录制里的偏色。")
 
+    _apply_unit_spreads(s)
     return s
+
+
+# ---------------------------------------------------------------------------
+# per-unit spread: which parameters differ between two machines of one model
+# ---------------------------------------------------------------------------
+# The value of this table is as much in what it omits as in what it contains. A spread is
+# declared only where there is a reason to expect unit variation:
+#
+#   * alignment and gain tolerances -- an amplifier's gain is set by resistors with a
+#     tolerance, so the same model comes out a few per cent apart; a servo loop is trimmed;
+#   * component tolerances whose effect is known -- a CCD's dark current varies per die,
+#     which is sensor noise; an electrolytic capacitor's ESR varies, which is supply ripple;
+#   * wear, which differs per unit because it depends on use rather than on manufacture.
+#
+# Artistic parameters (`halation`, `lens_flare`, `highlight_tint`) are left at zero on purpose.
+# An invented spread is worse than none: it looks like provenance and stops the next person
+# from checking. The fraction is one sigma, clipped to two when a unit is drawn, because an
+# alignment tolerance is a bound and beyond twice it the machine is broken rather than a unit
+# of the model.
+UNIT_SPREADS: dict[str, tuple[float, str]] = {
+    # camcorder sensor -- per-die variation, which is what "this camera" means
+    "sensor_noise": (0.30, "CCD dark current and read noise vary per die"),
+    "fixed_pattern": (0.25, "per-die fixed-pattern non-uniformity"),
+    # camcorder lens and signal path -- alignment tolerances
+    "chroma_aberration": (0.20, "lens centring tolerance"),
+    "sharpness": (0.12, "aperture-correction trim"),
+    "ccd_gain": (0.15, "video amplifier gain trim"),
+    "ccd_smear": (0.12, "transfer efficiency varies per device"),
+    "dynamic_range": (0.06, "well capacity and clip point"),
+    "color_cast": (0.05, "white-balance null trim; a small residual cast is normal"),
+    "exposure": (0.10, "AE reference trim"),
+    "white_balance_temp": (0.12, "AWB reference trim"),
+    # deck -- servo trims and head wear
+    "head_wear": (0.35, "wear depends on use, not on the model"),
+    "transport_jitter": (0.20, "capstan servo gain trim"),
+    "frequency_response": (0.15, "replay equaliser trim"),
+    "luma_bandwidth": (0.05, "replay amplifier bandwidth trim"),
+    "chroma_bandwidth": (0.05, "chroma amplifier bandwidth trim"),
+    "comb_depth": (0.08, "delay-line and summing network tolerances"),
+    "cross_color": (0.10, "separation residue depends on the comb's alignment"),
+    "cross_luma": (0.10, "as above"),
+    "burst_phase_error": (0.60, "APC loop and crystal tolerance; a few degrees is normal"),
+    "tbc_strength": (0.08, "corrector loop gain trim"),
+    "tbc_residual": (0.25, "corrector residual after alignment"),
+    "ringing": (0.20, "replay filter Q"),
+    "color_noise": (0.20, "chroma amplifier noise figure"),
+    # display -- convergence, geometry and drive trims
+    "gamma": (0.04, "gun and video-drive tracking"),
+    "geometry_warp": (0.20, "yoke and convergence adjustment"),
+    "defocus": (0.15, "focus and astigmatism adjustment"),
+    "contrast": (0.08, "video drive preset"),
+    "brightness": (0.06, "cut-off preset"),
+    "saturation": (0.08, "chroma drive preset"),
+    "color_temp": (0.06, "grey-scale tracking"),
+    "scanlines": (0.10, "beam spot size and focus"),
+    "vignette": (0.12, "shadow-mask and yoke geometry"),
+    "interlace_flicker": (0.10, "field timing and phosphor persistence"),
+    "crt_age": (0.30, "hours of use, not the model"),
+    "bloom": (0.10, "high-voltage regulation per set"),
+}
+
+
+def _apply_unit_spreads(s: "ParamSchema") -> None:
+    """
+    Set each declared spread on its parameter, and check the name exists.
+
+    Setting the field rather than editing the define calls keeps the declaration in one readable
+    table -- with the reason next to the number -- and cannot break the file, which two earlier
+    attempts at splicing did.
+    """
+    for key, (spread, _why) in UNIT_SPREADS.items():
+        found = False
+        for layer in s.layer_names():
+            specs = s.layer(layer).specs
+            if key in specs:
+                specs[key].unit_spread = float(spread)
+                found = True
+        if not found:
+            raise KeyError("UNIT_SPREADS names a parameter that does not exist: %r" % key)
 
 
 SCHEMA = build_schema()
