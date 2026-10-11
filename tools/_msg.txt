@@ -1,0 +1,44 @@
+add whole-line chroma *errors*, not just chroma loss
+
+Feedback from someone who knows the equipment, evaluating the simulation's realism,
+named three properties a convincing fault has: it is specific to the device rather
+than generic noise, it changes as the tape is read rather than sitting on the picture
+as a fixed texture, and it is structural -- "整行全错", a whole scanline decoding
+wrongly rather than a few pixels.
+
+Checking the model against those found a real gap. `chroma_loss` zeroed I and Q on
+chosen rows, which produces a grey line: colour removed. The described failure is a
+line that is still fully saturated but the wrong hue. Those are different faults with
+different pictures, and the model only had one of them.
+
+The new mechanism is a reference error, which is why it behaves as it does:
+
+  * subcarrier phase is recovered from the per-line burst, so a line with a wrong
+    reference rotates *every* colour on it by the same angle rather than corrupting
+    pixels independently -- the error therefore covers the full row width;
+  * burst amplitude drives colour-under gain through the ACC loop, so a weak burst
+    makes the whole line over- or under-saturated; phase and gain are separate
+    parameters because they are separate failures;
+  * head-to-tape contact varies continuously along the track, so the per-line error
+    field is smoothed and carries a slow term, and the fault has a history instead of
+    being re-randomised each frame.
+
+Measured against a run with the mechanism switched off:
+
+    phase 30 deg  ->  saturation kept 100%,  hue moved 38 deg
+    phase 60 deg  ->  saturation kept 100%,  hue moved 126 deg
+    affected rows ->  1.00 of each affected row changed (full width)
+    consecutive frames differ less than distant frames -> it evolves
+
+The first measurement attempt compared the output against the original signal rather
+than against the mechanism switched off, so every other tape mechanism was mixed in
+and the phase parameter appeared inert -- 10 and 30 degrees gave byte-identical
+results. Differencing against a baseline is the only way that question can be asked.
+
+Also adds a `worn_deck_row_chroma` preset, and records in profiles.py that the cause
+is deliberately *not* attributed to a named part: a hue error in the final picture
+could come from the chroma processing circuit, the head, the digital stage or the
+capture device, and nothing in the reference material distinguishes them.
+
+Still outstanding from the same feedback: per-line time-base error with its own
+temporal behaviour.

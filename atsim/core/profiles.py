@@ -326,6 +326,24 @@ def build_schema() -> ParamSchema:
                phys_max=0.4, source="色度欠载载波弱",
                help="随机整行丢失彩色（色度载波弱于亮度）。")
 
+    g = "整行色度错误"
+    tpe.define("row_chroma_error", "整行错色发生率", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_max=0.5,
+               source="熟悉设备的用户描述：解析出错误的颜色，而且是整行全错",
+               help="整条扫描线解出**错误的颜色**——不是没有颜色。"
+                    "它与「色度丢失行」是两回事：那个把色度清零，得到灰线；"
+                    "这个旋转色相并改变色度增益，线仍然是饱和的，只是颜色错了。"
+                    "机制上这是**参考错误**：色度副载波的相位由每行起始的色同步恢复，"
+                    "所以某一行的参考错了，会把那一行上**所有**颜色旋转同一个角度，"
+                    "而不是各自独立地坏掉。")
+    tpe.define("row_chroma_phase", "整行色相误差", 0.0, 0.0, 90.0, unit="deg", group=g,
+               phys_max=45.0,
+               help="受影响行的色相旋转幅度。因为它是旋转而不是缩放，"
+                    "饱和度得以保留——这正是「错色」与「去色」在画面上的区别。")
+    tpe.define("row_chroma_gain", "整行色度增益误差", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_max=0.5,
+               help="受影响行的色度幅度误差。色同步幅度经 ACC 环路决定色度增益，"
+                    "所以弱的色同步会让整行过饱和或欠饱和。与色相误差相互独立。")
     g = "失落与磁头切换"
     tpe.define("dropout_rate", "失落率", 0.35, 0.0, 4.0, unit="次/秒", group=g,
                phys_max=1.5, source="磁粉脱落点的密度",
@@ -686,6 +704,21 @@ FACTORY_PRESETS = {
             "rf": {"signal_dbm": -74.0, "adjacent_channel": 0.20,
                    "broadcast_noise": 0.45},
             "tape": {"noise_floor": 0.30, "dropout_rate": 0.6},
+            "display": {"enabled": 0.0},
+        }},
+    "worn_deck_row_chroma": {
+        "label": "老化色度解码（整行错色）",
+        "note": "整条扫描线解出错误的颜色：色相被旋转、色度增益偏移，"
+                "线仍然是饱和的。与「色度丢失行」不同——那个得到灰线，这个得到错色。"
+                "误差随读取过程演化，不是逐帧重掷。",
+        "layers": {
+            "tape": {"row_chroma_error": 0.16, "row_chroma_phase": 42.0,
+                     "row_chroma_gain": 0.22, "chroma_loss": 0.03,
+                     "tape_stability": 0.45, "wear": 0.45,
+                     "dropout_rate": 0.5, "noise_floor": 0.22},
+            "format": {"chroma_gain": 1.0},
+            "player": {"transport_jitter": 0.55, "tbc_enabled": 0.0,
+                       "head_wear": 0.45},
             "display": {"enabled": 0.0},
         }},
     "minidv_clean": {

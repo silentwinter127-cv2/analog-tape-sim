@@ -660,6 +660,84 @@ def check_server_control() -> None:
                         ("cmd_start", "cmd_stop", "cmd_restart", "cmd_status",
                          "cmd_logs")))
 
+
+def check_row_chroma() -> None:
+    """
+    Whole lines must be able to decode to the wrong colour, not merely to no colour.
+
+    This was a real gap, and the distinction is the mechanism: `chroma_loss` zeroes
+    I and Q, producing a grey line, whereas a chroma reference error rotates every
+    hue on the line and shifts its colour-under gain, so the line stays fully
+    saturated but wrong.  Someone familiar with the equipment described the second
+    ("解析出错误的颜色 ... 整行全错") while the model only had the first.
+
+    Two assertions, because either can pass vacuously: that saturation is retained
+    while the hue moves, and that the affected rows are whole rows.
+    """
+    from atsim.core.pipeline import FrameBuffer, RenderContext
+    from atsim.core.signal import composite_encode
+    from atsim.core.standards import NTSC_525_60 as std
+    from atsim.stages.tape import TapeStage
+
+    H, W = 240, 360
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    y_plane = 0.42 + 0.06 * (xx / W)
+    i_plane = 0.16 * np.cos(yy / 13.0)
+    q_plane = 0.16 * np.sin(yy / 13.0)
+    comp = composite_encode(y_plane, i_plane, q_plane, std, chroma_gain=0.63)
+
+    def planes(over: dict, frame: int = 8):
+        params = _neutral({"tape": over})
+        ctx = RenderContext(std=std, params=params, seed=20240101, frame_count=40,
+                            fps=25.0, width=W, height=H)
+        st = TapeStage(ctx)
+        st.prepare()
+        buf = FrameBuffer(np.zeros((H, W, 3), np.float32), comp, frame, 0.32, std,
+                          {"field": frame % 2})
+        out = st.apply(buf)
+        return st._decompose(out.composite)
+
+    # Differenced against the mechanism switched off.  Comparing with the original
+    # signal instead mixes in every other tape mechanism, which is how an earlier
+    # version of this measurement concluded the phase control did nothing.
+    _y, bi, bq = planes({})
+    amp0 = np.sqrt(bi ** 2 + bq ** 2)
+
+    moved = []
+    kept = []
+    for ph in (30.0, 60.0):
+        _y, oi, oq = planes({"row_chroma_error": 0.3, "row_chroma_phase": ph})
+        d = np.maximum(np.abs(oi - bi), np.abs(oq - bq))
+        touched = d.max(axis=1) > 0.02
+        if not touched.any():
+            moved.append(0.0)
+            kept.append(0.0)
+            continue
+        h0 = np.angle((bi[touched] + 1j * bq[touched]).mean())
+        h1 = np.angle((oi[touched] + 1j * oq[touched]).mean())
+        moved.append(abs(float(np.rad2deg(np.angle(np.exp(1j * (h1 - h0)))))))
+        amp1 = np.sqrt(oi ** 2 + oq ** 2)
+        m = amp0 > 0
+        kept.append(float(amp1[m].mean() / max(1e-6, amp0[m].mean())))
+
+    record("hue rotates without losing colour", "saturation retained while hue moves",
+           "kept " + ", ".join("%.0f%%" % (100 * k) for k in kept)
+           + " with hue moved " + ", ".join("%.1f deg" % m for m in moved),
+           all(abs(k - 1.0) < 0.05 for k in kept) and all(m > 3.0 for m in moved))
+
+    _y, oi, oq = planes({"row_chroma_error": 0.3, "row_chroma_phase": 45.0})
+    d = np.maximum(np.abs(oi - bi), np.abs(oq - bq))
+    touched = d.max(axis=1) > 0.02
+    if not touched.any():
+        record("errors cover whole rows", "a damaged line is damaged across its width",
+               "no rows affected", False)
+    else:
+        within = float(np.mean([(d[r] > 0.02 * d.max()).mean()
+                                for r in np.flatnonzero(touched)]))
+        record("errors cover whole rows", "a damaged line is damaged across its width",
+               "%.2f of each affected row changed (1.0 = full width)" % within,
+               within > 0.95)
+
 # ---------------------------------------------------------------------------
 def contact_sheet() -> str:
     """One image showing every headline effect, for eyeballing."""
@@ -717,6 +795,7 @@ def main(argv: list[str] | None = None) -> int:
         check_dv_odd_size()
         check_preset_independence()
         check_server_control()
+        check_row_chroma()
         check_broadcast_noise()
         check_head_switch()
 

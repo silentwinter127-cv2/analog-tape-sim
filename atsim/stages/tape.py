@@ -239,6 +239,13 @@ class TapeStage(Stage):
         self.debris = float(cfg.get("debris", 0.0))
         self.surface_damage = float(cfg.get("surface_damage", 0.0))
         self.chroma_loss = float(cfg.get("chroma_loss", 0.0))
+        # Whole lines decoding to the wrong colour.  Deliberately separate from
+        # `chroma_loss`, which removes colour: this rotates hue and shifts the
+        # colour-under gain, so the line stays saturated but wrong.  The difference
+        # is the mechanism, not a strength setting.
+        self.row_chroma_error = float(cfg.get("row_chroma_error", 0.0))
+        self.row_chroma_phase = float(cfg.get("row_chroma_phase", 0.0))
+        self.row_chroma_gain = float(cfg.get("row_chroma_gain", 0.0))
         # binder breakdown: damp storage sheds the magnetic coating.  Distinct
         # from debris (a loose particle) and surface_damage (a scratch) because it
         # removes a *fraction of the picture* and kills chroma before luma.
@@ -558,6 +565,89 @@ class TapeStage(Stage):
             lost += 1
             row += 1
         return out_i, out_q
+
+    def _apply_row_chroma_error(self, i: np.ndarray, q: np.ndarray,
+                                frame_index: int
+                                ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Whole scanlines decode to the wrong *colour*, not to no colour.
+
+        This exists because the earlier mechanism got the failure mode wrong, and the
+        difference is the whole point.  `_apply_chroma_loss` zeroes I and Q on a
+        chosen row, which produces a grey line: colour removed.  A machine whose
+        chroma decoding drifts produces a line that is still fully saturated but the
+        *wrong hue* -- red where there should be green -- and people who know the
+        equipment describe it exactly that way (解析出错误的颜色 ... 整行全错).
+
+        The mechanism is a reference error, which is why it behaves as it does:
+
+        * the subcarrier phase is recovered from the burst at the start of each line,
+          so a line with a wrong reference rotates *every* colour on that line by the
+          same angle instead of corrupting pixels independently;
+        * burst amplitude sets the colour-under gain through the ACC loop, so a weak
+          burst makes the whole line over- or under-saturated;
+        * head-to-tape contact varies continuously along the track, so the error
+          *evolves* -- it is not re-rolled from scratch every frame.
+
+        Deliberately not attributed to a named part.  A hue error in the final picture
+        could come from the chroma processing circuit, the head, the digital stage or
+        the capture device, and nothing in the reference material distinguishes them.
+        Writing one of them into the model as the cause would be a guess presented as
+        a finding.
+        """
+        prob = float(np.clip(self.row_chroma_error, 0.0, 1.0))
+        phase_deg = float(self.row_chroma_phase)
+        gain_amt = float(self.row_chroma_gain)
+        if prob <= 1e-4 or (abs(phase_deg) < 1e-4 and abs(gain_amt) < 1e-4):
+            return i, q
+        H = i.shape[0]
+        if H < 2:
+            return i, q
+
+        # Two independent per-line fields: phase and amplitude are separate failures
+        # and need not move together.
+        rng_p = np.random.default_rng(derive_seed(
+            self.ctx.seed, "tape", "rowchroma", "phase"))
+        rng_a = np.random.default_rng(derive_seed(
+            self.ctx.seed, "tape", "rowchroma", "gain"))
+        line_phase = rng_p.standard_normal(H).astype(np.float32)
+        line_gain = rng_a.standard_normal(H).astype(np.float32)
+        # Smoothed along the track: contact varies gradually, not line by line.
+        k = np.array([1.0, 2.0, 3.0, 2.0, 1.0], np.float32)
+        k /= k.sum()
+        line_phase = np.convolve(line_phase, k, mode="same")
+        line_gain = np.convolve(line_gain, k, mode="same")
+        # Plus a slow term so consecutive frames resemble one another rather than
+        # being independent draws -- the fault has to have a history.
+        drift_p = float(np.sin(2.0 * np.pi * frame_index / 37.0))
+        drift_a = float(np.sin(2.0 * np.pi * frame_index / 53.0 + 1.1))
+
+        # Which lines are affected: geometric spacing, as with the colour-under loss.
+        # Real faults come in runs with clean stretches between them, not as an even
+        # sprinkle.
+        rng_sel = np.random.default_rng(derive_seed(
+            self.ctx.seed, "tape", "rowchroma", "select", frame_index))
+        mask = np.zeros(H, np.float32)
+        row = 0
+        while row < H:
+            row += max(0, int(rng_sel.geometric(max(1e-6, prob))) - 1)
+            if row >= H:
+                break
+            mask[row] = 1.0
+            row += 1
+        if float(mask.sum()) <= 0.0:
+            return i, q
+
+        # A rotation, not a scaling, so saturation is preserved and only the hue
+        # moves -- which is what distinguishes this from removing the colour.
+        theta = np.deg2rad(phase_deg) * (line_phase + 0.6 * drift_p) * mask
+        cos_t = np.cos(theta)[:, None].astype(np.float32)
+        sin_t = np.sin(theta)[:, None].astype(np.float32)
+        i_rot = i * cos_t - q * sin_t
+        q_rot = i * sin_t + q * cos_t
+        gain = np.clip(1.0 + gain_amt * (line_gain + 0.5 * drift_a) * mask,
+                       0.0, 3.0).astype(np.float32)[:, None]
+        return (i_rot * gain).astype(np.float32), (q_rot * gain).astype(np.float32)
 
     def _build_creases(self) -> None:
         rng = self._crease_rng
@@ -1498,6 +1588,14 @@ class TapeStage(Stage):
 
         # 4c. random whole lines lose colour (weak colour-under carrier)
         i, q = self._apply_chroma_loss(i, q, frame_index)
+
+        # 4c-bis. other whole lines decode to the *wrong* colour: a reference error
+        #         rotates every hue on the line and shifts its colour-under gain, so
+        #         the line stays saturated.  This is the failure people actually
+        #         describe when they say 整行全错, and it is not a stronger version of
+        #         the line above -- losing colour and getting the colour wrong are
+        #         different faults with different pictures.
+        i, q = self._apply_row_chroma_error(i, q, frame_index)
 
         # 4d. tracking error: rows lose lock from some point downwards
         y, i, q = self._apply_tracking_noise(y, i, q, frame_index, rng)
