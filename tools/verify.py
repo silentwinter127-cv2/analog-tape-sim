@@ -1277,5 +1277,79 @@ def check_discovery_completeness() -> None:
                bool(quick_known) and len(quick_known) == len(QUICK))
 
 
+def check_tracker_response() -> None:
+    """
+    The displacement tracker must respond to a fast per-line component, and be honest
+    that it is not a linear estimator of one.
+
+    Five attempts to measure the real fast component failed, none by producing a figure
+    that disagreed -- each measured at the wrong point. So the instrument is validated
+    against fields whose composition is known before it is used on material, which is
+    the order that worked for the stripe work: prove the measurement separates curvature
+    from tilt, then build the mechanism.
+
+    Measured response, smooth field mixed with a fast one:
+
+        fast  0%   true std 1.0000 -> measured 0.4706  (recovers 47%)
+        fast 25%   true std 0.8015 -> measured 0.6532
+        fast 50%   true std 0.7234 -> measured 0.9022
+        fast 100%  true std 1.0000 -> measured 3.1065  (amplifies 3.1x)
+
+    So it rises monotonically with the fast fraction, which means it can *distinguish*
+    fast from smooth, and it is not calibrated to report either in absolute pixels. That
+    calibration explains the real capture: its adjacent-row-step-to-spread ratio is
+    0.108-0.146, the near-smooth end of this curve, where the tracker recovers only 47%.
+    The real displacement is therefore about twice what was measured, and it is mostly
+    *smooth*.
+
+    Which in turn says where the corrector's 8.8x cannot be coming from. It is not the
+    within-field fast component, because on this material that component is small. It has
+    to be the field-to-field wander -- and a tracker that subtracts a local mean is
+    structurally blind to exactly that, which is why no amount of re-measuring the same
+    way was going to find it.
+    """
+    from atsim.core.signal import horizontal_shift
+    from tools.measure_timebase import displacement_stats
+
+    H, W = 240, 360
+    x = np.arange(W, dtype=np.float32)
+    edge = (np.abs(((x - 5.0 + 5.0) % 10.0) - 5.0) < 1.5).astype(np.float32)
+    base = np.tile((0.25 + 0.55 * edge + 0.15 * np.cos(2.0 * np.pi * x / 6.0))[None, :],
+                   (H, 1)).astype(np.float32)
+
+    k = np.array([1.0, 4.0, 6.0, 4.0, 1.0], np.float32)
+    k /= k.sum()
+    rng = np.random.default_rng(3)
+    smooth = rng.standard_normal(H).astype(np.float32)
+    for _ in range(26):
+        smooth = np.convolve(smooth, k, mode="same")
+    smooth /= max(1e-6, float(smooth.std()))
+    fast = np.random.default_rng(4).standard_normal(H).astype(np.float32)
+    fast /= max(1e-6, float(fast.std()))
+
+    steps, measured = [], []
+    for amp in (0.0, 0.25, 0.5, 1.0):
+        field = smooth * (1.0 - amp) + fast * amp
+        field = field - field.mean()
+        img = horizontal_shift(base, field.astype(np.float32))
+        r = displacement_stats(img)
+        steps.append(round(float(r.get("line_step", float("nan"))), 4))
+        measured.append(round(float(r.get("std", float("nan"))), 4))
+
+    grew = all(steps[i] < steps[i + 1] for i in range(len(steps) - 1))
+    record("tracker responds to a fast component",
+           "it must rise monotonically with the fast fraction",
+           "reported adjacent-row step %s" % steps, grew,
+           "a flat response would mean the instrument cannot see what it is asked to measure")
+
+    # and it must be recorded as non-linear, not quietly treated as absolute
+    ratio_smooth = measured[0] / 1.0
+    ratio_fast = measured[-1] / 1.0
+    record("tracker is not a linear estimator",
+           "its scale depends on what it is measuring",
+           "recovers %.2fx on a smooth field, %.2fx on a fast one"
+           % (ratio_smooth, ratio_fast),
+           abs(ratio_smooth - 1.0) > 0.2 and abs(ratio_fast - 1.0) > 0.2,
+           "absolute figures from it are unusable; only comparisons are")
 if __name__ == "__main__":
     raise SystemExit(main())
