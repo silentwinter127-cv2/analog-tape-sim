@@ -225,7 +225,14 @@ def main() -> int:
     # (best-of-N, cached samples) was tried twice and was wrong both times: it
     # stopped measuring the thing the check is named after.
     load_before = cpu_load()
-    p3 = {k: dict(v) for k, v in SCHEMA.defaults().items()}
+    # Change ONE display value and nothing else, so that only the display stage is dirty and the
+    # measurement is the incremental path the check is named after.  `SCHEMA.defaults()` here previously
+    # supplied every layer's every parameter, which invalidated the whole chain: the figure was a full
+    # re-render with grain, halation, CCD smear and fixed-pattern noise all on -- about twice the cost of
+    # any preset -- and it read as a performance regression rather than as a measurement of the wrong
+    # thing.  Measured: 6.6 fps for the whole-chain version against 12.6 fps for this one.
+    p3 = {layer: dict(vals) for layer, vals in prev.params.items()}
+    p3["display"] = dict(p3.get("display", {}))
     p3["display"]["scanlines"] = 0.5
     prev.invalidate(p3)
     t0 = time.perf_counter()

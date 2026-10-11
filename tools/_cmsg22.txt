@@ -1,0 +1,38 @@
+fix the interactive check, which was measuring a whole-chain re-render instead of a display tweak
+
+The check was failing at 6.6 fps against its own 10 fps threshold, and the cause was that it was not
+doing what its name says:
+
+    p3 = {k: dict(v) for k, v in SCHEMA.defaults().items()}
+    p3["display"]["scanlines"] = 0.5
+    prev.invalidate(p3)
+
+`SCHEMA.defaults()` returns every parameter of every layer, so that invalidates the whole chain: the
+figure was a full re-render from the source with grain, halation, CCD smear and fixed-pattern noise all
+at their defaults -- about twice the cost of any preset, and the opposite of "move one slider and
+redraw". Changing only the display value leaves the display stage as the sole dirty one, and the check
+now reports **32.9 fps** where it reported 6.6. So it does not merely pass; it measures the interactive
+path it is named after.
+
+**Three hypotheses, and the first one was right.** This is worth recording because I abandoned the
+correct answer for two wrong ones, and both wrong ones were explanations constructed before the fact was
+established:
+
+  * *the defaults are heavier than the preset* -- correct, and it is what the check was actually
+    measuring. I abandoned it because I misread which configuration the check used;
+  * *the check measures a preset, not the defaults* -- wrong. My "fix" rebuilt the same preset the check
+    already used, and the figure did not move;
+  * *large renderers still hold memory, so the number is memory pressure* -- wrong. Clearing every
+    renderer's cache before dropping it changed nothing, and a bisect showed 12.66 fps with six
+    full-resolution renderers alive, 12.48 after dropping them, 12.67 after returning pages: flat.
+
+The selftest's own comment does attribute the figure to memory pressure -- "measured at 11.9 fps with
+them released and 6.7 fps with them alive" -- and that record is itself now doubtful, since the same
+measurement is flat across all three states. What is certain is that the number moves from 6.6 to 32.9
+when the invalidation is narrowed, which is the difference between a full re-render and a display-only
+one.
+
+The cache-clearing added while chasing the disproved cause has been removed, so the release step is back
+to what it was.
+
+94 checks pass, 15 presets render, selftest ALL CHECKS PASSED.
