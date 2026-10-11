@@ -591,11 +591,24 @@
       + "一行超出右边缘的部分会直接丢失，因为真实发生器没有断行逻辑。";
     host.append(note);
 
+    /* The enable switch comes first, and the text field enables it.  The *parameter* defaults to off --
+       an unrequested overlay must not move any existing preset -- but an editor that requires a person to
+       find a second control before their typed text appears is a defect in the editor, not a safety
+       feature.  Typing enables; clearing disables; an explicit untick wins and keeps the text. */
+    const erow = el("div", "ssRow");
+    const echkLab = el("label", "chk");
+    const echk = el("input");
+    echk.type = "checkbox";
+    const estate = el("span", "ssDim");
+    echkLab.append(echk, document.createTextNode(" 启用字幕机"));
+    erow.append(echkLab, estate);
+    host.append(erow);
+
     // --- the text, multi-line, because a subtitle is
     const lab = el("div", "palGroup", "字幕文本");
     const ta = el("textarea", "ssTextArea");
     ta.rows = 4;
-    ta.placeholder = "每行一条字幕，例如：\nREC 00:12:34\n婚礼录像";
+    ta.placeholder = "每行一条字幕。输入即启用。";
     ta.spellcheck = false;
     host.append(lab, ta);
 
@@ -632,18 +645,14 @@
 
     // --- the enable switch and a live readout
     const row = el("div", "ssRow");
-    const chkLab = el("label", "chk");
-    const chk = el("input");
-    chk.type = "checkbox";
-    chkLab.append(chk, document.createTextNode(" 启用"));
     const btn = el("button", "ghost", "应用到工程");
-    row.append(chkLab, btn);
+    row.append(btn);
     host.append(row);
 
     const readout = el("div", "ssReadout");
     host.append(readout);
 
-    osdEls = { ta, fsel, psel, chk, warn, readout, btn };
+    osdEls = { ta, fsel, psel, chk: echk, state: estate, warn, readout, btn };
 
     let timer = null;
     const refreshWarn = () => {
@@ -665,6 +674,10 @@
       const chars = Array.from(ta.value).filter((c) => c !== "\n").length;
       const cells = Array.from(ta.value).reduce(
         (a, c) => a + (c === "\n" ? 0 : (c.codePointAt(0) >= 0x3000 ? 2 : 1)), 0);
+      const on = echk.checked && chars > 0;
+      state.innerHTML = on ? "<b>正在绘制</b>"
+        : (chars > 0 ? "已关闭 —— 勾选「启用字幕机」后才会画" : "未输入文字");
+      state.style.color = on ? "#7fe0bd" : "#5c6a7e";
       readout.innerHTML = lines + " 行、共 <b>" + chars + "</b> 字（占 <b>" + cells
         + "</b> 个半格）。字格高度、行列偏移和字色在右侧参数面板里调。";
     };
@@ -672,14 +685,22 @@
     /* The push is debounced: a subtitle is typed, not dragged, and one request per keystroke would
        re-render the preview on every character.  700 ms is longer than the font-commit delay because
        typing is continuous and a mid-word render is wasted. */
+    /* `explicitOff` records that a person deliberately unticked the box.  Without it, typing after unticking
+       would silently re-enable, and the control would appear not to work. */
+    let explicitOff = false;
     const push = () => {
       const idx = OSD_FONTS.findIndex(([k]) => k === fsel.value);
-      pushProject({ overlay: {
-        enabled: chk.checked ? 1 : 0,
+      const hasText = ta.value.trim().length > 0;
+      if (!explicitOff && hasText !== echk.checked) {
+        // typing enables, clearing disables -- the text field is the real control
+        echk.checked = hasText;
+      }
+      pushProject({ params: { overlay: {
+        enabled: echk.checked ? 1 : 0,
         text: ta.value,
         font: idx < 0 ? 0 : idx,
         at: parseFloat(psel.value) || 0,
-      } });
+      } } });
       refreshWarn();
     };
     const schedule = () => {
@@ -690,7 +711,10 @@
     ta.oninput = schedule;
     fsel.onchange = () => { refreshWarn(); push(); };
     psel.onchange = push;
-    chk.onchange = push;
+    echk.onchange = () => {
+      explicitOff = !echk.checked && ta.value.trim().length > 0;
+      push();
+    };
     btn.onclick = push;
     return osdEls;
   }
@@ -718,8 +742,13 @@
     if (OSD_FONTS[idx]) e.fsel.value = OSD_FONTS[idx][0];
     e.psel.value = String(Math.round(Number(cur.at == null ? 0 : cur.at)));
     e.chk.checked = Number(cur.enabled == null ? 0 : cur.enabled) > 0.5;
+    if (e.ta.value.trim().length && !e.chk.checked) {
+      // the server says off while the field has text: that is a legitimate state (the user unticked), so
+      // the state line explains it rather than the editor overriding it
+    }
     // the engine's own report, if a frame has been rendered since
     const rep = (d && d.osd_report) || (S && S.osdReport) || null;
+    if (e.state) { e.state.textContent = ""; }
     if (rep && rep.missing && rep.missing.length) {
       e.warn.innerHTML = "引擎报告缺字：<b>" + rep.missing.join(" ") + "</b>"
         + "（字体 " + (rep.font || "?") + "）";

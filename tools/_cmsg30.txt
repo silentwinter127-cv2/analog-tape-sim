@@ -1,0 +1,48 @@
+fix the subtitle not appearing: the server was stale, and the editor required a hidden checkbox
+
+Two faults, and the user's report named the symptom rather than the cause, so both had to be established by
+measurement.
+
+**1. The server on 8941 was running old Python.** Static files are read from disk on every request, so the
+interface showed the new subtitle panel while the process behind it still had a schema with no `overlay` layer.
+`SCHEMA.resolve_all` keeps only the keys the schema declares, so the whole layer was dropped before it reached
+the stage -- reading the live `/api/project` returned `None` for every overlay parameter and an empty
+`osd_report`. The rendered panel looked correct and nothing could possibly be drawn.
+
+This is the first fault in this project caused by **process state rather than code**, and it is worth naming
+because the checks could not have caught it: they import the modules themselves, so they always test current
+code. The interface is served from disk and the engine from memory, and the two can disagree. The lesson is
+narrow and mechanical -- a change to Python requires restarting the process, and I restarted the wrong port.
+
+**2. The editor put the enable checkbox last, and off.** `overlay.enabled` defaults to 0 because that is correct
+for the *engine*: an unrequested overlay must not move any existing preset. But the editor then asked a person
+to type a subtitle, told them "1 line, 4 characters", and drew nothing until they found a checkbox below the
+fold. That is a defect in the editor, not a safety feature, and the fix keeps both properties:
+
+  * typing text turns the generator on and clearing it turns the generator off -- the text field is the real
+    control, as in every subtitle field a person has used;
+  * an explicit untick is remembered (`explicitOff`), so typing after unticking does not silently re-enable and
+    make the control look broken;
+  * the engine's parameter still defaults to off, so the safety property is unchanged -- only what the editor
+    sends is.
+
+The enable control also moved above the text, and the state is now stated: "正在绘制" or "已关闭 —— 勾选
+「启用字幕机」后才会画". Previously the readout was the only feedback and it reported the character count
+whether or not anything was drawn.
+
+**Two misreadings of my own, both corrected by measuring rather than by looking.**
+
+  * I read the Chinese glyphs in the exported frame as horizontally squashed. Measuring the glyph boxes shows
+    a full-width cell is exactly twice a half-width one in all three fonts (2.00), and the string advance
+    matches the cell width to 0.86-0.99 across every case -- the visible ink is narrower than the cell because
+    the glyph does not fill its box, which is normal. The squashing was a misjudgement of a low-contrast
+    image;
+  * the placeholder showed a complete example including a Chinese line, which reads as content that is already
+    present. It is now a short hint, and the Chinese example is gone because the default font cannot draw it.
+
+Verified end to end over HTTP against the live server: `POST` with the editor's payload gives
+`enabled=1.0, text='REC 00:12:34'`, the engine reports 12 glyphs drawn with no missing characters, the frame
+changes measurably, and with 柳宋 the Chinese line draws 21 glyphs with nothing missing. Exported frames show
+the text rendering correctly in all three fonts.
+
+119 checks pass, selftest ALL CHECKS PASSED.
