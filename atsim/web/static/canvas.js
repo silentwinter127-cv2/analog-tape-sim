@@ -306,12 +306,19 @@ function renderCanvas() {
     ng.onmousedown = (ev) => {
       if (ev.target.dataset.port) return;
       G.selected = n.name;
-      G.moving = { name: n.name,
-                   dx: ev.clientX / G.scale - x - G.pan[0] / G.scale,
-                   dy: ev.clientY / G.scale - y - G.pan[1] / G.scale };
-      // Every node is already in pixel coordinates by the time it reaches a drag, because
-      // `normalisePositions` converts them as the payload is adopted. The flag is asserted
-      // here only so that a node added by some future path cannot slip through unconverted.
+      /* The offset is expressed in world units, computed with the same transform the move
+         handler uses, so the two cannot drift apart.
+         This previously read `ev.clientX / G.scale - x - G.pan[0] / G.scale`, where only the
+         first term was divided by the scale: the missing grouping shifted every drag by
+         `(scale - 1) * pan / scale`, so the node never sat under the cursor and slid for as
+         long as the drag lasted. Measured, that was 313 px of tracking error, constant across
+         the whole path -- the tell-tale sign of a units mistake rather than a coordinate one.
+         `scale` is recorded too, so that scrolling mid-drag compensates instead of
+         compounding. */
+      const [wx, wy] = toWorld(ev);
+      G.moving = { name: n.name, dx: wx - x, dy: wy - y, scale: G.scale };
+      ev.stopPropagation();
+      // Positions are pixels everywhere; the flag is asserted for clarity, not conversion.
       n.px = true;
       renderCanvas();
       renderNodeInspector();
@@ -487,7 +494,14 @@ function initCanvas() {
     if (G.dragging) { G.dragging.x = x; G.dragging.y = y; renderCanvas(); }
     else if (G.moving) {
       const nd = G.state.describe.nodes.find((m) => m.name === G.moving.name);
-      if (nd) { nd.position = [x - G.moving.dx, y - G.moving.dy]; renderCanvas(); }
+      if (nd) {
+        /* The offset was measured at `G.moving.scale`.  If the wheel changed the scale during
+           the drag, rescale the offset rather than applying it at the new one -- otherwise the
+           grab point slides away from the cursor by the ratio of the two scales. */
+        const k = G.moving.scale ? G.scale / G.moving.scale : 1;
+        nd.position = [x - G.moving.dx * k, y - G.moving.dy * k];
+        renderCanvas();
+      }
     } else if (G.panning) {
       G.pan[0] += ev.movementX; G.pan[1] += ev.movementY; renderCanvas();
     }

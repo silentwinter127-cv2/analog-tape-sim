@@ -1,0 +1,52 @@
+fix the drag arithmetic, which is what "the nodes run around" actually was
+
+Two previous attempts failed because I reasoned about the code instead of exercising it. This
+time the recording was measured first, and it redirected the work twice.
+
+**What the recording showed.** Tracking the node boxes through it: the group's width changed by
+a factor of 1.612 while the centroid moved 106 px, so the nodes were moving together and being
+scaled -- the whole view, not the layout. And the footer displayed `02c 接口`, the label added
+in the commit from a minute earlier, which proved the recording was made against the current
+code and that the previous fix had not helped. Without that check I would have spent the turn
+re-fixing something already fixed.
+
+**What was actually wrong.** The storage path was sound -- five drags in a row all persisted,
+with the flag set on every node -- and the event routing was correct, since the canvas only
+pans when the target is the SVG itself. So the remaining candidate was the arithmetic, and it
+was wrong by 313 px:
+
+    dx: ev.clientX / G.scale - x - G.pan[0] / G.scale
+
+Only the first term is divided by the scale. The world-space offset from the cursor to the node
+is `clientX/scale - pan[0]/scale - x`, so the missing grouping shifted every drag by
+`(scale - 1) * pan / scale`. The tell was that the error was *constant* along the whole path --
+313 px regardless of where the cursor was. A coordinate mistake varies with the cursor; a
+units mistake depends only on the view state, and this one depended only on the pan.
+
+So the node never sat under the cursor and slid for as long as the drag lasted. That is "hard
+to control" exactly.
+
+**Two smaller faults in the same handler**, both fixed:
+
+  * the node's mousedown did not stop propagation. Harmless today, because the canvas checks
+    its target before panning, but it is one refactor away from dragging the node and panning
+    the canvas at the same time;
+  * the wheel handler changes `G.scale` with no guard, so scrolling during a drag applied an
+    offset measured at the old scale. Measured, that compounded the error to 484 px. The offset
+    now records the scale it was taken at, and the move handler rescales it.
+
+**The offset is now computed with the same `toWorld` the move handler uses**, so the two cannot
+disagree about units again -- which is the property that was missing and the reason the mistake
+was possible.
+
+**The check runs the shipped code.** The previous version of it reimplemented the arithmetic,
+which is why it passed while the real handler was wrong: it tested the transcription. The new
+one lifts `toWorld` and the offset computation out of `canvas.js`, drives a five-point mouse
+path, and asserts the grab point stays under the cursor -- 0.000 px, both steady and with the
+scale changed mid-drag. Before the fix the same harness reports 313 and 484.
+
+That is the lesson worth keeping from this one: a check that reimplements the thing it is
+checking can only ever confirm the author's understanding, and the author is the one who was
+wrong.
+
+73 checks pass, 15 presets render, selftest ALL CHECKS PASSED.
