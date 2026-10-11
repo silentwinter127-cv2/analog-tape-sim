@@ -1,0 +1,58 @@
+add a keyframe timeline and the machine's environment: the recording as a life cycle, not a constant
+
+The note's second, third and fourth dimensions, and the mechanism that makes them expressible. A real
+recording is a slice of a machine's history: cold at the start, warm twenty minutes later, carried
+indoors where the air was damp, power-cycled in the middle. None of that is one number, and a per-clip
+constant loses exactly the distinction the note draws between a fault and a life cycle.
+
+**Keyframes, as a general mechanism.** A track is a list of (time, value, curve) points for one
+parameter, evaluated at any frame. The curve belongs to the point that *starts* the segment, because it
+describes how the quantity gets from there to the next. Four curves, chosen from what the quantity does
+rather than for looks: `linear` for a constant rate, `exp` for an approach to equilibrium, `hold` for a
+discrete state, `smooth` only where no physical rate is known.
+
+Three properties follow from the shape, and all three matter here:
+
+  * **a function of the frame number, not of render order.** The renderer pumps frames from zero but
+    skips cached ones and can be asked for frame 300 first, so anything that accumulated state would
+    make the same project render differently depending on the request order. This project's premise is
+    that it does not;
+  * **editable and legible.** A session is a short list of named moments, which is clearer than any
+    single "age" slider and is the only way to express a change mid-clip at all;
+  * **the arithmetic is checkable without rendering.** A track's value at a time is a number.
+
+**The environment, driven by the timeline rather than by a formula.** It was first written as a closed
+form exponential of elapsed time, which was deterministic and cache-safe but could only express one
+warm-up from switch-on. Warmth and ageing are now values the timeline supplies, and the module turns them
+into parameter shifts. The physics stays in one place: a cold crystal pulls the colour decoder, a cold
+CCD is noisier, a cold belt and grease make the servo work harder; a sagging rail loses gain and headroom
+and moves the clamp reference. Writing each of those as its own track would let a user produce a cold
+machine with warm colour, which is not a machine.
+
+**Four interface faults, all found by running the code, and three of them the same mistake.**
+
+  * the per-frame call landed in `timeline()`, which takes no `index` -- so calling `timeline()` would
+    have raised NameError. `str.replace` matched the first of two identical `if self.chain is None`
+    blocks;
+  * the keyframe attributes were initialised inside `_build_chain`, because `self._prev_src = None` is
+    that function's last line rather than part of `__init__`. So `set_time_varying` set them and the next
+    rebuild cleared them: the mechanism did nothing while every line of it read correctly;
+  * a `Stage` copies its layers in `__init__` (`self.cfg = {layer: dict(ctx.layer(layer)) ...}`), so
+    updating `ctx.params` changes nothing the stage reads. Hence `refresh_params`/`on_params_changed`,
+    and a `CameraStage._read_params` that re-reads all twenty of its values rather than only the ones a
+    track is likely to drive -- a partial re-read fails only for the combinations nobody tried.
+
+The pattern in the first two is the one this project keeps meeting: an edit placed by matching text
+rather than by locating the function it belongs to, and then not verified by running it. Both were
+caught by tracing the call path rather than by reading the source, which had already been wrong twice
+in this session.
+
+**A third arithmetic mistake, of the same family as the previous two.** The exponential curve used a
+constant chosen so the curve *arrived* at the end of the segment -- but `u` is already the fraction
+across the segment, so a 420-second warm-up completed in about 90 and then held. Measured: 0.937 of the
+way after 95% of the nominal time. Corrected, it now reaches 0.632 at one time constant and 0.93 at 80%
+of the segment, leaving the remainder to the next segment, which is what happens physically. Like the
+taps that did not sum to one and the normalising total that disagreed with its taps, this produced
+plausible output from a wrong number.
+
+89 checks pass, 15 presets render, selftest ALL CHECKS PASSED.

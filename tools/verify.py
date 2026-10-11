@@ -2125,5 +2125,103 @@ def check_device_dna() -> None:
            "a spread for a non-existent parameter is documentation of nothing",
            "%d spreads declared; unknown: %s" % (len(UNIT_SPREADS), unknown or "none"),
            not unknown)
+def check_keyframes() -> None:
+    """
+    A timeline must be a function of the frame number, and must drive the picture without being asked.
+
+    Three properties, each of which failed at least once while this was being built:
+
+      * the curves do what their names say.  `exp` must approach equilibrium *across the segment the
+        user drew* -- an earlier constant made a 420-second warm-up complete in 90 and then hold, which
+        is plausible-looking output from a wrong number.  `hold` must not change until the next moment,
+        and a track evaluated before its first point must hold rather than extrapolate backwards.
+      * a project with no tracks and no environment must render exactly as before.  This is the property
+        that keeps every existing preset and capture valid.
+      * a track must actually move the rendered frames.  The mechanism can be present, reachable, and
+        annulled -- which has happened five times in this project -- so it is measured on the output
+        rather than inferred from the code.
+    """
+    import numpy as np
+
+    from atsim.core.keyframes import Keyframe, KeyframeSet, Track
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.io.source import SyntheticSource
+    from atsim.render.renderer import Renderer
+
+    # --- curves
+    tr = Track(layer="camera", key="exposure", absolute=True,
+               points=[Keyframe(0.0, 0.0, "exp"), Keyframe(10.0, 1.0, "hold")])
+    at_3 = tr.value_at(3.0)          # one time constant of a 0.30-fraction constant
+    at_5 = tr.value_at(5.0)
+    record("the exp curve approaches equilibrium across the drawn segment",
+           "a warm-up lasting one segment must not finish in a fifth of it",
+           "0.0 -> %.3f at t=3 (one time constant), %.3f at t=5, 1.0 at t=10"
+           % (at_3, at_5),
+           0.55 < at_3 < 0.70 and at_5 < 0.90,
+           "an earlier constant reached 0.99 by t=4 on a 10-second segment")
+
+    hold = Track(layer="x", key="y", absolute=True,
+                 points=[Keyframe(0.0, 1.0, "hold"), Keyframe(10.0, 3.0, "linear")])
+    record("hold does not change until the next moment",
+           "a discrete state stays where it is",
+           "t=0 %.2f, t=9.99 %.2f, t=10 %.2f"
+           % (hold.value_at(0), hold.value_at(9.99), hold.value_at(10.0)),
+           abs(hold.value_at(9.99) - 1.0) < 1e-9 and abs(hold.value_at(10.0) - 3.0) < 1e-9)
+
+    later = Track(layer="x", key="y", absolute=True,
+                  points=[Keyframe(10.0, 5.0, "linear"), Keyframe(20.0, 9.0, "hold")])
+    record("a track holds before its first point rather than extrapolating",
+           "the frames before a session's first moment are the machine as it already was",
+           "t=0 gives %.2f, not a value projected backwards from t=10" % later.value_at(0.0),
+           abs(later.value_at(0.0) - 5.0) < 1e-9)
+
+    # --- inert and effective, measured on the render
+    W, H, N = 200, 140, 8
+    base = SCHEMA.resolve_all(FACTORY_PRESETS["family_archive_1992"]["layers"])
+
+    def run(kf=None, env=None):
+        s = SyntheticSource(width=W, height=H, frames=N)
+        r = Renderer(s, W, H, s.fps, base, seed=5)
+        r.set_time_varying(kf, env)
+        return [np.clip(r.render_frame(i), 0, 1) for i in range(N)]
+
+    plain = run()
+    again = run()
+    same = all(np.array_equal(a, b) for a, b in zip(plain, again))
+    record("a project with no timeline renders identically",
+           "an unrequested dimension must not move any existing preset",
+           "two runs agree frame for frame: %s" % same, same)
+
+    ramp = Track(layer="camera", key="exposure", absolute=True,
+                 points=[Keyframe(0.0, -1.5, "linear"),
+                         Keyframe(N / 25.0, 1.5, "hold")])
+    moved = run(kf=KeyframeSet(tracks=[ramp]))
+    diff = max(float(np.abs(moved[i].mean() - plain[i].mean())) for i in range(N))
+    record("a keyframe track reaches the rendered picture",
+           "the mechanism can be present and annulled, so measure the output",
+           "largest mean luminance difference %.4f" % diff, diff > 0.02,
+           "a stage holds the layer it copied in __init__, so a push that does not reach it "
+           "changes nothing")
+
+    from atsim.core.environment import Environment
+    warm = run(env=Environment(warmth=1.0))
+    cold = run(env=Environment(warmth=0.0))
+    ediff = max(float(np.abs(warm[i].mean() - cold[i].mean())) for i in range(N))
+    record("a cold machine renders differently from a warm one",
+           "the environment is a state, not a slider that does nothing",
+           "warmth 1.0 against 0.0: largest mean difference %.4f" % ediff, ediff > 0.005)
+
+    # --- and the renderer must not reset the timeline when it rebuilds the chain
+    s = SyntheticSource(width=W, height=H, frames=N)
+    r = Renderer(s, W, H, s.fps, base, seed=5)
+    r.set_time_varying(KeyframeSet(tracks=[ramp]), None)
+    kept = r._keyframes is not None
+    r._build_chain()
+    record("the renderer keeps its timeline across a chain rebuild",
+           "the chain is rebuilt whenever parameters change, and took the timeline with it",
+           "timeline survives _build_chain: %s" % (r._keyframes is not None and kept),
+           kept and r._keyframes is not None,
+           "the attributes were first initialised inside _build_chain, so every rebuild "
+           "silently cleared them")
 if __name__ == "__main__":
     raise SystemExit(main())

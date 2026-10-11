@@ -122,6 +122,13 @@ class Renderer:
         self.dirty_from = STAGE_ORDER[0]
         self.dirty_frame = 0
         self._cache: dict[str, dict[int, np.ndarray]] = {s: {} for s in STAGE_ORDER}
+        # per-frame parameters: keyframe tracks and the machine's condition.  These
+        # belong to the renderer, not to the chain -- the chain is rebuilt whenever the
+        # parameters change, and anything initialised there is cleared with it.
+        self._keyframes = None
+        self._environment = None
+        self._range_cache = None
+        self._layer_cache = None
         self._prev_src: np.ndarray | None = None
         self._pumps = 0
         self.last_render_ms = 0.0
@@ -275,10 +282,68 @@ class Renderer:
             out = np.repeat(out[:, :, None], frame.shape[2], axis=2)
         return out
 
+    def set_time_varying(self, keyframes=None, environment=None) -> None:
+        """
+        Parameters that change during the clip: keyframe tracks, and the machine's condition.
+
+        Kept separate from `self.params`, which is the static set the dirty bookkeeping hashes. The
+        per-frame values are computed in `_apply_frame_params` and pushed to the stages; `self.params`
+        keeps the base set, so the hash comparison still means what it says.
+        """
+        self._keyframes = keyframes
+        self._environment = environment
+
+    def _apply_frame_params(self, index: int) -> None:
+        """
+        Push this frame's parameters to the stages.
+
+        Order matters and mirrors the physics: the project's own values, then this unit's deviations,
+        then the environment the machine is in, then any keyframe driving a parameter directly. A
+        keyframe is last because it is an explicit instruction from the user, and a user who has said
+        "the head is at 0.6 now" should not have it moved afterwards by the temperature.
+
+        Stages are told rather than assumed: `refresh_params` re-copies the layers and calls the
+        stage's own re-read hook, because a stage holds the copy it made when it was built.
+        """
+        if self._keyframes is None and self._environment is None:
+            return
+        params = {layer: dict(vals) for layer, vals in self.params.items()}
+        t = index / max(1e-6, self.fps)
+        if self._environment is not None:
+            from ..core.environment import apply_environment
+            params, _rec = apply_environment(params, self._environment, self._ranges(),
+                                             self._layer_of)
+        if self._keyframes is not None:
+            params, _rec = self._keyframes.apply(params, t, self._ranges())
+        ctx = self.chain.ctx
+        ctx.params = params
+        for stage in self.chain.stages:
+            stage.refresh_params()
+
+    def _ranges(self) -> dict[str, tuple[float, float]]:
+        if getattr(self, "_range_cache", None) is None:
+            cache: dict[str, tuple[float, float]] = {}
+            for layer in SCHEMA.layer_names():
+                for key, spec in SCHEMA.layer(layer).specs.items():
+                    cache[key] = (float(spec.minimum), float(spec.maximum))
+            self._range_cache = cache
+        return self._range_cache
+
+    def _layer_of(self, key: str) -> str | None:
+        if getattr(self, "_layer_cache", None) is None:
+            cache: dict[str, str] = {}
+            for layer in SCHEMA.layer_names():
+                for k in SCHEMA.layer(layer).keys():
+                    cache.setdefault(k, layer)
+            self._layer_cache = cache
+        return self._layer_cache.get(key)
+
     def _render_index(self, index: int, src_frame: np.ndarray | None) -> np.ndarray:
         if self.chain is None:
             self._build_chain()
         assert self.chain is not None
+
+        self._apply_frame_params(index)
 
         # find the deepest cached upstream frame we can restart from
         start = 0

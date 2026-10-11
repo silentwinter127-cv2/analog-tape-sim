@@ -25,6 +25,18 @@ class CameraStage(Stage):
 
     def __init__(self, ctx: RenderContext):
         super().__init__(ctx)
+        self._read_params()
+        # state that must survive a parameter change: the auto-control loops take time to
+        # settle, so re-creating them on every edit would defeat the time constant they exist
+        # to express
+        self._prev: np.ndarray | None = None
+        self._fpn: np.ndarray | None = None
+        self._noise: ValueNoise3D | None = None
+        self._ae_state: float | None = None
+        self._awb_state: np.ndarray | None = None
+        self._af_state: float | None = None
+
+    def _read_params(self) -> None:
         cfg = self.cfg_of("camera")
         self.sensor_noise = float(cfg.get("sensor_noise", 0.0))
         self.grain = float(cfg.get("noise_grain", 1.4))
@@ -47,12 +59,13 @@ class CameraStage(Stage):
         self.sensor_type = str(cfg.get("sensor_type", 0.0))
         self.is_3ccd = self.sensor_type in ("1", "1.0", "3ccd", "3CCD")
 
-        self._prev: np.ndarray | None = None
-        self._fpn: np.ndarray | None = None
-        self._noise: ValueNoise3D | None = None
-        self._noise_shape: tuple[int, int] | None = None
 
     # ------------------------------------------------------------------
+
+    def on_params_changed(self) -> None:
+        """Re-read every parameter this stage cached, so a per-frame change reaches it."""
+        self._read_params()
+
     def _noise_field(self, shape: tuple[int, int]) -> ValueNoise3D:
         """
         The sensor noise field, built for the frame shape actually arriving.

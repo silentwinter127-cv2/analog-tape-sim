@@ -111,6 +111,29 @@ class Stage:
         self.ctx = ctx
         self.cfg = {layer: dict(ctx.layer(layer)) for layer in self.layers}
 
+    def refresh_params(self) -> None:
+        """
+        Adopt the context's current parameters, for a stage whose parameters vary per frame.
+
+        A stage copies its layers in `__init__`, so it holds whatever the parameters were when it was
+        built. Updating the context alone therefore has no effect on it -- which is the kind of
+        no-op that looks correct in the source. This re-copies, then calls `on_params_changed`, which
+        a stage overrides to re-read the values it cached.
+        """
+        self.cfg = {layer: dict(self.ctx.layer(layer)) for layer in self.layers}
+        self.on_params_changed()
+
+    def on_params_changed(self) -> None:
+        """
+        Re-read this stage's cached parameters. A no-op by default.
+
+        Override it in a stage whose parameters can vary per frame, and re-read *every* value the
+        stage stored in `__init__` -- a partial re-read leaves the stage in a state that depends on
+        which parameters were driven, which is harder to reason about than a stage that does not
+        respond at all.
+        """
+        return None
+
     def cfg_of(self, layer: str) -> dict[str, float]:
         return self.cfg.get(layer, {})
 
