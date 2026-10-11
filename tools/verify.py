@@ -960,6 +960,108 @@ def check_fingerprint_ordering() -> None:
            "minidv_clean %.3f vs family_archive_1992 %.3f" % (clean, analogue),
            clean < analogue)
 
+
+def check_row_timebase_shape() -> None:
+    """
+    The row time-base displacement must vary *smoothly*, not just by the right amount.
+
+    Calibrating the amplitude against a worn VHS capture matched the spread easily and
+    said nothing about the shape -- and the shape was wrong. Measured on the real
+    material, the ratio of the median adjacent-row step to the overall spread is 0.108:
+    the displacement varies slowly enough that a vertical edge bends rather than tears.
+    The model gave 0.311, three times too ragged, while its amplitude matched
+    perfectly. A check on the amplitude alone would have passed it.
+
+    The smoothing width cannot be reasoned to; it was swept against the measured ratio
+    and 26 passes of a 5-tap kernel give 0.097.
+    """
+    from atsim.core.pipeline import RenderContext
+    from atsim.core.standards import NTSC_525_60 as std
+    from atsim.stages.tape import TapeStage
+
+    H, W = 240, 360
+    params = _neutral({"tape": {"row_timebase": 0.4}})
+    ctx = RenderContext(std=std, params=params, seed=20240101, frame_count=40,
+                        fps=25.0, width=W, height=H)
+    st = TapeStage(ctx)
+    st.prepare()
+    f = st._row_timebase_field(H, 12)
+    ratio = float(np.median(np.abs(np.diff(f)))) / max(1e-9, float(f.std()))
+    record("row time-base varies smoothly", "edges bend rather than tear",
+           "adjacent-row step / spread = %.3f (real material 0.108)" % ratio,
+           0.05 < ratio < 0.18,
+           "amplitude can match while the shape is wrong; this is the shape")
+
+
+def check_tbc_reduces_error() -> None:
+    """
+    Engaging the corrector must reduce the per-row displacement spread.
+
+    This was inert. The parameter was read, but the correction blended towards the
+    frame mean and the mean was then subtracted again, so the two cancelled exactly:
+    switching it on changed the spread by 0.79x, i.e. not at all. Same shape of defect
+    as the deck's blue-screen substitution being rebuilt from the tape signal it had
+    rejected -- present, reachable, annulled by a later step.
+
+    A real deck's corrector reduces the spread about 8.8x, measured on a capture where
+    it was toggled on and off over the same tape. The model does not reach that and the
+    check does not pretend it does: it asserts only the direction, which is what the
+    fix established.
+    """
+    from atsim.core.pipeline import FrameBuffer, RenderContext
+    from atsim.core.signal import composite_encode
+    from atsim.core.standards import NTSC_525_60 as std
+    from atsim.stages.player import PlayerStage
+    from atsim.stages.tape import TapeStage
+
+    H, W = 240, 360
+    x = np.arange(W, dtype=np.float32)
+    y_plane = np.tile((0.30 + 0.45 * np.maximum.reduce(
+        [(np.abs(x - c) < 1.5).astype(np.float32) for c in (40, 95, 150, 205)]))[None, :],
+        (H, 1))
+    yy = np.mgrid[0:H, 0:W][0].astype(np.float32)
+    comp = composite_encode(y_plane, 0.16 * np.cos(yy / 13.0),
+                            0.16 * np.sin(yy / 13.0), std, chroma_gain=0.63)
+
+    def spread(tbc: bool) -> float:
+        params = _neutral({"tape": {"row_timebase": 0.25, "line_jitter": 0.0},
+                           "player": {"tbc_enabled": 1.0 if tbc else 0.0,
+                                      "tbc_strength": 0.95, "tbc_residual": 0.0,
+                                      "output_gain": 0.0, "output_bias": 0.0,
+                                      "head_wear": 0.0, "frequency_response": 0.0}})
+        ctx = RenderContext(std=std, params=params, seed=20240101, frame_count=40,
+                            fps=25.0, width=W, height=H)
+        st = TapeStage(ctx)
+        st.prepare()
+        buf = FrameBuffer(np.zeros((H, W, 3), np.float32), comp, 12, 0.48, std,
+                          {"field": 0})
+        buf = st.apply(buf)
+        pl = PlayerStage(ctx)
+        pl.prepare()
+        out = pl.apply(buf)
+        sig = out.meta.get("signal")
+        plane = (sig.y if sig is not None else
+                 (out.composite if out.composite is not None else out.rgb[..., 0]))
+        plane = np.asarray(plane, np.float32)
+        from scipy.ndimage import gaussian_filter1d
+        g = gaussian_filter1d(plane, 0.7, axis=1)
+        ref = gaussian_filter1d(g, 4.0, axis=0)
+        lags = np.arange(-10, 11)
+        shifts = []
+        for r in range(H):
+            row = g[r] - g[r].mean()
+            tgt = ref[r] - ref[r].mean()
+            if row.std() < 0.01:
+                continue
+            sc = [float(np.dot(row, np.roll(tgt, int(s)))) for s in lags]
+            shifts.append(float(lags[int(np.argmax(sc))]))
+        return float(np.std(shifts)) if len(shifts) > 16 else float("nan")
+
+    off, on = spread(False), spread(True)
+    record("corrector reduces displacement", "engaging it must not make things worse",
+           "spread %.3f px off -> %.3f px on" % (off, on),
+           np.isfinite(off) and np.isfinite(on) and on <= off * 0.98)
+
 # ---------------------------------------------------------------------------
 def contact_sheet() -> str:
     """One image showing every headline effect, for eyeballing."""
@@ -1021,6 +1123,8 @@ def main(argv: list[str] | None = None) -> int:
         check_row_timebase()
         check_stripe_moire()
         check_fingerprint_ordering()
+        check_row_timebase_shape()
+        check_tbc_reduces_error()
         check_broadcast_noise()
         check_head_switch()
 

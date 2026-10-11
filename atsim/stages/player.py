@@ -114,16 +114,41 @@ class PlayerStage(Stage):
                  else np.zeros(n, dtype=np.float64)) + self.transport_jitter * own * 1.6
 
         if self.tbc_enabled:
-            # a TBC removes the *fast* component: it can pull each line back to
-            # the house sync, but it cannot undo slow drift (tape stretch) and it
-            # leaves its own residual jitter.
-            mean = float(np.mean(total))
-            total = (1.0 - self.tbc_strength) * total + self.tbc_strength * mean
+            # What a corrector removes, in order of how much it matters:
+            #
+            #  * the *shared offset* of the field.  It dominates the uncorrected
+            #    error -- measured on a real capture, the per-row spread falls about
+            #    8.8x when the corrector is engaged -- and a corrector removes it
+            #    because its whole job is to relock each line to the house reference;
+            #  * the *fast* per-line component: lines are pulled towards each other,
+            #    estimated by a short local average;
+            #  * it leaves a slow drift it cannot undo (tape stretch, capstan wander)
+            #    and its own residual jitter, both of which are parameters.
+            #
+            # The previous version blended towards `mean(total)` and then subtracted
+            # `mean(total)` again at the end, so the correction cancelled itself
+            # exactly: switching it on changed the per-row spread by 0.79x, i.e. not
+            # at all.  The parameter was read; the arithmetic made it inert. Same shape
+            # of defect as the deck's blue screen being rebuilt from the tape signal it
+            # had just rejected -- a feature present, reachable, and annulled by a
+            # later step.
+            gain = float(np.clip(self.tbc_strength, 0.0, 1.0))
+            w = max(3, int(round(height / 10.0)))
+            k = np.ones(w, np.float64) / w
+            smoothed = np.convolve(total, k, mode="same")
+            fast = total - smoothed                      # the part lines get pulled out
+            shared = float(np.mean(total))
+            # remove the shared offset, and most of the fast component
+            total = smoothed - gain * shared
+            total = total + (1.0 - gain) * fast
             total = total + self._residual.advance(n) * self.tbc_residual * 2.2
 
-        # only the *relative* displacement matters visually, so subtract the frame
-        # mean to keep the picture centred in the raster
-        disp = (total - float(np.mean(total))).astype(np.float32)
+        # Only the *relative* displacement matters visually, so a shared offset is
+        # taken out to keep the picture inside the raster.  This is a constant for the
+        # frame: it does not undo the correction above, which acts on the differences
+        # between rows.
+        disp = total - float(np.median(total))
+
         return disp + self.line_delay
 
     def _separate(self, comp: np.ndarray, buf: FrameBuffer
