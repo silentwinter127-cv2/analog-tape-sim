@@ -1794,12 +1794,17 @@ def check_drag_tracking() -> None:
     js = open(os.path.join(os.path.dirname(HERE), "atsim", "web", "static", "canvas.js"),
               encoding="utf-8").read()
 
-    i = js.find("const toWorld = (ev) => {")
+    i = js.find("function toWorldFor(svgEl, ev) {")
     if i < 0:
         record("a dragged node follows the cursor", "the node must stay under the pointer",
                "toWorld not found in canvas.js", False)
         return
-    to_world = js[i:js.find("};", i) + 2]
+    tw_close = js.find("\n}", i)
+    if tw_close < 0:
+        record("a dragged node follows the cursor", "the node must stay under the pointer",
+               "could not find the end of the transform", False)
+        return
+    to_world = js[i:tw_close + 2]
 
     # Search from the node's own handler, not from the top of the file: the expression
     # `toWorld(ev)` also appears in the drag diagnostic, which is defined earlier, so a
@@ -1809,7 +1814,7 @@ def check_drag_tracking() -> None:
         record("a dragged node follows the cursor", "the node must stay under the pointer",
                "the node's mousedown handler was not found", False)
         return
-    k = js.find("const [wx, wy] = toWorld(ev);", handler)
+    k = js.find("const [wx, wy] = toWorldFor(svg, ev);", handler)
     if k < 0:
         record("a dragged node follows the cursor", "the node must stay under the pointer",
                "the offset is not computed from toWorld -- the units bug may be back", False)
@@ -1831,6 +1836,7 @@ def check_drag_tracking() -> None:
         "const ATSIM_CANVAS_BUILD = 1;\n"
         "let G = { scale: 0.8, pan: [40, 40] };\n"
         "const svg = { getBoundingClientRect: () => ({ left: 300, top: 90 }) };\n"
+        "const svgEl = svg;\n"
         + to_world + "\n"
         "const n = { name: 'camera', position: [300.0, 200.0] };\n"
         "function px(x) { return [x.position[0], x.position[1]]; }\n"
@@ -1841,7 +1847,7 @@ def check_drag_tracking() -> None:
         + "\n".join("  " + l for l in offset.split("\n")) + "\n"
         "  return G.moving;\n}\n"
         "function applyMove(moving, ev) {\n"
-        "  const [x, y] = toWorld(ev);\n"
+        "  const [x, y] = toWorldFor(svg, ev);\n"
         "  const kk = moving.scale ? G.scale / moving.scale : 1;\n"
         "  n.position = [x - moving.dx * kk, y - moving.dy * kk];\n}\n"
         "function run(mutate) {\n"
@@ -1876,5 +1882,65 @@ def check_drag_tracking() -> None:
            r["steady"] < 0.01 and r["scaled"] < 0.01,
            "the offset must come from the same transform the move handler uses, or the two "
            "disagree by (scale-1)*pan/scale")
+def check_canvas_scopes() -> None:
+    """
+    The world transform must be reachable from every handler that uses it.
+
+    This exists because the drag fix referenced `toWorld`, a `const` local to `initCanvas`, from
+    the node's mousedown handler, which is created in `renderCanvas`. Every mousedown threw
+    `ReferenceError: toWorld is not defined` -- reported from the user's console -- and dragging
+    stopped working entirely, which is worse than the sliding it replaced.
+
+    The arithmetic check could not see it: it extracts the handler's code and runs it with
+    `toWorld` supplied as a global, and supplying the identifier is exactly what the real page
+    fails to do. A check that builds its own environment tests the environment it built.
+
+    Five attempts were made at scanning handler bodies for unreachable names, and four of the
+    five failures were the check rather than the code -- short names recurring, English words out
+    of comment prose, object-literal shorthand, callback parameters. A regex approximation of a
+    scope chain is not worth tuning. The failure has a sufficient condition that needs no scope
+    model at all, and these are its three assertions:
+
+      * a module-level `function toWorldFor` exists;
+      * no `const toWorld` is declared inside a function, i.e. in a closure;
+      * no handler mentions a bare `toWorld`.
+
+    The original bug violates the first and the third, so this would have caught it on the first
+    try.
+    """
+    import re as _re
+
+    js = open(os.path.join(os.path.dirname(HERE), "atsim", "web", "static", "canvas.js"),
+              encoding="utf-8").read()
+
+    module_level = _re.search(r"^function toWorldFor\(", js, _re.M) is not None
+    closure_copy = _re.search(r"^\s+const toWorld\s*=", js, _re.M) is not None
+
+    HANDLERS = ("ng.onmousedown", "svg.onmousemove", "svg.onmouseup",
+                "svg.onmousedown", "svg.onwheel")
+    bad_uses = []
+    js_lines = js.split("\n")
+    for i, line in enumerate(js_lines):
+        for h in HANDLERS:
+            if h not in line or "=" not in line:
+                continue
+            indent = len(line) - len(line.lstrip())
+            for j in range(i + 1, len(js_lines)):
+                cur = js_lines[j]
+                if cur.strip() and (len(cur) - len(cur.lstrip())) <= indent \
+                        and cur.strip().startswith("}"):
+                    break
+                # a bare `toWorld(` that is not `toWorldFor(` is the bug
+                if _re.search(r"(?<![\w$])toWorld\s*\(", cur) and "toWorldFor" not in cur:
+                    bad_uses.append("%s line %d" % (h, j + 1))
+
+    record("the world transform is reachable from every handler",
+           "a handler using a name from another function's closure throws on every click",
+           "module-level toWorldFor: %s; closure-local duplicate: %s; handlers calling a bare "
+           "toWorld: %s" % (module_level, closure_copy, bad_uses or "none"),
+           module_level and not closure_copy and not bad_uses,
+           "the arithmetic check supplies the identifier as a global, so it could never fail "
+           "for this reason -- which is how the bug reached the user")
+
 if __name__ == "__main__":
     raise SystemExit(main())

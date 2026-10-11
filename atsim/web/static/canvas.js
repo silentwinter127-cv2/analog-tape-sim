@@ -57,19 +57,31 @@ try {
   console.info("[atsim] " + ATSIM_CANVAS_BUILD);
 } catch (e) { /* a console that is closed is not an error */ }
 
+/* The world transform, at module level.
+ *
+ * It was previously a local const inside `initCanvas`, and the node's mousedown handler -- which
+ * is created in `renderCanvas` -- used it. Different top-level function, so the identifier did
+ * not exist there and every mousedown threw, leaving the node unable to move at all. A
+ * transform shared by three handlers belongs somewhere all three can see it.
+ *
+ * `svgEl` is passed explicitly so the function has no hidden state beyond what the caller owns.
+ */
+function toWorldFor(svgEl, ev) {
+  const r = svgEl.getBoundingClientRect();
+  return [(ev.clientX - r.left - G.pan[0]) / G.scale,
+          (ev.clientY - r.top - G.pan[1]) / G.scale];
+}
+
 /* Distance, in page pixels, between the cursor and the point of the node that was grabbed. */
-function dragTrackingError(moving, ev) {
+function dragTrackingError(svgEl, moving, ev) {
   try {
-    const [wx, wy] = toWorld(ev);
+    const [wx, wy] = toWorldFor(svgEl, ev);
     const x = wx - moving.dx * (moving.scale ? G.scale / moving.scale : 1);
     const y = wy - moving.dy * (moving.scale ? G.scale / moving.scale : 1);
     /* the grabbed point in world units, back to page coordinates */
-    const gx = (moving.gx != null ? moving.gx : x) * G.scale + G.pan[0]
-             + (ev.target && ev.target.ownerSVGElement
-                ? ev.target.ownerSVGElement.getBoundingClientRect().left : 0);
-    const gy = (moving.gy != null ? moving.gy : y) * G.scale + G.pan[1]
-             + (ev.target && ev.target.ownerSVGElement
-                ? ev.target.ownerSVGElement.getBoundingClientRect().top : 0);
+    const r = svgEl.getBoundingClientRect();
+    const gx = (moving.gx != null ? moving.gx : x) * G.scale + G.pan[0] + r.left;
+    const gy = (moving.gy != null ? moving.gy : y) * G.scale + G.pan[1] + r.top;
     return Math.hypot(gx - ev.clientX, gy - ev.clientY);
   } catch (e) {
     return NaN;
@@ -347,7 +359,7 @@ function renderCanvas() {
          the whole path -- the tell-tale sign of a units mistake rather than a coordinate one.
          `scale` is recorded too, so that scrolling mid-drag compensates instead of
          compounding. */
-      const [wx, wy] = toWorld(ev);
+      const [wx, wy] = toWorldFor(svg, ev);
       G.moving = { name: n.name, dx: wx - x, dy: wy - y, scale: G.scale,
                    gx: x, gy: y };
       ev.stopPropagation();
@@ -517,13 +529,8 @@ function renderIssues() {
 function initCanvas() {
   const svg = document.getElementById("canvas");
   if (!svg) return;
-  const toWorld = (ev) => {
-    const r = svg.getBoundingClientRect();
-    return [(ev.clientX - r.left - G.pan[0]) / G.scale,
-            (ev.clientY - r.top - G.pan[1]) / G.scale];
-  };
   svg.onmousemove = (ev) => {
-    const [x, y] = toWorld(ev);
+    const [x, y] = toWorldFor(svg, ev);
     if (G.dragging) { G.dragging.x = x; G.dragging.y = y; renderCanvas(); }
     else if (G.moving) {
       const nd = G.state.describe.nodes.find((m) => m.name === G.moving.name);
@@ -537,7 +544,7 @@ function initCanvas() {
         /* Report the tracking error.  A drag that follows the pointer prints nothing; one
            that does not prints how far off it is, which is what says whether the offset units
            or the transform is at fault. */
-        const err = dragTrackingError(G.moving, ev);
+        const err = dragTrackingError(svg, G.moving, ev);
         if (isFinite(err) && err > 1.0) {
           console.warn("[atsim] drag tracking error " + err.toFixed(1)
             + " px (cursor " + ev.clientX.toFixed(0) + "," + ev.clientY.toFixed(0)
