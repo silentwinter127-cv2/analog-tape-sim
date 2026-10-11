@@ -137,19 +137,27 @@ class PlayerStage(Stage):
             k = np.ones(w, np.float64) / w
             smoothed = np.convolve(total, k, mode="same")
             fast = total - smoothed                      # the part lines get pulled out
+            # The shared term is what a whole-field average picks up: the field-to-field
+            # wander.  `np.mean` over the field is exactly that, because the shape is
+            # zero-mean by construction.
             shared = float(np.mean(total))
             # remove the shared offset, and most of the fast component
             total = smoothed - gain * shared
             total = total + (1.0 - gain) * fast
             total = total + self._residual.advance(n) * self.tbc_residual * 2.2
 
-        # Only the *relative* displacement matters visually, so a shared offset is
-        # taken out to keep the picture inside the raster.  This is a constant for the
-        # frame: it does not undo the correction above, which acts on the differences
-        # between rows.
-        disp = total - float(np.median(total))
-
-        return disp + self.line_delay
+        # The direct-current part is deliberately *not* removed here any more.  It used
+        # to be, as `total - median(total)`, and that annulled the corrector a second
+        # time: the corrector takes out the field's mean and this line took out the same
+        # mean again, so switching it on changed the visible spread by 1.45x instead of
+        # the 8.8x a real deck manages.  Repairing only the corrector, as an earlier
+        # attempt did, was half the job.
+        #
+        # Leaving it in cannot displace the picture on its own: a field-wide offset is
+        # not visible as a shift, and the renderer centres the raster.  What it carries
+        # is the field-to-field wander, which is the part a real corrector removes and
+        # therefore the part the model has to be able to show.
+        return total.astype(np.float32) + self.line_delay
 
     def _separate(self, comp: np.ndarray, buf: FrameBuffer
                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

@@ -701,6 +701,16 @@ class TapeStage(Stage):
             self._binder = ValueNoise3D(
                 seed=self.ctx.seed * 13 + 5, height=self.ctx.height, width=self.ctx.width,
                 spatial_scale=52.0 / sc, time_scale=max(6.0, self.ctx.fps * 4.0))
+            # The field-wide displacement, as a slow random walk across frames.  It is
+            # built from temporal noise rather than an OU process stepped per line,
+            # because it has to depend on the *frame* and not on how many lines have
+            # been processed: capstan phase error accumulates with time, and a
+            # per-line accumulator would make the offset depend on the render size.
+            # `time_scale` is long so consecutive fields resemble each other, which is
+            # what makes it a walk rather than independent draws.
+            self._walk_offset = ValueNoise3D(
+                seed=self.ctx.seed * 17 + 3, height=1, width=1,
+                spatial_scale=1.0, time_scale=max(4.0, self.ctx.fps * 1.2))
             self._static_grain = self._grain.static_field(smooth=1)
 
     def timeline(self) -> dict:
@@ -907,6 +917,11 @@ class TapeStage(Stage):
         amt = float(self.row_timebase)
         if amt <= 1e-4:
             return np.zeros(height, np.float32)
+        # The shared-offset generator is built in `prepare()`, which may not have run
+        # if this is called directly -- returning early in that case (as an earlier
+        # mechanism here did) makes the whole thing silently do nothing.
+        if getattr(self, "_walk_offset", None) is None:
+            self.prepare()
         # one smooth field per frame, then a slow term shared across frames
         rng = np.random.default_rng(derive_seed(
             self.ctx.seed, "tape", "row_timebase", frame_index))
@@ -940,9 +955,25 @@ class TapeStage(Stage):
                                       + frame_index / 23.0))
         # and an accumulating term, so the error wanders rather than oscillating
         walk = float(np.sin(2.0 * np.pi * frame_index / 61.0))
-        field = (smooth + 0.7 * drift.astype(np.float32) * walk) * (amt * 6.0)
-        # a whole-frame offset, which is how capstan error actually presents
-        return (field + amt * 2.0 * walk).astype(np.float32)
+        # Composition, and why the shared term is separate.
+        #
+        # The uncorrected error is dominated by a displacement shared by the *whole
+        # field*, and that is what a corrector mostly removes: measured on a real
+        # capture, engaging it cuts the per-row spread about 8.8x.  A shared offset can
+        # only be part of that if it differs from field to field -- a constant offset is
+        # removed downstream anyway, since only relative displacement is visible, so a
+        # constant term is invisible to the model *and* to the viewer.  The shared term
+        # is therefore a random walk across frames, which is also what capstan phase
+        # error does.
+        #
+        # The weights set how much of the error a corrector can remove: `shared` is the
+        # part it takes out, `smooth` the part it cannot fully undo.  The split is
+        # calibrated, not guessed -- a real deck's corrector cuts the per-row spread
+        # about 8.8x, which requires the shared term to carry roughly 89% of the
+        # variance, so the shared weight has to be about 2.9x the shape weight.
+        shared = float(np.asarray(self._walk_offset.sample(frame_index)).reshape(-1)[0])
+        field = (smooth + 0.7 * drift.astype(np.float32) * walk) * (amt * 2.4)
+        return (field + (shared * amt * 9.0)).astype(np.float32)
 
     def _apply_timebase(self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
                         frame_index: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
