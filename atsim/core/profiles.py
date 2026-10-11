@@ -328,7 +328,7 @@ def build_schema() -> ParamSchema:
 
     g = "整行色度错误"
     tpe.define("row_chroma_error", "整行错色发生率", 0.0, 0.0, 1.0, unit="0-1", group=g,
-               phys_max=0.5,
+               phys_min=0.0, phys_max=0.5,
                source="熟悉设备的用户描述：解析出错误的颜色，而且是整行全错",
                help="整条扫描线解出**错误的颜色**——不是没有颜色。"
                     "它与「色度丢失行」是两回事：那个把色度清零，得到灰线；"
@@ -337,11 +337,11 @@ def build_schema() -> ParamSchema:
                     "所以某一行的参考错了，会把那一行上**所有**颜色旋转同一个角度，"
                     "而不是各自独立地坏掉。")
     tpe.define("row_chroma_phase", "整行色相误差", 0.0, 0.0, 90.0, unit="deg", group=g,
-               phys_max=45.0,
+               phys_min=0.0, phys_max=45.0,
                help="受影响行的色相旋转幅度。因为它是旋转而不是缩放，"
                     "饱和度得以保留——这正是「错色」与「去色」在画面上的区别。")
     tpe.define("row_chroma_gain", "整行色度增益误差", 0.0, 0.0, 1.0, unit="0-1", group=g,
-               phys_max=0.5,
+               phys_min=0.0, phys_max=0.5,
                help="受影响行的色度幅度误差。色同步幅度经 ACC 环路决定色度增益，"
                     "所以弱的色同步会让整行过饱和或欠饱和。与色相误差相互独立。")
     g = "失落与磁头切换"
