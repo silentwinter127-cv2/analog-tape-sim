@@ -26,8 +26,8 @@ from ..core.pipeline import FrameBuffer, RenderContext, Stage
 from ..core.rng import OUProcess, ValueNoise3D, rng_for
 from ..codecs.analog_iir import notch, preemphasis
 from ..core.signal import (SignalFrame, bandpass, demod_chroma, highpass,
-                           lowpass, remod_chroma, split_composite,
-                           subcarrier_phase)
+    lowpass, remod_chroma, split_composite, subcarrier_phase, yc_separate,
+    separation_kind_name)
 from ..core.standards import VideoStandard
 
 
@@ -68,6 +68,10 @@ class PlayerStage(Stage):
         self.blue_osd = int(round(float(p.get("blue_osd", 0.0))))
 
         # from the format layer: what the receiver does with the signal
+        # the deck's own separator, from its own layer: a deck and a camcorder are
+        # different receivers and each chose its own design
+        # stored numerically in the schema, converted here to the name the separator takes
+        self.separation_kind = separation_kind_name(p.get("separation_kind", 0.0))
         self.comb_depth = float(f.get("comb_depth", 0.55))
         self.cross_color = float(f.get("cross_color", 0.45))
         self.cross_luma = float(f.get("cross_luma", 0.30))
@@ -188,8 +192,9 @@ class PlayerStage(Stage):
         # against a compensating reference only got to 0.45.  In baseband the same
         # displacement costs nothing: 0.99.
         window = float(np.clip(self.chroma_bw * 1.15, 0.35e6, 0.9e6))
-        y_band, chroma_band = split_composite(
-            comp, self.std, comb_depth=0.0, chroma_bandwidth_hz=window)
+        y_band, chroma_band = yc_separate(
+            comp, self.std, kind=self.separation_kind, comb_depth=0.0,
+            chroma_bandwidth_hz=window)
         i, q = demod_chroma(chroma_band / gain, self.std,
                             i_bw_hz=1.5e6, q_bw_hz=1.5e6)
         y_band = horizontal_shift(y_band, disp)
@@ -200,9 +205,9 @@ class PlayerStage(Stage):
 
         # Re-split with the receiver's own comb and bandwidth so the downstream
         # crosstalk model operates on the signal the receiver actually sees.
-        y_band, chroma_band = split_composite(
-            comp_shifted, self.std, comb_depth=self.comb_depth,
-            chroma_bandwidth_hz=self.chroma_bw)
+        y_band, chroma_band = yc_separate(
+            comp_shifted, self.std, kind=self.separation_kind,
+            comb_depth=self.comb_depth, chroma_bandwidth_hz=self.chroma_bw)
         chroma_band = chroma_band / gain
 
         field = self._sep_noise.sample(buf.index).astype(np.float32) if (

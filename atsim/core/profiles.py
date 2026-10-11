@@ -121,6 +121,21 @@ def build_schema() -> ParamSchema:
     fmt.define("chroma_vertical_averaging", "色度垂直平均", 0.85, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.5, phys_max=1.0, source="色度约 40 行，接收机逐行平均",
                help="相邻行色度混合的强度，造成垂直方向的彩边。")
+    # The receiver's Y/C separator.  Four real designs of different eras, and the choice
+    # is what decides the shape of the coloured fringes on hard edges: a cheap set uses a
+    # band split, a better one a glass delay line, a good one two lines or a 2-D comb.
+    fmt.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 4.0, unit="0-4", group=g,
+               step=1.0, phys_min=0.0, phys_max=4.0,
+               source="消费级接收机的四种分离方案（同年代分层）",
+               help="**这是器件选择，不是效果旋钮。** 0=带通分离（廉价机，无延迟线）；"
+                    "1=盒式孔径（小横向孔径，载波只被部分抵消，所以彩边粗而宽）；"
+                    "2=1H 延迟线（一行玻璃延迟线，抽头相隔一行，副载波自然反相抵消）；"
+                    "3=2H 延迟线（0.5×本行 + 0.25×上一行 + 0.25×下一行，垂直孔径更宽，"
+                    "串色更少但垂直亮度更糊）；4=二维梳状（横向 ±1 像素、纵向 ±1 行，"
+                    "**对角抽头与中心同相位**，所以不需要延迟线就能去掉载波，四者中垂直拖尾最小）。"
+                    "梳状滤波器的相位抵消是**自动产生**的，不是靠系数调出来的——"
+                    "这就是为什么真实接收机在这几种方案之间选择，"
+                    "而**选哪一种决定了边缘彩边的形态**。")
     fmt.define("comb_depth", "梳状滤波深度", 0.55, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.2, phys_max=0.9, source="NTSC 接收机梳状滤波器",
                help="1H 延迟梳状滤波的权重；越深串色越少，但垂直亮度分辨率下降。")
@@ -545,6 +560,19 @@ def build_schema() -> ParamSchema:
                phys_min=2.0, phys_max=5.0)
     ply.define("chroma_bandwidth", "色度带宽", 0.75, 0.25, 2.0, unit="MHz", group=g,
                phys_min=0.4, phys_max=1.2)
+    # A deck's own separator.  Kept separate from the format layer's copy because a
+    # camcorder and a deck are two different receivers, and each chose its own design.
+    ply.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 4.0, unit="0-4", group=g,
+               step=1.0, phys_min=0.0, phys_max=4.0,
+               source="消费级接收机的四种分离方案（同年代分层）",
+               help="**器件选择，不是效果旋钮。** 0=带通分离（廉价机，无延迟线）；"
+                    "1=盒式孔径（小横向孔径，载波只被部分抵消，彩边粗而宽）；"
+                    "2=1H 延迟线（抽头相隔一行，副载波自然反相抵消）；"
+                    "3=2H 延迟线（垂直孔径更宽，串色更少但垂直亮度更糊）；"
+                    "4=二维梳状（横向 ±1 像素、纵向 ±1 行，**对角抽头与中心同相位**，"
+                    "不需要延迟线即可去载波，四者中垂直拖尾最小）。"
+                    "**这是播放设备的属性**，与 format 层的同名参数相互独立——"
+                    "摄像机和录像机是两台不同的接收机。")
     ply.define("comb_depth", "梳状滤波深度", 0.55, 0.0, 1.0, unit="0-1", group=g)
     ply.define("cross_color", "交叉色彩", 0.45, 0.0, 1.5, unit="0-1", group=g,
                phys_max=0.8, source="亮度串入色度（点爬行）")

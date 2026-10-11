@@ -396,6 +396,159 @@ def split_composite(comp: np.ndarray, std: VideoStandard,
     return luma.astype(np.float32), chroma.astype(np.float32)
 
 
+# ---------------------------------------------------------------------------
+# receiver Y/C separation topologies
+# ---------------------------------------------------------------------------
+# The four designs a consumer receiver might use.  Each computes luma from the
+# composite; chroma is whatever is left over, so the separator's error becomes
+# cross-colour in the colour -- which is where the fringes on hard edges come from.
+YC_SEPARATION = ("band", "box", "line1", "line2", "fir2d")
+
+
+def separation_kind_name(value) -> str:
+    """
+    The schema's numeric Y/C separation value, as the name `yc_separate` takes.
+
+    The parameter is numeric because the UI drives it as a slider and every other discrete choice in
+    this schema is numeric (`codec_kind`, `filter_kind`, `vhs_speed`); the function takes a name
+    because a name is what makes four designs readable at the point of use. This is the single place
+    the two meet, so the numbering and the tuple cannot drift.
+    """
+    try:
+        k = int(round(float(value)))
+    except (TypeError, ValueError):
+        return "band"
+    if 0 <= k < len(YC_SEPARATION):
+        return YC_SEPARATION[k]
+    return "band"
+
+#: taps for the 2-D FIR, as (row, column) offsets from the sample being separated.
+#: Diagonally adjacent samples sit at the same subcarrier phase, which is why a 2-D
+#: comb can separate without a delay line of its own.
+FIR2D_DIAG_W = 0.0625
+
+
+def _phase_alternates(std: VideoStandard) -> bool:
+    """
+    Does the subcarrier invert between adjacent lines?
+
+    It does for NTSC (227.5 cycles per active line, so each line starts half a cycle
+    later) and not for PAL, whose subcarrier advances by a quarter cycle per line and
+    is switched in phase on alternate lines instead.  The distinction matters because
+    a comb's vertical taps only cancel the carrier when the inversion holds; applying
+    NTSC taps to PAL would leave the carrier in the luma rather than removing it.
+    """
+    cycles = std.subcarrier_hz / std.line_hz
+    return abs(cycles - round(cycles)) > 0.25
+
+
+def yc_separate(comp: np.ndarray, std: VideoStandard, kind: str = "band",
+                comb_depth: float = 0.0, aperture: int = 2,
+                chroma_bandwidth_hz: float = 0.8e6,
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Split a composite signal into (luma, chroma) using a named receiver topology.
+
+    `kind`:
+        "band"  -- band-split separation, with `comb_depth` mixing in a 1H delay-line
+                   comb.  This is the behaviour the model had before, and is the
+                   default so nothing changes unless a topology is requested.
+        "box"   -- luma is the mean of `aperture`+2 samples spanning +-1 px (the cheap
+                   set: a small horizontal aperture, no delay line).
+        "line1" -- luma is the mean of this line and the previous (one glass delay
+                   line).  The taps are one line apart, so the carrier cancels.
+        "line2" -- luma is 0.5*this + 0.25*prev + 0.25*next (two delay lines).  Wider
+                   vertical aperture: less cross-colour, more vertical luma smear.
+        "fir2d" -- luma is a 2-D FIR over +-`aperture` px and +-1 line.  The diagonal
+                   taps are at the same phase as the centre, so they carry colour and
+                   are subtracted; the result has the least vertical smear of the four.
+
+    The vertical taps are only used when the subcarrier actually inverts between
+    lines.  On PAL the vertical part is dropped and the horizontal part is used alone,
+    because taps one line apart would not cancel there.
+    """
+    if kind not in YC_SEPARATION:
+        raise ValueError("unknown Y/C separation %r; expected one of %s"
+                         % (kind, ", ".join(YC_SEPARATION)))
+    if kind == "band":
+        # the original behaviour, unchanged
+        return split_composite(comp, std, comb_depth=comb_depth,
+                               chroma_bandwidth_hz=chroma_bandwidth_hz)
+
+    c = np.asarray(comp, np.float32)
+    h, w = c.shape
+    vert_ok = _phase_alternates(std) and h >= 3
+
+    if kind == "box":
+        # a small horizontal aperture: luma is the local mean over the aperture, and
+        # the colour that survives it is the residual.  A short aperture leaves the
+        # carrier only partly cancelled, which is what makes a cheap set's fringes
+        # coarse and wide.
+        ap = max(1, int(aperture))
+        acc = np.zeros_like(c)
+        n = 0
+        for k in range(-ap, ap + 1):
+            acc += np.roll(c, k, axis=1)
+            n += 1
+        luma = acc / float(n)
+    elif kind == "line1" and vert_ok:
+        prev = np.empty_like(c)
+        prev[0] = c[0]
+        prev[1:] = c[:-1]
+        luma = 0.5 * (c + prev)
+    elif kind == "line2" and vert_ok:
+        prev = np.empty_like(c)
+        nxt = np.empty_like(c)
+        prev[0] = c[0]
+        prev[1:] = c[:-1]
+        nxt[-1] = c[-1]
+        nxt[:-1] = c[1:]
+        luma = 0.5 * c + 0.25 * prev + 0.25 * nxt
+    elif kind == "fir2d":
+        ap = max(1, int(aperture))
+        # A plain weighted mean.  The weights are accumulated as they are applied, so the
+        # normalising total cannot disagree with the taps -- a filter whose taps do not sum to
+        # one is a brightness control with a misleading name, and an earlier version of this
+        # branch lifted the picture by 25% for exactly that reason.
+        #
+        # The diagonals are the taps that carry colour (they sit at the same subcarrier phase as
+        # the centre), so including them is what removes the carrier without a delay line.
+        acc = np.zeros_like(c)
+        total = 0.0
+
+        def _tap(plane: np.ndarray, dy: int, dx: int, weight: float) -> None:
+            nonlocal acc, total
+            t = plane if dy == 0 else np.roll(plane, -dy, axis=0)
+            acc = acc + weight * np.roll(t, dx, axis=1)
+            total += weight
+
+        _tap(c, 0, 0, 0.5)
+        for k in range(1, ap + 1):
+            w = 0.125 if k == 1 else 0.0625
+            _tap(c, 0, k, w)
+            _tap(c, 0, -k, w)
+        if vert_ok:
+            _tap(c, -1, 0, 0.125)
+            _tap(c, 1, 0, 0.125)
+            for dx in (1, -1):
+                _tap(c, -1, dx, FIR2D_DIAG_W)
+                _tap(c, 1, dx, FIR2D_DIAG_W)
+        luma = acc / max(1e-6, total)
+    else:
+        # the vertical topologies fall back to the horizontal aperture when the
+        # subcarrier does not invert per line
+        return yc_separate(comp, std, "box", comb_depth, aperture, chroma_bandwidth_hz)
+
+    # the colour is the residual, then band-limited around the carrier so the
+    # synchronous detector's 2f product vanishes (see demod_chroma)
+    chroma = c - luma
+    fsc = std.subcarrier_hz
+    half = max(float(chroma_bandwidth_hz), 0.30e6)
+    chroma = fft_bandpass(chroma, max(0.10e6, fsc - 1.6 * half), fsc + 1.6 * half,
+                          std, unity_at_hz=fsc)
+    return luma.astype(np.float32), chroma.astype(np.float32)
+
+
 def demod_chroma(chroma: np.ndarray, std: VideoStandard,
                  i_bw_hz: float = 1.3e6, q_bw_hz: float = 0.5e6,
                  phase_offset: np.ndarray | None = None
