@@ -1999,5 +1999,65 @@ def check_graph_build_positions() -> None:
            "start-up calls it: %s; preset route calls it: %s" % (boot, preset_route),
            boot and preset_route,
            "the rule living in one path and not the other is what produced the overlap")
+def check_fault_citations() -> None:
+    """
+    Every parameter the fault catalogue cites must exist, and no parameter may be defined twice.
+
+    Both were verified defects. Clicking a symptom in the UI jumps to the mechanism named by the
+    citation, so a citation that does not resolve shows the user a *different* mechanism and then
+    reports in the coverage counter that the fault has been covered. The tool told the user it
+    had shown them something it had not. Three citations were wrong: `chroma_noise` for
+    `color_noise`, `chroma_phase_error` for `burst_phase_error`, and `head_clog_bands` for
+    `clog_bands`.
+
+    Nineteen parameters were also defined twice in the schema. `ParamSet.add` overwrites, so the
+    later definition wins and the earlier help text is silently discarded -- and eighteen of the
+    nineteen pairs had drifted apart, meaning the UI explained those parameters using words
+    written for a different version. This project had already lost time to one instance
+    (`head_switch_lines`), which is the argument for making it a check rather than a repair.
+    """
+    import re as _re
+    from atsim.core.profiles import SCHEMA as S
+
+    fsrc = open(os.path.join(os.path.dirname(HERE), "atsim", "diagnostics", "faults.py"),
+                encoding="utf-8").read()
+    cited = set(_re.findall(
+        r'\(\s*"(camera|format|codec|rf|tape|connector|player|display)"\s*,\s*"(\w+)"\s*\)',
+        fsrc))
+    unresolved = sorted((l, p) for l, p in cited
+                        if l in S.layer_names() and p not in S.layer(l).keys())
+    record("every fault-catalogue citation names a real parameter",
+           "a citation that does not resolve sends the user to a different mechanism",
+           "%d citations checked; %s" % (len(cited),
+                                         "all resolve" if not unresolved
+                                         else "unresolved: %s" % unresolved),
+           bool(cited) and not unresolved,
+           "the coverage counter would then report the fault as covered")
+
+    psrc = open(os.path.join(os.path.dirname(HERE), "atsim", "core", "profiles.py"),
+                encoding="utf-8").read()
+    # Resolve each layer variable to its layer name, then count per layer.  Counting across the
+    # whole file was the first version's mistake: the same parameter name legitimately exists in
+    # more than one layer (`luma_bandwidth` in both `format` and `player`), so those are not
+    # duplicates and the count moved whenever unrelated text changed.  A real duplicate is the
+    # same name twice for the same layer, because `ParamSet.add` overwrites.
+    var_to_layer = {}
+    for m in _re.finditer(r"^(\s*)(\w+)\s*=\s*s\.layer\(\"(\w+)\"\)", psrc, _re.M):
+        var_to_layer[m.group(2)] = m.group(3)
+    per_layer: dict[tuple[str, str], int] = {}
+    for m in _re.finditer(r"^(\s*)(\w+)\.define\(\s*\"(\w+)\"", psrc, _re.M):
+        var, name = m.group(2), m.group(3)
+        layer = var_to_layer.get(var)
+        if layer is None:
+            continue
+        per_layer[(layer, name)] = per_layer.get((layer, name), 0) + 1
+    dupes = sorted((l, n, c) for (l, n), c in per_layer.items() if c > 1)
+    record("no parameter is defined twice for the same layer",
+           "the later definition wins, so the earlier help text is discarded",
+           "%d layer/name pair(s) defined more than once%s"
+           % (len(dupes), "" if not dupes else ": %s" % dupes[:5]),
+           not dupes,
+           "eighteen of the nineteen pairs had drifted before this was found, so the UI "
+           "explained parameters with words written for another version")
 if __name__ == "__main__":
     raise SystemExit(main())

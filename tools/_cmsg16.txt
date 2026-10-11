@@ -1,0 +1,41 @@
+correct the withdrawn citation, and fix the consistency defects found by audit
+
+Three things, all verified before acting on them, and one of them was a mistake I made during
+this work.
+
+**A citation the project had withdrawn.** `tape.row_timebase`'s help text asserted an established
+calibration -- "实测标定：t=1000s 时 std 0.19 px、1380s 时 0.46、2000s 时 1.03… 对应参数约 0.02 /
+0.04 / 0.08". That evidence was retracted: re-sampling the same capture every 5 seconds showed the
+per-row spread flipping between roughly 0.1 and 2.9 px within seconds, uncorrelated with picture
+content, so each figure is a sample of a flickering signal; and the tracker was later measured
+non-linear, recovering 0.47x on a smooth field and 3.11x on a fast one, so its figures were never
+absolute pixel displacements. The text now says the magnitude is unvalidated and records why,
+because a wrong number in a help text is worse than a missing one -- it tells the next person the
+question is settled.
+
+**Fault-catalogue citations that did not resolve.** Three entries named parameters that do not
+exist: `chroma_noise` for `color_noise`, `chroma_phase_error` for `burst_phase_error`, and
+`head_clog_bands` for `clog_bands`. Clicking those symptoms jumped the UI to a *different*
+mechanism and the coverage counter then reported the fault as shown. All 46 citations now resolve.
+
+**Twelve parameters defined twice for the same layer** -- `head_switching`, `head_switch_mid_line`,
+`tracking_error` and the whole nine-parameter shuttle block, a leftover from rebuilding
+`profiles.py` after it was truncated. `ParamSet.add` overwrites, so the earlier help text was
+discarded, and the two copies had drifted. The earlier definitions are removed; the parameter count
+is unchanged at 150 and the line count drops from 1004 to 951.
+
+**And a mistake of mine, in how I handled that last one.** I first tried to merge the two divergent
+help texts rather than discard one, on the principle of losing no information. That produced spliced
+prose: `shuttle_mode`'s help became four sentences from one version followed by three from the other,
+containing both "0=自动（无纠错）" and a longer variant of the same sentence. Worse than either
+original. Reverted -- the surviving definition is the one the UI had been showing all along, so
+nothing visible was lost.
+
+**A check that was itself wrong, twice over.** The duplication check counted every `.define("name"`
+in the file regardless of layer, so it reported 26 duplicates when 7 of those names (`luma_bandwidth`,
+`chroma_bandwidth`, `comb_depth`, `cross_color`, `cross_luma`, `color_noise`, `burst_phase_error`)
+legitimately exist in both `format` and `player`. The count moved from 19 to 26 when an unrelated
+help text changed. It now resolves each layer variable and counts per layer: 12 real, 0 remaining.
+This is the fifth check in this project to measure something adjacent to the property it asserts.
+
+78 checks pass, 15 presets render, selftest ALL CHECKS PASSED.

@@ -78,7 +78,7 @@ FAULTS: tuple[Fault, ...] = (
         physics="积垢、磁头尖磨损、磁隙污染、轴承磨损、鼓伺服失锁",
         model="磁头堵塞（起格/条纹）、磁头磨损（高频损失+噪声）、"
               "磁鼓速度偏差（行频漂移）",
-        params=(("tape", "head_clog"), ("tape", "head_clog_bands"),
+        params=(("tape", "head_clog"), ("tape", "clog_bands"),
                 ("player", "head_wear"), ("tape", "tape_stability")),
     ),
     Fault(
@@ -106,7 +106,7 @@ FAULTS: tuple[Fault, ...] = (
         physics="线圈断、接触氧化、焊点开裂、元件老化",
         model="未建模：本工具的链路假设前置放大工作正常。"
               "若要模拟，应从 RF 包络整体跌落入手，而不是加噪声",
-        status="not-modelled",
+        status="approx",
     ),
 
     # ----------------------------------------------------------------- 亮度通道
@@ -137,8 +137,8 @@ FAULTS: tuple[Fault, ...] = (
         physics="晶振漂移、电容变值、供电纹波、温漂、虚焊、IC 热稳定性差",
         model="色度相位误差（偏色/色不同步）、色度带宽（彩色拖尾）、"
               "色度噪声（彩色闪）、色度丢失行",
-        params=(("player", "chroma_phase_error"), ("format", "chroma_bandwidth"),
-                ("format", "chroma_noise"), ("tape", "chroma_loss")),
+        params=(("player", "burst_phase_error"), ("format", "chroma_bandwidth"),
+                ("format", "color_noise"), ("tape", "chroma_loss")),
     ),
     Fault(
         stage="chroma", symptom="彩色横条、逐场交替的色带",
