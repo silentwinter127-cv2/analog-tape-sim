@@ -1691,5 +1691,109 @@ def check_crt_moisture() -> None:
            % (", ".join("%.3f" % s for s in scales), moved),
            len(scales) >= 3 and min(scales) < 0.98 and moved > 0.005
            and "raster_scale" not in info_none)
+def check_node_drag() -> None:
+    """
+    A dragged node must stay where it is put.
+
+    Exercised rather than reasoned about: the first fix for this was reasoned about and did
+    not work. The real `px` and `normalisePositions` bodies are lifted out of canvas.js and
+    run under node, because a reimplementation would only test the reimplementation.
+
+    The failure the user saw was nodes "running around". Its cause was that `px()` converts a
+    grid position to pixels by multiplying, and it runs on every render, so a node at a pixel
+    position near the origin -- x below 12 or y below 8 -- was read as a grid position next
+    time and multiplied again. Preset nodes start at (0,0)..(5,0), all inside that range.
+    """
+    import json as _json
+    import subprocess
+    import tempfile
+
+    canvas_path = os.path.join(os.path.dirname(HERE), "atsim", "web", "static", "canvas.js")
+    js = open(canvas_path, encoding="utf-8").read()
+
+    def body(name: str) -> str:
+        i = js.find("function " + name)
+        if i < 0:
+            raise AssertionError("could not find %s in canvas.js" % name)
+        depth, k = 0, js.find("{", i)
+        while k < len(js):
+            if js[k] == "{":
+                depth += 1
+            elif js[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        return js[i:k + 1]
+
+    harness = ("const COL_STEP=224, ROW_STEP=108;\n" + body("px") + "\n"
+               "const CONVERTED=new Set();\n" + body("normalisePositions") + """
+function mk() {
+  const m = (n, x, y) => ({ name: n, position: [x, y] });
+  const nodes = [m("source",0,0), m("camera",1,0), m("encoder",2,0)];
+  return { describe:{nodes:JSON.parse(JSON.stringify(nodes))},
+           graph:{nodes:JSON.parse(JSON.stringify(nodes))} };
+}
+function at(st, n) { return px(st.describe.nodes.find((m) => m.name === n)); }
+
+/* A: a preset payload is converted from columns to pixels exactly once. */
+let st = normalisePositions(mk());
+const afterFirst = at(st, "camera");
+let conversionOk = afterFirst[0] === 224 && afterFirst[1] === 0;
+
+/* B: with the flag preserved, ten round trips must not move it. */
+let stable = true;
+for (let i = 0; i < 10; i++) {
+  const n = st.describe.nodes.find((m) => m.name === "camera");
+  n.position = [6, 3];
+  n.px = true;
+  st = normalisePositions({ describe:{nodes:JSON.parse(JSON.stringify(st.describe.nodes))},
+                            graph:{nodes:JSON.parse(JSON.stringify(st.describe.nodes))} });
+  const g = at(st, "camera");
+  if (g[0] !== 6 || g[1] !== 3) { stable = false; break; }
+}
+
+/* C: with the flag LOST, which is what the client-side record exists for. */
+let robust = true;
+for (let i = 0; i < 6; i++) {
+  const n = st.describe.nodes.find((m) => m.name === "camera");
+  n.position = [6, 3];
+  const back = { describe:{nodes:JSON.parse(JSON.stringify(st.describe.nodes))},
+                 graph:{nodes:JSON.parse(JSON.stringify(st.describe.nodes))} };
+  for (const m of back.describe.nodes) delete m.px;
+  for (const m of back.graph.nodes) delete m.px;
+  st = normalisePositions(back);
+  const g = at(st, "camera");
+  if (g[0] !== 6 || g[1] !== 3) { robust = false; break; }
+}
+
+/* D: and without normalisation at all, the old behaviour, to show the check can fail. */
+const raw = mk().describe.nodes.find((m) => m.name === "camera");
+raw.position = [6, 3];
+const withoutFlag = px({ name: "camera", position: [6, 3] });
+const wouldJump = withoutFlag[0] === 6 * COL_STEP;
+
+console.log(JSON.stringify({ conversionOk, stable, robust, wouldJump }));
+""")
+
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "t.js")
+        open(p, "w", encoding="utf-8").write(harness)
+        out = subprocess.run(["node", p], capture_output=True, text=True)
+    if out.returncode != 0:
+        record("a dragged node stays where it is put",
+               "the canvas must work in one coordinate system",
+               "node failed: %s" % (out.stderr or out.stdout)[:70], False)
+        return
+    import json as _json
+    r = _json.loads(out.stdout.strip())
+
+    record("a dragged node stays where it is put",
+           "exercise px() and normalisePositions() from canvas.js under node",
+           "converted once: %s; stable over 10 round trips: %s; holds with the flag "
+           "lost: %s" % (r["conversionOk"], r["stable"], r["robust"]),
+           r["conversionOk"] and r["stable"] and r["robust"],
+           "without normalisation (6,3) would read as a column and become %s"
+           % (6 * 224))
 if __name__ == "__main__":
     raise SystemExit(main())

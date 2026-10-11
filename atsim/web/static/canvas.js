@@ -84,21 +84,57 @@ async function loadGraph() {
   if (j) applyGraphState(j);
 }
 
+/* Convert every node to pixel coordinates, once, when a payload is adopted.
+ *
+ * This is the fix for nodes "running around" while being dragged.  `px()` converts a grid
+ * position to pixels by multiplying, and it runs on every render -- so a node sitting at a
+ * pixel position near the origin, x below 12 or y below 8, was read as a grid position on
+ * the next render and multiplied by COL_STEP, which threw it across the canvas. Preset nodes
+ * start at (0,0)..(5,0), so they were all in that range.
+ *
+ * No flag or threshold can fix that, because each new payload from the server re-creates the
+ * ambiguity: the server stores grid units, so the question "is this number a column or a
+ * pixel" is asked again every time. Normalising here means the canvas has exactly one unit
+ * from then on, and the question is never asked again.
+ *
+ * Both lists are converted. `describe.nodes` is what the canvas draws and
+ * `graph.nodes` is what `/api/graph/move` is called with, and they are separate copies --
+ * converting one and not the other puts them back out of step on the next drag.
+ */
+/* Node names already converted to pixels. The server stores the flag and does preserve it,
+   but relying on that means a single route that forgets it multiplies the position again and
+   throws the node to (1344, 324). Remembering locally costs one Set and makes the
+   normalisation a property of the client rather than a promise from every route. */
+const CONVERTED = new Set();
+
+function normalisePositions(j) {
+  if (!j) return j;
+  const grids = [];
+  if (j.describe && Array.isArray(j.describe.nodes)) grids.push(j.describe.nodes);
+  if (j.graph && Array.isArray(j.graph.nodes)) grids.push(j.graph.nodes);
+  for (const list of grids) {
+    for (const n of list) {
+      if (!Array.isArray(n.position)) continue;
+      const [cx, cy] = n.position;
+      /* Converted once, and never again -- whether the payload says so or not. A preset
+         deliberately resets the layout to grid units, and those nodes arrive with the flag
+         unset and an integral column for x, so they are the ones that get converted here. */
+      if (n.px || CONVERTED.has(n.name)) {
+        n.px = true;
+        continue;
+      }
+      n.position = [Math.abs(cx) <= 12 ? cx * COL_STEP : cx,
+                    Math.abs(cy) <= 8 ? cy * ROW_STEP : cy];
+      n.px = true;
+      CONVERTED.add(n.name);
+    }
+  }
+  return j;
+}
+
 function applyGraphState(j) {
   const first = !G.state;
-  // Nodes the user has dragged carry pixel coordinates and must keep them.  The server
-  // stores the `px` flag too, but a payload can arrive from a route that did not preserve
-  // it -- `/api/graph/move` returns only `{ok:true}`, for instance, so nothing refreshes
-  // the flag and the next full describe may or may not carry it.  Rather than depend on
-  // every route round-tripping the flag, remember locally which nodes were dragged and
-  // re-assert it.  The alternative was to make the heuristic smarter, but no heuristic can
-  // separate a grid position of (8, 0) from a pixel position of (8, 0) -- the units have to
-  // be carried, not inferred.
-  if (G.state && G.state.describe && j && j.describe) {
-    const dragged = new Set();
-    for (const n of G.state.describe.nodes) if (n.px) dragged.add(n.name);
-    for (const n of j.describe.nodes) if (dragged.has(n.name)) n.px = true;
-  }
+  normalisePositions(j);
   G.state = j;
   renderPalette();
   renderGraphPresets();
@@ -142,7 +178,15 @@ function renderGraphPresets() {
     b.title = v.note;
     b.onclick = async () => {
       const j = await graphApi("/api/graph/preset", jsonPost({ key: k }));
-      if (j) { applyGraphState(j); refreshPreview(); }
+      if (j) {
+        /* A preset re-lays-out the whole graph, deliberately back in grid units.  Forget
+           which nodes were converted, or the layout would be stuck at whatever pixels the
+           user's dragging produced and the preset would appear to do nothing. */
+        CONVERTED.clear();
+        applyGraphState(j);
+        fitView();
+        refreshPreview();
+      }
     };
     box.appendChild(b);
   }
@@ -283,10 +327,9 @@ function renderCanvas() {
       G.moving = { name: n.name,
                    dx: ev.clientX / G.scale - x - G.pan[0] / G.scale,
                    dy: ev.clientY / G.scale - y - G.pan[1] / G.scale };
-      // Mark that this position is already in pixels.  The name matters: this used to
-      // set `_px` while `px()` and the mouseup handler both read `px`, so the mark made on
-      // grab was never seen by either and a dragged coordinate could be put through the
-      // grid-to-pixel conversion again -- which is what threw nodes across the canvas.
+      // Every node is already in pixel coordinates by the time it reaches a drag, because
+      // `normalisePositions` converts them as the payload is adopted. The flag is asserted
+      // here only so that a node added by some future path cannot slip through unconverted.
       n.px = true;
       renderCanvas();
       renderNodeInspector();
