@@ -226,12 +226,17 @@ def parse_lines(spec) -> list[OSDLine]:
     if spec is None:
         return []
     if isinstance(spec, str):
-        return [OSDLine(t) for t in spec.split("\n")]
+        # Each line gets its own row.  Without this every line was drawn at row 0 and they landed on top of
+        # one another -- a fault no single-line test could show, and the first thing a person types is more
+        # than one line.
+        return [OSDLine(t, 0, i) for i, t in enumerate(spec.split("\n"))]
     out: list[OSDLine] = []
-    for item in spec:
+    for i, item in enumerate(spec):
         if isinstance(item, str):
-            out.append(OSDLine(item))
+            out.append(OSDLine(item, 0, i))
         elif isinstance(item, dict):
+            # an explicit `row` is an offset from this line's own position, so a caller may place a line
+            # where it likes and let the rest stack below it rather than all sharing that row
             out.append(OSDLine(str(item.get("text", "")),
-                               int(item.get("col", 0)), int(item.get("row", 0))))
+                               int(item.get("col", 0)), i + int(item.get("row", 0))))
     return out

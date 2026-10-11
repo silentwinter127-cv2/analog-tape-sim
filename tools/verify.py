@@ -2865,5 +2865,48 @@ def check_osd_positions() -> None:
     finally:
         app.set_project({"params": {"overlay": saved or {"enabled": 0.0, "text": ""}}})
 
+def check_osd_multiline() -> None:
+    """
+    A subtitle with more than one line must put the lines in different rows.
+
+    `parse_lines` split a string on newlines and never advanced the row, so every line was drawn at
+    `margin_y + 0 * cell` -- one on top of another -- and the frame showed a single pile of overlapping
+    glyphs. It reads as a font or rasterising fault, and it was found by looking at an exported frame after
+    the panel appeared to work.
+
+    **Every test up to that point used one line**: "REC 00:12:34", "TITLE 标题", "婚礼". A one-line case
+    cannot show a row that never increments, and multi-line input is the first thing a person types. So the
+    check uses two lines, and asserts separate ink bands rather than a count of drawn glyphs -- the glyph
+    count was correct the whole time.
+    """
+    import numpy as np
+
+    from atsim.codecs.osd import CharacterGenerator, OSDPlan, parse_lines
+
+    nl = chr(10)
+    for spec, want in (("A" + nl + "B", [0, 1]), ("A" + nl + "B" + nl + "C", [0, 1, 2]),
+                       (["A", "B"], [0, 1])):
+        got = [l.row for l in parse_lines(spec)]
+        record("a %d-line subtitle is assigned %d row(s)" % (len(want), len(want)),
+               "each line needs its own row, or the lines are drawn on top of one another",
+               "%r -> rows %s" % (spec, got), got == want,
+               "parse_lines split on newlines and never incremented the row, so every line landed at row 0")
+
+    g = CharacterGenerator("lyusung", OSDPlan(lines=parse_lines("LINE1" + nl + "LINE2"),
+                                              cell_h=26, margin_y=10))
+    img, rep = g.draw(np.zeros((140, 700, 3), np.float32))
+    ink = (img @ np.array([0.299, 0.587, 0.114], np.float32)) > 0.5
+    rows = np.where(ink.any(axis=1))[0]
+    bands, start = [], int(rows[0])
+    for a, b in zip(rows, rows[1:]):
+        if b != a + 1:
+            bands.append((start, int(a)))
+            start = int(b)
+    bands.append((start, int(rows[-1])))
+    record("a two-line subtitle occupies two separate bands of the frame",
+           "the glyph count was correct while the lines overlapped, so the pixels are what has to be checked",
+           "%d line(s) reported, ink bands %s" % (rep.get("lines"), bands),
+           len(bands) == 2 and rep.get("lines") == 2,
+           "measured: both lines at y=10..36, one band, 12 glyphs drawn")
 if __name__ == "__main__":
     raise SystemExit(main())
