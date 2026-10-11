@@ -1,0 +1,39 @@
+measure field-to-field wander, and a hypothesis it refutes
+
+Every tracker so far subtracted a local vertical average, because a uniform shift of a
+field is not visible as a shift. That makes them blind to the component a time-base
+corrector would most obviously be removing, so this measures the shared term directly:
+each field is cross-correlated against a reference, giving one number per field for how
+far the whole field sits from where it was. Gradients are used rather than intensities,
+because a field's brightness varies for reasons unrelated to time base.
+
+Measured on the JVC capture between 960s and 1200s, a stretch spanning both the stable and
+the unstable regions:
+
+    field-to-field wander    spread 0.074 px, range 0.3 px
+    within-field variation   median 0.665 px, mean 2.845 px
+
+**That refutes the hypothesis it was built to test.** The previous conclusion was that the
+corrector's 8.8x reduction must come from field-to-field wander, since the within-field fast
+component measured small. The wander measures *smaller* than the within-field variation --
+0.074 px against a 0.665 px median -- so it cannot carry an 8.8x reduction either, and the
+previous note was wrong.
+
+What the numbers do show is a bimodal within-field distribution: most fields sit at 0.3 to
+0.5 px, with occasional excursions to 4, 6, 8 and 10 px. That is the shape of an
+intermittent fault rather than a continuous one, which matters for the model -- a mechanism
+that scales smoothly cannot produce it.
+
+Two limits are worth stating rather than working around:
+
+  * the field-to-field comparison is against a reference field ten seconds away, so it
+    measures *slow* wander. A corrector may act on much shorter time scales, and this
+    measurement would not see that;
+  * `within_field_spread` compares 32-row bands, so it is a coarse measure of the
+    per-line variation a corrector acts on, not that variation itself.
+
+So the real cause of the 8.8x is unresolved, and both of the structures the model has for
+it -- a smooth field-wide term and a fast per-line term -- are now measured smaller than
+needed on this material. Recording that is more useful than a third hypothesis.
+
+59 checks pass.
