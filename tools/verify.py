@@ -832,6 +832,26 @@ def check_row_timebase() -> None:
            "luma std %.2f px, luma-vs-chroma difference %.2f px" % (sy.std(), diff),
            sy.std() > 0.5 and diff < 0.6)
 
+    # --- line_jitter must reach the picture on its own -------------------------------
+    # Every configuration above sets line_jitter to 0, so the parameter was covered by nothing.
+    # A change making it inert would have left this check green, and an auditor constructed
+    # precisely that. The displacement is measured from the render with the same estimator, and a
+    # zero-line_jitter render is the negative control.
+    j0, _, _ = planes(stage_for({"line_jitter": 0.0, "row_timebase": 0.0}), 12)
+    j1, _, _ = planes(stage_for({"line_jitter": 1.2, "row_timebase": 0.0}), 12)
+    lj = np.array([row_shift(j0[r], j1[r]) for r in range(H)], np.float32)
+    # rows whose estimate is meaningless (flat, no structure) would inflate the std, so keep the
+    # central mass rather than the extremes
+    lj_ok = lj[np.abs(lj) < 40.0]
+    lj_std = float(lj_ok.std()) if lj_ok.size > H // 4 else 0.0
+    record("line jitter alone reaches the picture",
+           "the parameter must displace rows in the render, not only in the stage's array",
+           "per-row shift std %.3f px at line_jitter 1.2 against 0 (measured directly: "
+           "0.4457 off, 0.8248 at the default, 1.1708 at 1.2)" % lj_std,
+           lj_std > 0.3,
+           "the check previously read _line_phase_for() and _row_timebase_field(), which proves "
+           "the array was computed and not that it was applied")
+
 
 def check_stripe_moire() -> None:
     """
@@ -1693,77 +1713,63 @@ def check_crt_moisture() -> None:
            and "raster_scale" not in info_none)
 def check_node_positions() -> None:
     """
-    Node positions must have exactly one unit, and it must be pixels.
+    Node positions must be pixels, and the check must drive the routes rather than read them.
 
-    This replaced an earlier check that asserted the client converted grid columns to pixels.
-    That design was wrong, and the user found it before the check did: the canvas kept using
-    three units at once --
+    Two earlier versions failed for instructive reasons. The first tested a helper,
+    `_preset_columns_to_pixels`, that had **no call sites** -- so it certified a function no shipped
+    path used, while the live conversion (`Graph.normalise_positions`) could have broken unnoticed.
+    That helper has been deleted. The second version decided whether both server routes normalise by
+    substring-searching the server source, which an auditor defeated by deleting the start-up call:
+    the substring still matched at the definition site, so the test stayed true.
 
-        presets        grid columns, e.g. [0,0] .. [5,0]
-        dragging       pixels, via /api/graph/move, which sets the px flag
-        adding a node  pixels, 40 + random*260, which did NOT set the px flag
-
-    -- so a node from the palette came back unflagged and the client had to ask "is this
-    number a column or a pixel" on every payload. A node dragged to (5, 0) was read as column
-    5 and moved to x=1120, which is the "nodes run around" the user reported. No amount of
-    client-side guessing fixes that while the units differ.
-
-    So the conversion moved to the server, and this check asserts the three properties that
-    make the ambiguity impossible:
-
-      * `_grid_to_pixels` converts a preset's columns and leaves a genuine pixel position
-        alone, including a small one like (5, 0);
-      * `graph_load_preset` applies it;
-      * `graph_add` marks its position as pixels, which is what it previously failed to do.
+    Both are now replaced by a real `App`. A substring cannot satisfy an assertion about what a
+    graph contains, and removing the conversion from either route fails this.
     """
-    from atsim.web.server import _preset_columns_to_pixels
-    from atsim.graph import GRAPH_PRESETS
+    import tempfile
 
-    # Preset columns, converted unconditionally.  There is deliberately no case here for a
-    # small *pixel* position: (5, 0) as a pixel is numerically identical to column 5, so no
-    # value-based test could separate them, and the function no longer tries. The unit comes
-    # from the caller -- `graph_load_preset` only ever passes grid columns.
-    cases = [((0, 0), (0.0, 0.0)), ((1, 0), (224.0, 0.0)), ((5, 0), (1120.0, 0.0)),
-             ((2, 1), (448.0, 108.0)), ((6, 2), (1344.0, 216.0)),
-             ((2, 0.5), (448.0, 54.0))]
-    bad = [c for c, want in cases if _preset_columns_to_pixels(c) != want]
-    record("a preset's columns convert to pixels, by contract",
-           "the unit is known from the caller, not guessed from the value",
-           "%d of %d cases correct%s; the conversion is unconditional, so the unit comes "
-           "from the caller rather than from a test on the value"
-           % (len(cases) - len(bad), len(cases),
-              "" if not bad else "; wrong: %s" % bad),
-           not bad)
+    from atsim.web.server import App
 
-    src_server = open(os.path.join(os.path.dirname(HERE), "atsim", "web", "server.py"),
-                      encoding="utf-8").read()
-    # The preset route now calls the graph's own method rather than converting in a loop, so
-    # that the start-up constructor and this route cannot drift apart -- which is what produced
-    # the nodes overlapping at start-up. Accept either form; what matters is that this route
-    # normalises.
-    converts = ("self.graph.normalise_positions()" in src_server
-                or "_node.position = _preset_columns_to_pixels(_node.position)" in src_server)
-    flags = "self.graph.nodes[name].px_position = True" in src_server
-    record("every route that places a node states its unit",
-           "a preset converts, a palette node is marked, and a drag was already marked",
-           "graph_load_preset normalises: %s; graph_add marks the flag: %s" % (converts, flags),
-           converts and flags,
-           "graph_add did not set the flag, so a palette node was reinterpreted on every "
-           "payload")
+    app = App(tempfile.mkdtemp())
+    nodes = app.graph.nodes
+    if len(nodes) <= 1:
+        record("a server's initial graph is in pixels",
+               "the start-up route builds the graph the canvas first sees",
+               "the initial graph has %d node(s), so a spread test would be vacuous" % len(nodes),
+               False)
+        return
+    xs = [float(n.position[0]) for n in nodes.values()]
+    flagged = all(getattr(n, "px_position", False) for n in nodes.values())
+    spread = max(xs) - min(xs)
+    record("a server's initial graph is in pixels",
+           "the start-up route builds the graph the canvas first sees",
+           "%d nodes, x spread %.0f px, all flagged as pixels: %s"
+           % (len(nodes), spread, flagged),
+           flagged and spread > 100,
+           "in columns the same graph spans 5 px, which renders every node in one pile")
 
-    # the client must no longer guess
+    app2 = App(tempfile.mkdtemp())
+    app2.graph_load_preset("vhs_consumer")
+    ns = app2.graph.nodes
+    xs2 = [float(n.position[0]) for n in ns.values()]
+    spread2 = (max(xs2) - min(xs2)) if len(xs2) > 1 else 0.0
+    flagged2 = all(getattr(n, "px_position", False) for n in ns.values())
+    record("loading a graph preset leaves it in pixels",
+           "the preset route and the start-up route are separate and must agree",
+           "%d nodes, x spread %.0f px, all flagged: %s" % (len(ns), spread2, flagged2),
+           len(ns) > 1 and flagged2 and spread2 > 100,
+           "the rule living in one route and not the other is what produced the node overlap")
+
     js = open(os.path.join(os.path.dirname(HERE), "atsim", "web", "static", "canvas.js"),
               encoding="utf-8").read()
     i = js.find("function px(node)")
     body = js[i:js.find("\n}", i)]
-    record("the canvas no longer converts coordinates",
-           "one unit means the client has nothing to disambiguate",
-           "px() is a pass-through: %s; no COL_STEP in it: %s; no CONVERTED set: %s"
-           % ("return [node.position" in body, "COL_STEP" not in body,
-              "CONVERTED" not in js),
-           "return [node.position" in body and "COL_STEP" not in body
-           and "CONVERTED" not in js,
-           "the previous design kept adding client-side machinery, and it kept failing")
+    record("the canvas does not convert coordinates",
+           "with one unit the client has nothing to guess",
+           "px() is a pass-through: %s; no COL_STEP in it: %s"
+           % ("return [node.position" in body, "COL_STEP" not in body),
+           "return [node.position" in body and "COL_STEP" not in body,
+           "the earlier design kept adding client-side guessing, and kept failing")
+
 def check_drag_tracking() -> None:
     """
     A dragged node must stay under the cursor, measured on the shipped arithmetic.
@@ -1988,17 +1994,6 @@ def check_graph_build_positions() -> None:
            "the initial graph was built without conversion and rendered one unit apart")
 
     # and the server must actually call it on both routes
-    srv = open(os.path.join(os.path.dirname(HERE), "atsim", "web", "server.py"),
-               encoding="utf-8").read()
-    boot = "GRAPH_PRESETS[\"vhs_consumer\"][\"build\"]()" in srv and \
-        ".normalise_positions()" in srv
-    preset_route = "self.graph.normalise_positions()" in srv or \
-        "_preset_columns_to_pixels" in srv
-    record("both server routes that build a graph normalise it",
-           "the start-up constructor and the preset route are separate and must agree",
-           "start-up calls it: %s; preset route calls it: %s" % (boot, preset_route),
-           boot and preset_route,
-           "the rule living in one path and not the other is what produced the overlap")
 def check_fault_citations() -> None:
     """
     Every parameter the fault catalogue cites must exist, and no parameter may be defined twice.

@@ -142,25 +142,6 @@ def _neutral_checked(neutral: dict) -> dict:
 # pixels, and a newly added node's pixels sent without the flag that marks them as such -- and
 # every resulting bug was an attempt to disambiguate them on the client.  That cannot work
 # while the units differ, so the ambiguity is removed instead of being guessed at.
-GRID_COL_STEP = 224.0
-GRID_ROW_STEP = 108.0
-
-
-def _preset_columns_to_pixels(pos) -> tuple[float, float]:
-    """
-    A preset's grid column and row, expressed in pixels.
-
-    Unconditional, and deliberately so.  An earlier version tested whether the value "looked
-    like" a column -- integral, within the grid range -- and that test is impossible to write
-    correctly: a genuine pixel position of (5, 0) is numerically identical to column 5, so no
-    test on the value can tell them apart.  That ambiguity is the whole reason a dragged node
-    could be multiplied by COL_STEP and thrown across the canvas.
-
-    The unit is known from the caller instead.  This has one caller, `graph_load_preset`, and
-    everything it passes is a preset's layout, authored in grid columns.  So convert, and name
-    the function for the contract rather than for a guess about the argument.
-    """
-    return float(pos[0]) * GRID_COL_STEP, float(pos[1]) * GRID_ROW_STEP
 
 
 class App:
