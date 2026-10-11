@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..codecs.dv import DVCodec, DVParams
+from ..codecs.mpeg1 import MPEG1Codec, MPEG1CodecParams
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 from ..core.signal import SignalFrame
 
@@ -50,6 +51,23 @@ class CodecStage(Stage):
         else:
             self.chroma_mode = "411"
         self.quality = float(np.clip(cfg.get("dv_quality", 1.0), 0.25, 2.0))
+        # Which encoder.  0 = none, 1 = DV25, 2 = MPEG-1 (Video CD).  `dv_enabled`
+        # is still honoured so existing presets keep working, and `codec_kind`
+        # supersedes it when set.
+        kind = float(cfg.get("codec_kind", 0.0))
+        if kind <= 0.0 and self.enabled:
+            kind = 1.0
+        self.codec_kind = int(round(kind))
+        self.mpeg1 = None
+        if self.codec_kind == 2:
+            self.mpeg1 = MPEG1Codec(MPEG1CodecParams(
+                quality=float(np.clip(cfg.get("vcd_quality", 1.0), 0.25, 2.0)),
+                motion_compensation=float(np.clip(
+                    cfg.get("vcd_motion_comp", 1.0), 0.0, 1.0)),
+                width=int(round(float(cfg.get("vcd_width", 352.0)))),
+                height=int(round(float(cfg.get("vcd_height", 240.0)))),
+                bitrate_kbps=float(cfg.get("vcd_bitrate_kbps", 1150.0)),
+            ))
         self.codec = DVCodec(ctx.std, DVParams(
             chroma_mode=self.chroma_mode,
             quality=self.quality,
@@ -64,6 +82,24 @@ class CodecStage(Stage):
         if sig is None:
             return buf
 
+        if self.codec_kind == 2 and self.mpeg1 is not None:
+            # MPEG-1 runs on pictures, not on a component signal: the frame is
+            # reconstructed through RGB and the result converted back, which is what a
+            # real decoder hands on.  It is also stateful, so the P-frame predictor
+            # refers to the previous *decoded* luma.
+            rgb = sig.to_rgb()
+            decoded = self.mpeg1.encode_decode(rgb, int(buf.index))
+            coded = SignalFrame.from_rgb(decoded, buf.std)
+            self._last_error = float(np.abs(decoded - rgb).mean())
+            meta = dict(buf.meta)
+            meta["signal"] = coded
+            meta["format"] = "vcd"
+            meta["vcd"] = {
+                "quality": self.mpeg1.p.quality,
+                "motion_compensation": self.mpeg1.p.motion_compensation,
+                "mean_abs_error": round(self._last_error, 5),
+            }
+            return FrameBuffer(buf.rgb, None, buf.index, buf.time, buf.std, meta)
         coded = self.codec.encode_decode(sig)
         y = coded.y * (1.0 / max(1e-6, self.quality)) ** 0.0  # level preserved
 

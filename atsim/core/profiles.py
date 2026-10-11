@@ -141,6 +141,42 @@ def build_schema() -> ParamSchema:
 
     # ----------------------------------------------------- B2 数字编码分支
     cod = s.layer("codec")
+    g = "编码分支"
+    cod.define("codec_kind", "编码器选择", 0.0, 0.0, 2.0, unit="0-2", group=g,
+               step=1.0, phys_min=0.0, phys_max=2.0,
+               source="0=不编码（模拟）｜1=DV25｜2=MPEG-1（Video CD）",
+               help="选择数字编码分支。0 为模拟通路（VHS/Hi8），不经任何数字编码；"
+                    "1 为 DV25；2 为 MPEG-1，也就是 Video CD 用的编码。"
+                    "三种通路的伪影结构不同，不能互相近似：DV 是 4:1:1 + 固定码率，"
+                    "MPEG-1 是 4:2:0 + 粗量化 + 运动补偿预测。")
+    g = "MPEG-1 / Video CD"
+    cod.define("vcd_quality", "VCD 码率质量", 1.0, 0.25, 2.0, unit="x", group=g,
+               phys_min=0.6, phys_max=1.4,
+               source="VCD 固定 1150 kbit/s，352x240",
+               help="量化步长的缩放。VCD 的码率只有 DV25 的约二十分之一，"
+                    "所以量化粗得多——高频被**成结构地丢弃**，而不是平滑衰减，"
+                    "这是它看起来又软又带有块感的原因。")
+    cod.define("vcd_width", "VCD 宽度", 352.0, 176.0, 720.0, unit="px", group=g,
+               step=1.0, phys_min=352.0, phys_max=352.0,
+               source="VCD（MPEG-1）352x240，525/60",
+               help="编码前的水平尺寸。VCD 标准固定 352，物理区间也只允许这一个值——"
+                    "它不是为了调节画面，而是为了说明 MPEG-1 是在**四分之一分辨率**上"
+                    "做运动估计与量化的，这本身就是它伪影粗的一个原因。")
+    cod.define("vcd_height", "VCD 高度", 240.0, 120.0, 576.0, unit="px", group=g,
+               step=1.0, phys_min=240.0, phys_max=288.0,
+               source="VCD（MPEG-1）352x240，525/60；625/50 为 352x288",
+               help="编码前的垂直尺寸。525/60 为 240，625/50 为 288。")
+    cod.define("vcd_motion_comp", "运动补偿强度", 1.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0,
+               help="P 帧从上一帧的**已解码亮度**做运动预测的程度。"
+                    "这是 VCD 最独特的伪影来源：预测失败的地方（遮挡、硬切、运动边缘）"
+                    "残差大、误差可见，而预测成功的地方画面很干净——"
+                    "所以伪影不是逐帧独立的噪声，而是**跟着预测成败走**。"
+                    "取 0 退化为逐帧帧内编码，也就失去了这个特征。")
+    cod.define("vcd_bitrate_kbps", "VCD 码率", 1150.0, 600.0, 2000.0, unit="kbps",
+               group=g, step=50.0, phys_min=1100.0, phys_max=1200.0,
+               source="VCD 标准 1150 kbit/s",
+               help="参考资料值。当前实现用它设定量化尺度，并未真正做码率控制。")
     g = "DV / MiniDV 编码"
     cod.define("dv_enabled", "启用 DV 编码分支", 0.0, 0.0, 1.0, unit="bool", group=g,
                phys_min=0.0, phys_max=1.0, step=1.0, source="MiniDV / DVCAM / DVCPRO 机型",
@@ -735,6 +771,25 @@ FACTORY_PRESETS = {
             "rf": {"signal_dbm": -74.0, "adjacent_channel": 0.20,
                    "broadcast_noise": 0.45},
             "tape": {"noise_floor": 0.30, "dropout_rate": 0.6},
+            "display": {"enabled": 0.0},
+        }},
+    "vcd_352x240": {
+        "label": "Video CD（MPEG-1 352x240）",
+        "note": "VCD 编码：4:2:0 色度、粗量化、运动补偿预测。"
+                "伪影跟着**预测成败**走，不是逐帧独立的噪声——"
+                "这是它区别于 DV 与模拟通路的地方。",
+        "layers": {
+            "camera": {"sensor_noise": 0.03, "sharpness": 0.9},
+            "format": {"luma_bandwidth": 3.1, "chroma_bandwidth": 0.6,
+                       "chroma_vertical_averaging": 0.5, "cross_color": 0.2,
+                       "cross_luma": 0.12, "color_noise": 0.12},
+            "codec": {"codec_kind": 2.0, "vcd_quality": 1.0,
+                      "vcd_motion_comp": 1.0, "vcd_bitrate_kbps": 1150.0},
+            "tape": {"tape_speed": 0.0, "tape_stability": 0.85, "wear": 0.1,
+                     "dropout_rate": 0.05, "noise_floor": 0.06,
+                     "head_switching": 0.0},
+            "player": {"tbc_enabled": 1.0, "transport_jitter": 0.1,
+                       "head_wear": 0.1},
             "display": {"enabled": 0.0},
         }},
     "curving_stripes": {
