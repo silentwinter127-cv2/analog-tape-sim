@@ -73,6 +73,7 @@ class PlayerStage(Stage):
         # stored numerically in the schema, converted here to the name the separator takes
         self.separation_kind = separation_kind_name(p.get("separation_kind", 0.0))
         self.comb_depth = float(f.get("comb_depth", 0.55))
+        self.chroma_vert_blend = float(p.get("chroma_vert_blend", 0.5))
         self.cross_color = float(f.get("cross_color", 0.45))
         self.cross_luma = float(f.get("cross_luma", 0.30))
         self.burst_error_deg = float(f.get("burst_phase_error", 5.0))
@@ -206,8 +207,12 @@ class PlayerStage(Stage):
         # Re-split with the receiver's own comb and bandwidth so the downstream
         # crosstalk model operates on the signal the receiver actually sees.
         y_band, chroma_band = yc_separate(
-            comp_shifted, self.std, kind=self.separation_kind,
-            comb_depth=self.comb_depth, chroma_bandwidth_hz=self.chroma_bw)
+            comp_shifted,
+            self.std,
+            kind=self.separation_kind,
+            comb_depth=self.comb_depth,
+            chroma_bandwidth_hz=self.chroma_bw,
+            vert_blend=self.chroma_vert_blend)
         chroma_band = chroma_band / gain
 
         field = self._sep_noise.sample(buf.index).astype(np.float32) if (

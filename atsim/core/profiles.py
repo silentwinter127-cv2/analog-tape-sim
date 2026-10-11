@@ -251,7 +251,7 @@ def build_schema() -> ParamSchema:
     # The receiver's Y/C separator.  Four real designs of different eras, and the choice
     # is what decides the shape of the coloured fringes on hard edges: a cheap set uses a
     # band split, a better one a glass delay line, a good one two lines or a 2-D comb.
-    fmt.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 4.0, unit="0-4", group=g,
+    fmt.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 5, unit="0-4", group=g,
                step=1.0, phys_min=0.0, phys_max=4.0,
                source="消费级接收机的四种分离方案（同年代分层）",
                help="**这是器件选择，不是效果旋钮。** 0=带通分离（廉价机，无延迟线）；"
@@ -263,6 +263,17 @@ def build_schema() -> ParamSchema:
                     "梳状滤波器的相位抵消是**自动产生**的，不是靠系数调出来的——"
                     "这就是为什么真实接收机在这几种方案之间选择，"
                     "而**选哪一种决定了边缘彩边的形态**。")
+    fmt.define("chroma_vert_blend", "垂直色度反馈", 0.5, 0.0, 0.99, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.9,
+               help="**递归垂直色度反馈**——每行的色度是上一行**输出**的一半加当前输入的一半，"
+                    "也就是沿列的一阶 IIR，而不是邻行平均。"
+                    "这正是 ntsc-rs 的 `chroma_vert_blend`，也是它自己承认的缺陷来源："
+                    "输出依赖像素上方的整段历史，所以颜色会拖出几十行。"
+                    "**对称平均做不到这件事**——平均在两条行内就消失，而且它是对称的，不会漂移。"
+                    "实测参考片：行间色度相关从 lag1 的 +0.98 掉到 lag16 的 +0.20，"
+                    "相干长度约 20-30 行且**没有固定周期**（因为反馈是按列独立的，每列历史不同）。"
+                    "注意：**只在帧内递归**，不跨帧携带状态——跨帧会把相邻帧耦合起来，"
+                    "从而破坏「任意顺序请求帧、缓存仍然正确」这条前提。")
     fmt.define("comb_depth", "梳状滤波深度", 0.55, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.2, phys_max=0.9, source="NTSC 接收机梳状滤波器",
                help="1H 延迟梳状滤波的权重；越深串色越少，但垂直亮度分辨率下降。")
@@ -689,7 +700,7 @@ def build_schema() -> ParamSchema:
                phys_min=0.4, phys_max=1.2)
     # A deck's own separator.  Kept separate from the format layer's copy because a
     # camcorder and a deck are two different receivers, and each chose its own design.
-    ply.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 4.0, unit="0-4", group=g,
+    ply.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 5, unit="0-4", group=g,
                step=1.0, phys_min=0.0, phys_max=4.0,
                source="消费级接收机的四种分离方案（同年代分层）",
                help="**器件选择，不是效果旋钮。** 0=带通分离（廉价机，无延迟线）；"
@@ -700,6 +711,12 @@ def build_schema() -> ParamSchema:
                     "不需要延迟线即可去载波，四者中垂直拖尾最小）。"
                     "**这是播放设备的属性**，与 format 层的同名参数相互独立——"
                     "摄像机和录像机是两台不同的接收机。")
+    ply.define("chroma_vert_blend", "垂直色度反馈", 0.5, 0.0, 0.99, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.9,
+               help="递归垂直色度反馈，说明见 format 层的同名参数。"
+                    "**播放端也需要它**，因为哪个阶段做分离取决于接线；"
+                    "参数只放在 format 层而播放端读自己的层，设置就会静默失效——"
+                    "这个项目在 separation_kind 上已经犯过一次同样的错。")
     ply.define("comb_depth", "梳状滤波深度", 0.55, 0.0, 1.0, unit="0-1", group=g)
     ply.define("cross_color", "交叉色彩", 0.45, 0.0, 1.5, unit="0-1", group=g,
                phys_max=0.8, source="亮度串入色度（点爬行）")

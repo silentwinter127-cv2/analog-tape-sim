@@ -402,7 +402,7 @@ def split_composite(comp: np.ndarray, std: VideoStandard,
 # The four designs a consumer receiver might use.  Each computes luma from the
 # composite; chroma is whatever is left over, so the separator's error becomes
 # cross-colour in the colour -- which is where the fringes on hard edges come from.
-YC_SEPARATION = ("band", "box", "line1", "line2", "fir2d")
+YC_SEPARATION = ("band", "box", "line1", "line2", "fir2d", "iir")
 
 
 def separation_kind_name(value) -> str:
@@ -442,9 +442,45 @@ def _phase_alternates(std: VideoStandard) -> bool:
     return abs(cycles - round(cycles)) > 0.25
 
 
+def chroma_vert_blend(chroma: np.ndarray, feedback: float = 0.5) -> np.ndarray:
+    """
+    A one-pole vertical feedback filter on the chroma, as ntsc-rs's `chroma_vert_blend` is.
+
+        out[i] = (out[i-1] * k + in[i]) / (k + 1)   written as   out[i] = k*out[i-1] + (1-k)*in[i]
+
+    `feedback` is `k`. At 0 the filter is a pass-through; at 0.5 each line is half the previous *output*,
+    which is the value ntsc-rs uses and the reason its colour smears for tens of lines. The decay length is
+    `-1 / ln(k)` lines, so 0.5 gives 1.44 lines -- and it is the *cascade* of the picture's own vertical
+    correlation with this that produces the 20-30 line coherence measured in the reference, not the filter
+    alone.
+
+    Runs down the lines of one frame and starts from the frame's first line, so the result is a function of
+    the frame's content only. Carrying state between frames would couple them and break rendering frames in
+    any order, which is a trade this project does not make.
+    """
+    k = float(np.clip(feedback, 0.0, 0.995))
+    if k <= 1e-6:
+        return chroma
+    out = np.empty_like(chroma)
+    # the first line has nothing above it: it is the input, which is what a real decoder's first active
+    # line sees too (the lines above it are in the vertical blanking interval)
+    out[0] = chroma[0]
+    inv = 1.0 - k
+    for y in range(1, chroma.shape[0]):
+        out[y] = k * out[y - 1] + inv * chroma[y]
+    return out
+
+
+def chroma_vert_coherence(feedback: float) -> float:
+    """The 1/e coherence length in lines, for reporting and for a check to compare against."""
+    k = float(np.clip(feedback, 0.0, 0.995))
+    return 0.0 if k <= 1e-6 else float(-1.0 / np.log(k))
+
+
 def yc_separate(comp: np.ndarray, std: VideoStandard, kind: str = "band",
                 comb_depth: float = 0.0, aperture: int = 2,
                 chroma_bandwidth_hz: float = 0.8e6,
+                vert_blend: float = 0.5,
                 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Split a composite signal into (luma, chroma) using a named receiver topology.
@@ -504,6 +540,15 @@ def yc_separate(comp: np.ndarray, std: VideoStandard, kind: str = "band",
         nxt[-1] = c[-1]
         nxt[:-1] = c[1:]
         luma = 0.5 * c + 0.25 * prev + 0.25 * nxt
+    elif kind == "iir" and vert_ok:
+        # The recursive vertical chroma blend, which is what ntsc-rs's `chroma_vert_blend` is: a one-pole
+        # feedback down the column rather than an average across neighbouring lines.  The colour is the
+        # residual of the luma estimate, so smoothing the estimate vertically smears the colour
+        # vertically -- and because it is feedback, the influence runs for tens of lines instead of dying
+        # within two.  Measured on the reference clip: row-to-row chroma correlation falls from +0.98 at
+        # lag 1 to +0.20 at lag 16, a coherence of about 20-30 lines with no fixed period, which an
+        # average cannot produce because an average is symmetric and cannot drift.
+        luma = chroma_vert_blend(c, vert_blend)
     elif kind == "fir2d":
         ap = max(1, int(aperture))
         # A plain weighted mean.  The weights are accumulated as they are applied, so the
@@ -537,7 +582,8 @@ def yc_separate(comp: np.ndarray, std: VideoStandard, kind: str = "band",
     else:
         # the vertical topologies fall back to the horizontal aperture when the
         # subcarrier does not invert per line
-        return yc_separate(comp, std, "box", comb_depth, aperture, chroma_bandwidth_hz)
+        return yc_separate(comp, std, "box", comb_depth, aperture, chroma_bandwidth_hz,
+                           vert_blend)
 
     # the colour is the residual, then band-limited around the carrier so the
     # synchronous detector's 2f product vanishes (see demod_chroma)
