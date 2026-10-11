@@ -45,14 +45,15 @@ const NODE_W = 168, NODE_H = 54;
 const COL_STEP = 224, ROW_STEP = 108;
 
 function px(node) {
-  const [cx, cy] = node.position || [0, 0];
-  // The flag is authoritative.  Guessing from magnitude was wrong: a node
-  // dragged to x=100 was below the threshold, so its pixel coordinate got
-  // multiplied by COL_STEP and the node leapt off screen.
-  if (node.px) return [cx, cy];
-  const ux = Math.abs(cx) <= 12 ? cx * COL_STEP : cx;
-  const uy = Math.abs(cy) <= 8 ? cy * ROW_STEP : cy;
-  return [ux, uy];
+  /* Positions are pixels, and this is now a pass-through.
+   *
+   * It used to convert a grid column to pixels by multiplying, which meant asking "is this
+   * number a column or a pixel" on every render -- and the answer for a node dragged near the
+   * origin was wrong, so it was multiplied again and thrown across the canvas. The server
+   * converts a preset's columns as it lays the graph out, so nothing arrives in grid units
+   * and there is nothing to guess. A genuine pixel position of (5, 0) is left alone, which
+   * the heuristic could not do: it would have read column 5 and moved the node to x=1120. */
+  return [node.position ? node.position[0] : 0, node.position ? node.position[1] : 0];
 }
 
 const TYPE_COLOR = {
@@ -101,32 +102,17 @@ async function loadGraph() {
  * `graph.nodes` is what `/api/graph/move` is called with, and they are separate copies --
  * converting one and not the other puts them back out of step on the next drag.
  */
-/* Node names already converted to pixels. The server stores the flag and does preserve it,
-   but relying on that means a single route that forgets it multiplies the position again and
-   throws the node to (1344, 324). Remembering locally costs one Set and makes the
-   normalisation a property of the client rather than a promise from every route. */
-const CONVERTED = new Set();
-
 function normalisePositions(j) {
+  /* Kept as the single place a payload's positions could be converted, but it no longer
+   * converts anything: the server does it.  Left in place rather than deleted so that the
+   * call site in applyGraphState still marks where such a conversion would belong, and so
+   * that a payload which somehow carries grid units can be fixed here rather than in a
+   * scatter of heuristics. */
   if (!j) return j;
-  const grids = [];
-  if (j.describe && Array.isArray(j.describe.nodes)) grids.push(j.describe.nodes);
-  if (j.graph && Array.isArray(j.graph.nodes)) grids.push(j.graph.nodes);
-  for (const list of grids) {
+  for (const list of [j.describe && j.describe.nodes, j.graph && j.graph.nodes]) {
+    if (!Array.isArray(list)) continue;
     for (const n of list) {
-      if (!Array.isArray(n.position)) continue;
-      const [cx, cy] = n.position;
-      /* Converted once, and never again -- whether the payload says so or not. A preset
-         deliberately resets the layout to grid units, and those nodes arrive with the flag
-         unset and an integral column for x, so they are the ones that get converted here. */
-      if (n.px || CONVERTED.has(n.name)) {
-        n.px = true;
-        continue;
-      }
-      n.position = [Math.abs(cx) <= 12 ? cx * COL_STEP : cx,
-                    Math.abs(cy) <= 8 ? cy * ROW_STEP : cy];
-      n.px = true;
-      CONVERTED.add(n.name);
+      if (Array.isArray(n.position)) n.px = true;
     }
   }
   return j;
@@ -179,10 +165,6 @@ function renderGraphPresets() {
     b.onclick = async () => {
       const j = await graphApi("/api/graph/preset", jsonPost({ key: k }));
       if (j) {
-        /* A preset re-lays-out the whole graph, deliberately back in grid units.  Forget
-           which nodes were converted, or the layout would be stuck at whatever pixels the
-           user's dragging produced and the preset would appear to do nothing. */
-        CONVERTED.clear();
         applyGraphState(j);
         fitView();
         refreshPreview();

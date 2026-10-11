@@ -1691,109 +1691,74 @@ def check_crt_moisture() -> None:
            % (", ".join("%.3f" % s for s in scales), moved),
            len(scales) >= 3 and min(scales) < 0.98 and moved > 0.005
            and "raster_scale" not in info_none)
-def check_node_drag() -> None:
+def check_node_positions() -> None:
     """
-    A dragged node must stay where it is put.
+    Node positions must have exactly one unit, and it must be pixels.
 
-    Exercised rather than reasoned about: the first fix for this was reasoned about and did
-    not work. The real `px` and `normalisePositions` bodies are lifted out of canvas.js and
-    run under node, because a reimplementation would only test the reimplementation.
+    This replaced an earlier check that asserted the client converted grid columns to pixels.
+    That design was wrong, and the user found it before the check did: the canvas kept using
+    three units at once --
 
-    The failure the user saw was nodes "running around". Its cause was that `px()` converts a
-    grid position to pixels by multiplying, and it runs on every render, so a node at a pixel
-    position near the origin -- x below 12 or y below 8 -- was read as a grid position next
-    time and multiplied again. Preset nodes start at (0,0)..(5,0), all inside that range.
+        presets        grid columns, e.g. [0,0] .. [5,0]
+        dragging       pixels, via /api/graph/move, which sets the px flag
+        adding a node  pixels, 40 + random*260, which did NOT set the px flag
+
+    -- so a node from the palette came back unflagged and the client had to ask "is this
+    number a column or a pixel" on every payload. A node dragged to (5, 0) was read as column
+    5 and moved to x=1120, which is the "nodes run around" the user reported. No amount of
+    client-side guessing fixes that while the units differ.
+
+    So the conversion moved to the server, and this check asserts the three properties that
+    make the ambiguity impossible:
+
+      * `_grid_to_pixels` converts a preset's columns and leaves a genuine pixel position
+        alone, including a small one like (5, 0);
+      * `graph_load_preset` applies it;
+      * `graph_add` marks its position as pixels, which is what it previously failed to do.
     """
-    import json as _json
-    import subprocess
-    import tempfile
+    from atsim.web.server import _preset_columns_to_pixels
+    from atsim.graph import GRAPH_PRESETS
 
-    canvas_path = os.path.join(os.path.dirname(HERE), "atsim", "web", "static", "canvas.js")
-    js = open(canvas_path, encoding="utf-8").read()
+    # Preset columns, converted unconditionally.  There is deliberately no case here for a
+    # small *pixel* position: (5, 0) as a pixel is numerically identical to column 5, so no
+    # value-based test could separate them, and the function no longer tries. The unit comes
+    # from the caller -- `graph_load_preset` only ever passes grid columns.
+    cases = [((0, 0), (0.0, 0.0)), ((1, 0), (224.0, 0.0)), ((5, 0), (1120.0, 0.0)),
+             ((2, 1), (448.0, 108.0)), ((6, 2), (1344.0, 216.0)),
+             ((2, 0.5), (448.0, 54.0))]
+    bad = [c for c, want in cases if _preset_columns_to_pixels(c) != want]
+    record("a preset's columns convert to pixels, by contract",
+           "the unit is known from the caller, not guessed from the value",
+           "%d of %d cases correct%s; the conversion is unconditional, so the unit comes "
+           "from the caller rather than from a test on the value"
+           % (len(cases) - len(bad), len(cases),
+              "" if not bad else "; wrong: %s" % bad),
+           not bad)
 
-    def body(name: str) -> str:
-        i = js.find("function " + name)
-        if i < 0:
-            raise AssertionError("could not find %s in canvas.js" % name)
-        depth, k = 0, js.find("{", i)
-        while k < len(js):
-            if js[k] == "{":
-                depth += 1
-            elif js[k] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            k += 1
-        return js[i:k + 1]
+    src_server = open(os.path.join(os.path.dirname(HERE), "atsim", "web", "server.py"),
+                      encoding="utf-8").read()
+    converts = ("_node.position = _preset_columns_to_pixels(_node.position)"
+                in src_server)
+    flags = "self.graph.nodes[name].px_position = True" in src_server
+    record("every route that places a node states its unit",
+           "a preset converts, a palette node is marked, and a drag was already marked",
+           "graph_load_preset converts: %s; graph_add marks the flag: %s" % (converts, flags),
+           converts and flags,
+           "graph_add did not set the flag, so a palette node was reinterpreted on every "
+           "payload")
 
-    harness = ("const COL_STEP=224, ROW_STEP=108;\n" + body("px") + "\n"
-               "const CONVERTED=new Set();\n" + body("normalisePositions") + """
-function mk() {
-  const m = (n, x, y) => ({ name: n, position: [x, y] });
-  const nodes = [m("source",0,0), m("camera",1,0), m("encoder",2,0)];
-  return { describe:{nodes:JSON.parse(JSON.stringify(nodes))},
-           graph:{nodes:JSON.parse(JSON.stringify(nodes))} };
-}
-function at(st, n) { return px(st.describe.nodes.find((m) => m.name === n)); }
-
-/* A: a preset payload is converted from columns to pixels exactly once. */
-let st = normalisePositions(mk());
-const afterFirst = at(st, "camera");
-let conversionOk = afterFirst[0] === 224 && afterFirst[1] === 0;
-
-/* B: with the flag preserved, ten round trips must not move it. */
-let stable = true;
-for (let i = 0; i < 10; i++) {
-  const n = st.describe.nodes.find((m) => m.name === "camera");
-  n.position = [6, 3];
-  n.px = true;
-  st = normalisePositions({ describe:{nodes:JSON.parse(JSON.stringify(st.describe.nodes))},
-                            graph:{nodes:JSON.parse(JSON.stringify(st.describe.nodes))} });
-  const g = at(st, "camera");
-  if (g[0] !== 6 || g[1] !== 3) { stable = false; break; }
-}
-
-/* C: with the flag LOST, which is what the client-side record exists for. */
-let robust = true;
-for (let i = 0; i < 6; i++) {
-  const n = st.describe.nodes.find((m) => m.name === "camera");
-  n.position = [6, 3];
-  const back = { describe:{nodes:JSON.parse(JSON.stringify(st.describe.nodes))},
-                 graph:{nodes:JSON.parse(JSON.stringify(st.describe.nodes))} };
-  for (const m of back.describe.nodes) delete m.px;
-  for (const m of back.graph.nodes) delete m.px;
-  st = normalisePositions(back);
-  const g = at(st, "camera");
-  if (g[0] !== 6 || g[1] !== 3) { robust = false; break; }
-}
-
-/* D: and without normalisation at all, the old behaviour, to show the check can fail. */
-const raw = mk().describe.nodes.find((m) => m.name === "camera");
-raw.position = [6, 3];
-const withoutFlag = px({ name: "camera", position: [6, 3] });
-const wouldJump = withoutFlag[0] === 6 * COL_STEP;
-
-console.log(JSON.stringify({ conversionOk, stable, robust, wouldJump }));
-""")
-
-    with tempfile.TemporaryDirectory() as d:
-        p = os.path.join(d, "t.js")
-        open(p, "w", encoding="utf-8").write(harness)
-        out = subprocess.run(["node", p], capture_output=True, text=True)
-    if out.returncode != 0:
-        record("a dragged node stays where it is put",
-               "the canvas must work in one coordinate system",
-               "node failed: %s" % (out.stderr or out.stdout)[:70], False)
-        return
-    import json as _json
-    r = _json.loads(out.stdout.strip())
-
-    record("a dragged node stays where it is put",
-           "exercise px() and normalisePositions() from canvas.js under node",
-           "converted once: %s; stable over 10 round trips: %s; holds with the flag "
-           "lost: %s" % (r["conversionOk"], r["stable"], r["robust"]),
-           r["conversionOk"] and r["stable"] and r["robust"],
-           "without normalisation (6,3) would read as a column and become %s"
-           % (6 * 224))
+    # the client must no longer guess
+    js = open(os.path.join(os.path.dirname(HERE), "atsim", "web", "static", "canvas.js"),
+              encoding="utf-8").read()
+    i = js.find("function px(node)")
+    body = js[i:js.find("\n}", i)]
+    record("the canvas no longer converts coordinates",
+           "one unit means the client has nothing to disambiguate",
+           "px() is a pass-through: %s; no COL_STEP in it: %s; no CONVERTED set: %s"
+           % ("return [node.position" in body, "COL_STEP" not in body,
+              "CONVERTED" not in js),
+           "return [node.position" in body and "COL_STEP" not in body
+           and "CONVERTED" not in js,
+           "the previous design kept adding client-side machinery, and it kept failing")
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -134,6 +134,35 @@ def _neutral_checked(neutral: dict) -> dict:
     return neutral
 
 
+# --- node position units ---------------------------------------------------
+# The canvas stores node positions in *pixels*.  Presets are authored in grid columns because
+# that is readable in source, so the conversion happens once, here, as a preset is applied.
+#
+# There used to be three units in circulation at the same time -- preset columns, dragged
+# pixels, and a newly added node's pixels sent without the flag that marks them as such -- and
+# every resulting bug was an attempt to disambiguate them on the client.  That cannot work
+# while the units differ, so the ambiguity is removed instead of being guessed at.
+GRID_COL_STEP = 224.0
+GRID_ROW_STEP = 108.0
+
+
+def _preset_columns_to_pixels(pos) -> tuple[float, float]:
+    """
+    A preset's grid column and row, expressed in pixels.
+
+    Unconditional, and deliberately so.  An earlier version tested whether the value "looked
+    like" a column -- integral, within the grid range -- and that test is impossible to write
+    correctly: a genuine pixel position of (5, 0) is numerically identical to column 5, so no
+    test on the value can tell them apart.  That ambiguity is the whole reason a dragged node
+    could be multiplied by COL_STEP and thrown across the canvas.
+
+    The unit is known from the caller instead.  This has one caller, `graph_load_preset`, and
+    everything it passes is a preset's layout, authored in grid columns.  So convert, and name
+    the function for the contract rather than for a guess about the argument.
+    """
+    return float(pos[0]) * GRID_COL_STEP, float(pos[1]) * GRID_ROW_STEP
+
+
 class App:
     """Holds all mutable state; one instance per server."""
 
@@ -388,6 +417,11 @@ class App:
         with self.lock:
             self.graph = spec["build"]()
             self._graph_execs.clear()
+            # The preset declares grid columns; store pixels, so that everything downstream --
+            # the canvas, a later drag, the renderer -- agrees on one unit.
+            for _node in self.graph.nodes.values():
+                _node.position = _preset_columns_to_pixels(_node.position)
+                _node.px_position = True
             # a graph preset may also declare the reception conditions it was
             # designed around; without this the RF loop loaded a clean signal and
             # showed none of the artefacts it exists to demonstrate
@@ -414,6 +448,11 @@ class App:
             self.graph.add(name, kind,
                            position=(float(payload.get("x", 0.0)),
                                      float(payload.get("y", 0.0))))
+            # The caller sends `40 + random*260`, which is pixels.  `graph_move` marks its
+            # position as pixels and `graph_add` did not, so a node from the palette came back
+            # unflagged and could be read as a grid column -- column 300 is 67200 px to the
+            # right, which is where a node would vanish to.
+            self.graph.nodes[name].px_position = True
             self._graph_execs.clear()
         return self.graph_state()
 
