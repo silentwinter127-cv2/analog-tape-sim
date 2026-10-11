@@ -907,6 +907,59 @@ def check_stripe_moire() -> None:
            "not a fixed texture on the picture", "phase moved %.4f rad" % moved,
            moved > 0.05)
 
+
+def check_fingerprint_ordering() -> None:
+    """
+    A clean digital chain must stay closer to its input than an analogue one.
+
+    Same input frame for every preset, so the only variable is the model. This is the
+    narrow, real claim available from a fingerprint comparison: the *ordering* of
+    distance from the input. It is not a claim that any preset reproduces real VCD,
+    which no preset does -- the closest is `minidv_clean` at a residual of 0.075 and
+    its largest gap is hue spread, since VCD is MPEG-1 4:2:0 and the model has no
+    MPEG-1 branch at all.
+    """
+    from atsim.render.renderer import Renderer
+    from tools.fingerprint import fingerprint
+
+    class Still:
+        def __init__(self, img):
+            self._img = np.asarray(img, np.float32)
+            self.height, self.width = self._img.shape[:2]
+            self.frame_count, self.fps = 16, 25.0
+
+        def frame(self, index):
+            return self._img.copy()
+
+    # A frame with both colour and fine detail, built here so the check does not
+    # depend on a reference file being present.
+    H, W = 176, 288
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    img = np.zeros((H, W, 3), np.float32)
+    img[..., 2] = 0.75 + 0.05 * np.cos(2 * np.pi * xx / 19.0)
+    img[..., 0] = 0.20 + 0.55 * (np.cos(2 * np.pi * xx / 23.0) > 0.4)
+    img[..., 1] = 0.25 + 0.45 * (np.sin(2 * np.pi * yy / 31.0) > 0.3)
+    img = np.clip(img, 0, 1)
+    scene = Still(img)
+    ref = fingerprint(img)
+
+    def residual(key: str) -> float:
+        layers = SCHEMA.resolve_all(FACTORY_PRESETS[key]["layers"])
+        r = Renderer(scene, W, H, scene.fps, layers, seed=20240101)
+        for i in range(5):
+            out = r.render_frame(i)
+        fp = fingerprint(out)
+        keys = ("mean", "sat", "hf", "hue_spread", "row_step")
+        return float(np.mean([abs(fp[k] - ref[k]) / max(1e-6, abs(ref[k]) + 0.05)
+                              for k in keys]))
+
+    clean = residual("minidv_clean")
+    analogue = residual("family_archive_1992")
+    record("fingerprint ordering is sane",
+           "a clean digital chain stays closer to its input than an analogue one",
+           "minidv_clean %.3f vs family_archive_1992 %.3f" % (clean, analogue),
+           clean < analogue)
+
 # ---------------------------------------------------------------------------
 def contact_sheet() -> str:
     """One image showing every headline effect, for eyeballing."""
@@ -967,6 +1020,7 @@ def main(argv: list[str] | None = None) -> int:
         check_row_chroma()
         check_row_timebase()
         check_stripe_moire()
+        check_fingerprint_ordering()
         check_broadcast_noise()
         check_head_switch()
 
