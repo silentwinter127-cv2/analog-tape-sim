@@ -19,6 +19,27 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 
+def is_numeric(spec) -> bool:
+    """
+    Whether a parameter's value is a number rather than text.
+
+    Named because the assumption "every parameter is a number" has broken three separate places now:
+    the resolution path silently dropped the first text parameter, the preset baseline raised on it and
+    took down every preset, and a check's value comparison raised on it. Three failures of one assumption
+    in three files want a name, not three patches.
+    """
+    return getattr(spec, "kind", "number") != "text"
+
+
+def numeric_keys(schema) -> dict:
+    """The numeric parameter keys per layer, which is what a value comparison can operate on."""
+    out = {}
+    for layer in schema.layer_names():
+        spec = schema.layer(layer)
+        out[layer] = {k for k in spec.keys() if is_numeric(spec.specs[k])}
+    return out
+
+
 @dataclass
 class ParamSpec:
     key: str
@@ -36,6 +57,10 @@ class ParamSpec:
     # provenance of the default value, per the "device profile library" idea
     source: str = "estimate"
 
+    #: "number" or "text".  The resolution path is written for numbers because every
+    #: other parameter in this model is one; a text parameter has to be marked or it is
+    #: silently discarded, which is what happened to the subtitle text.
+    kind: str = "number"
     #: How far a *particular machine* may sit from nominal, as a fraction of the
     #: parameter's own value.  Zero means this parameter does not vary between units of
     #: the same model.  Set it from measured service tolerances where they are known and
@@ -107,8 +132,16 @@ class ParamSet:
         out = self.defaults()
         if values:
             for k, v in values.items():
-                if k in self._specs and isinstance(v, (int, float)):
-                    out[k] = self._specs[k].clamp(v)
+                if k not in self._specs:
+                    continue
+                spec = self._specs[k]
+                if getattr(spec, "kind", "number") == "text":
+                    # a text parameter keeps its string.  Without this branch the value failed the
+                    # `isinstance(v, (int, float))` test below and silently reverted to the default,
+                    # so the subtitle was empty at every setting and nothing reported a problem.
+                    out[k] = "" if v is None else str(v)
+                elif isinstance(v, (int, float)):
+                    out[k] = spec.clamp(v)
         return out
 
     def is_physical(self, values: dict[str, Any]) -> dict[str, bool]:

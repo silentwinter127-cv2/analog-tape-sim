@@ -128,7 +128,9 @@ def check_engine() -> None:
     from atsim.render.renderer import STAGE_ORDER
     from atsim.core.profiles import SCHEMA as S
     got = set(S.layer_names())
-    want = {"camera", "format", "codec", "connector", "rf", "tape", "player", "display"}
+    # exactly the expected set: adding a layer has to be deliberate, which is why this is an equality
+    want = {"camera", "format", "codec", "connector", "rf", "tape", "player", "display",
+            "overlay"}
     record("device layers", "camera..display all present",
            f"{len(got)} layers, missing={sorted(want - got) or 'none'}", got == want)
 
@@ -2083,13 +2085,20 @@ def check_device_dna() -> None:
         return
 
     # --- 1. inert with no identity
+    from atsim.core.params import numeric_keys
+    num = numeric_keys(SCHEMA)
     p = Project(id="t", params={})
     nominal = p.resolved_params()
     raw = SCHEMA.resolve_all({})
-    untouched = all(abs(nominal[l][k] - raw[l][k]) < 1e-12 for l in raw for k in raw[l])
+    # only numeric parameters can be compared by subtraction; the subtitle text is the first parameter
+    # whose value is not a number, and comparing it raised here
+    skipped = sum(1 for l in raw for k in raw[l] if k not in num.get(l, set()))
+    untouched = all(abs(nominal[l][k] - raw[l][k]) < 1e-12
+                    for l in raw for k in raw[l] if k in num.get(l, set()))
     record("a project with no device identity is the nominal model",
            "adding the dimension must not move any existing preset, capture or measurement",
-           "%d parameters unchanged by the absence of an identity" % len(spreads),
+           "%d numeric parameters unchanged (%d non-numeric skipped)"
+           % (sum(len(v) for v in num.values()), skipped),
            untouched,
            "an anonymous unit perturbing every spread parameter is the failure that would "
            "invalidate every calibration silently")
@@ -2098,8 +2107,10 @@ def check_device_dna() -> None:
     ids = {"camcorder": "Panasonic NV-GS78 A39482", "deck": "JVC HR-J600 11223"}
     a = Project(id="a", params={}, unit_identities=dict(ids)).resolved_params()
     b = Project(id="b", params={}, unit_identities=dict(ids)).resolved_params()
-    stable = all(abs(a[l][k] - b[l][k]) < 1e-12 for l in a for k in a[l])
-    changed = sum(1 for l in a for k in a[l] if abs(a[l][k] - nominal[l][k]) > 1e-12)
+    stable = all(abs(a[l][k] - b[l][k]) < 1e-12
+                 for l in a for k in a[l] if k in num.get(l, set()))
+    changed = sum(1 for l in a for k in a[l]
+                  if k in num.get(l, set()) and abs(a[l][k] - nominal[l][k]) > 1e-12)
     record("one serial number is one machine, every time",
            "a fault must stay reproducible and a tape revisitable",
            "the same two identities give identical parameters: %s; %d parameters deviate from "
@@ -2110,7 +2121,8 @@ def check_device_dna() -> None:
     # --- 3. distinct machines
     c = Project(id="c", params={},
                 unit_identities={**ids, "deck": "JVC HR-J600 99887"}).resolved_params()
-    differs = sum(1 for l in a for k in a[l] if abs(a[l][k] - c[l][k]) > 1e-12)
+    differs = sum(1 for l in a for k in a[l]
+                  if k in num.get(l, set()) and abs(a[l][k] - c[l][k]) > 1e-12)
     record("a different serial is a different machine",
            "two units of one model must not render identically",
            "changing only the deck serial alters %d parameter(s)" % differs,

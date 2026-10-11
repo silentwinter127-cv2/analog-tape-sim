@@ -1,0 +1,17 @@
+A-POS
+   tables: OS/2, cmap, gasp, glyf, head, hhea, hmtx, loca, maxp, name, post
+   unitsPerEm 1000, glyphs 22169
+   family    'A-POS¶Ã?®™?7 QQ°Í?593'
+   subfamily '7385'
+   full      'A-POS¶Ã?®™?7 QQ°Í?59387385'
+   version   'Version 1.00 March 13, 2018, initial release'
+   ascent 924 descent -126 lineGap 30
+   OS/2 version 2, fsSelection mono=False
+   codepoints 22177: ascii 95, CJK 20902, kana 177, PUA 105, max U+FFE5
+   ascii NOT covered: none
+   latin advances: 1 distinct [504] -> MONOSPACED
+   CJK advances (top 5): [(1008, 2000)]
+   glyph 'A': 360 pts, 11 distinct x, 23 distinct y, x 42..462, y 0..924
+      -> grid-aligned (bitmap-derived)
+      x values: [42, 84, 126, 168, 210, 252, 294, 336, 378, 420, 462]
+   empty glyphs among the first 3000 codepoints: 1429

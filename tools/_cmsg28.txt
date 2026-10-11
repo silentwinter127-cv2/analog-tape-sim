@@ -1,0 +1,58 @@
+add a character generator: camcorder OSD text with the three fonts the user supplied
+
+A character generator, not a text renderer, and the distinction is the feature. An OSD chip has a font ROM, a
+fixed cell per character and a position register; it draws glyphs into cells and does not measure, kern, wrap
+or reflow. That is why camcorder overlay text looks the way it does, and it is what the model reproduces.
+
+**What the fonts are, measured rather than assumed.** All three are bitmap-derived, and the evidence is in
+their coordinates rather than their names: A-POS's capitals span 924 units in exact multiples of 42, a
+22-pixel cell at 42 units per pixel. Their stated coverage:
+
+    VCR-OSD-Mono   204 glyphs, ASCII only, advance 1200, 10 distinct x values per glyph
+    Lyusung       7577 glyphs, 6763 CJK, latin 1200 and CJK 2400
+    A-POS        22169 glyphs, 20902 CJK, latin 504 and CJK 1008, 48% of glyphs empty
+
+**The advance ratio is exactly 1:2 in all three**, so a latin character takes one half-cell and a CJK one
+takes two. That is the half/full-width convention of the era and it is why a subtitle can mix scripts without
+a layout pass. `Lyusung` also has an `OS/2` table that declares format 5 and truncates, so `fontTools` raises
+on it -- readable for rendering, unreadable for metadata, and a model that treats the second as fatal cannot
+use a file a user actually has.
+
+**Three rendering faults, all visible in the output and none in the numbers.**
+
+  * the CJK glyphs were **squashed, not decimated**: the font draws a Chinese character at twice a latin
+    advance, and the code stamped it into a half-width cell, compressing it by two. The fix is that a
+    full-width character gets a full-size box;
+  * the cell was derived from the height rather than from the font's own advance, so glyphs and cells drifted
+    apart and two strings overlapped. Both the advance and the baseline now come from the font's metrics by
+    one conversion, so they cannot disagree;
+  * **the resampling was wrong twice** -- first `a[::4, ::4]`, which keeps one sample in sixteen and threw
+    away the strokes; then a 4x block mean, which produced 22 to 52 grey levels in glyphs drawn as hard
+    pixels. A character generator's ROM is **one bit per pixel**, so the glyphs are now rendered at the cell's
+    own size and thresholded, and all three measure exactly two levels. Smoothing them removes the reason to
+    use these fonts at all.
+
+**And four failures of one assumption: that every parameter is a number.** The subtitle text is the first
+non-numeric parameter in the model, and it broke four separate places written before it existed:
+
+  * `ParamSet.resolve` tested `isinstance(v, (int, float))` and **silently discarded** the string, so the
+    overlay was empty at every setting with no warning;
+  * `_preset_baseline` did `float(default)` and raised, taking down **every** preset application rather than
+    just one that mentions the overlay;
+  * `check_device_dna` and its sibling comparisons subtract parameter values, which raises on a string;
+  * and the first attempt to fix all this put the new helper **between `@dataclass` and its class**, so the
+    decorator landed on a function.
+
+The assumption now has a name -- `is_numeric`, in the core rather than in the checks -- because three
+failures of one assumption in three files want a name, not three patches.
+
+**The layer and the stage.** `overlay` is a ninth layer with 13 parameters, and `OverlayStage` runs last in
+the chain, which is correct for a camera's own OSD: it is written over the formed picture, so tape damage
+lands on the picture but not on the text. The alternative -- a titler recording onto tape, where the damage
+lands on the text too -- is described in the module docstring and **not wired**, because it needs the stage in
+a second position and the chain's order fixes one.
+
+Coverage is enforced rather than assumed: the OSD font asked for `婚礼` reports both characters as missing
+instead of drawing boxes, measured.
+
+114 checks pass, 17 presets render, selftest ALL CHECKS PASSED.

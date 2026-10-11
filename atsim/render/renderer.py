@@ -42,11 +42,12 @@ from ..stages.codec import CodecStage
 from ..stages.connector import ConnectorStage
 from ..stages.display import DisplayStage
 from ..stages.format import FormatStage
+from ..stages.overlay import OverlayStage
 from ..stages.player import PlayerStage
 from ..stages.tape import TapeStage
 
 STAGE_ORDER = ("camera", "format", "codec", "connector", "tape", "player",
-               "display")
+               "display", "overlay")
 STAGE_LABELS = {
     "camera": "01 成像",
     "format": "02 编码",
@@ -55,6 +56,7 @@ STAGE_LABELS = {
     "tape": "03 介质",
     "player": "04 读取",
     "display": "05 显示",
+    "overlay": "06 字幕机",
 }
 # which parameter layers feed which stage
 STAGE_LAYERS = {
@@ -67,6 +69,9 @@ STAGE_LAYERS = {
     "tape": ("tape",),
     "player": ("player", "format"),
     "display": ("display",),
+    # the generator reads only its own layer, so editing the text does not dirty
+    # the camera or the tape
+    "overlay": ("overlay",),
 }
 
 
@@ -215,6 +220,10 @@ class Renderer:
         # recorded onto the tape rather than applied on playback.
         chain.add(ConnectorStage(ctx))
         chain.add(TapeStage(ctx)).add(PlayerStage(ctx)).add(DisplayStage(ctx))
+        # The character generator runs last for a camera overlay.  A titler records onto the
+        # tape instead, which is a different position in the chain and therefore a different
+        # result in the presence of damage -- see `osd.at`.
+        chain.add(OverlayStage(ctx))
         chain.prepare()
         self.chain = chain
         self.stage = {s.name: s for s in chain.stages}

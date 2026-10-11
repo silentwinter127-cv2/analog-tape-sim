@@ -73,7 +73,12 @@ def _preset_baseline() -> dict:
     for name in SCHEMA.layer_names():
         layer = SCHEMA.layer(name)
         for key in layer.keys():
-            base[name][key] = float(layer.specs[key].default)
+            _spec = layer.specs[key]
+            # keep the default's own type: coercing to float was a no-op for numeric parameters and
+            # raises on a text one, which took down every preset application rather than just the
+            # preset that mentions the overlay
+            _d = _spec.default
+            base[name][key] = _d if getattr(_spec, "kind", "number") == "text" else float(_d)
     return merge_values(base, _PRESET_BASELINE_LAYERS)
 
 
