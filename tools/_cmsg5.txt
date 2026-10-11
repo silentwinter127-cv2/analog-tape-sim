@@ -1,0 +1,44 @@
+calibrate row_timebase: the reference sits below the instrument's floor
+
+The measurement chain was finally assembled -- the model's own response curve read with the
+same tracker that measured the material, on a real frame's luma rather than a synthetic
+pattern, since the response depends on composition. What it produced is a negative result
+worth recording.
+
+**First, a harness bug that looked exactly like a dead mechanism.** The initial run reported
+a perfectly flat response -- every parameter value giving 0.7992 px -- and the obvious
+reading was the sixth instance of a feature being annulled. It was not: `merge_values` keeps
+only the keys already present in its first argument, so a hand-built "zeroed" base
+dictionary without `row_timebase` in it silently dropped the parameter under test, and the
+stage received 0.0 every time. The fix is to resolve the full set first and override onto
+it, and the sweep now asserts that the value it set is the value that arrived.
+
+That distinction matters because a harness that drops its own parameter is indistinguishable
+from a mechanism with no effect, and this project has mistaken one for the other more than
+once.
+
+**Then the real result.** With the merge corrected, the model's response is still close to
+flat, and now for a genuine reason:
+
+    row_timebase 0.000 -> 0.7992 px      0.040 -> 0.8126 px
+    row_timebase 0.005 -> 0.8643 px      0.080 -> 0.8392 px
+    row_timebase 0.010 -> 0.8659 px      0.150 -> 0.8632 px
+
+The tracker's floor on that frame is about 0.80 px, and it does not fall below it at any
+setting, including zero. The real capture's median is 0.315 px -- **below that floor**. So
+the model's displacement cannot be measured with this instrument on this input, and the
+reference figure cannot be inverted through it.
+
+Which reframes the whole exercise. The 0.315 px measured on the material is near the edge of
+what the tracker can resolve there, and the difference between it and the model's 0.80 px
+floor may be a property of the *inputs* rather than of the mechanisms: the real fields have
+structure the tracker accepts, while the model's output at these settings has either too
+little or too much for the same gate to behave comparably.
+
+What is not claimed: that the model's row-time-base amplitude is wrong. It may be right,
+and unmeasurable by this route. What is established is that the route does not work, and
+that is where this stops rather than tuning a parameter against a number the instrument
+cannot reach.
+
+61 checks pass. The parameter remains at the value the preset uses, uncalibrated against
+this material, with the reason recorded.
