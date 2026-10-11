@@ -726,7 +726,15 @@
      `set_levels`, which *does* take a bare layer mapping -- using the wrong one fails silently in both
      directions, so the shape is written down here rather than remembered. */
   function pushProject(patch) {
-    if (typeof setProject === "function") setProject({ params: patch });
+    /* Both paths send the same nested shape.  The fallback used to send the bare patch, which the API
+       silently discards -- dead code while `app.js` is loaded, and a trap if it ever ran. */
+    if (typeof setProject === "function") {
+      setProject({ params: patch });
+    } else if (typeof api === "function" && typeof jsonPost === "function") {
+      api("/api/project", jsonPost({ params: patch })).then((d) => {
+        if (typeof applyProject === "function") applyProject(d);
+      });
+    }
   }
 
   function syncOsd(d) {

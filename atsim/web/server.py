@@ -202,8 +202,29 @@ class App:
     def set_project(self, payload: dict) -> dict:
         with self.lock:
             p = self.current
+            # A payload may name layers in two ways and both must work.  The nested form is the server's own
+            # convention (`set_levels` wraps its argument that way), and the bare form is what a caller
+            # reasonably sends when it wants to set a layer.  Measured before this: the bare form left
+            # `overlay.enabled` at 0.0 with no error, so a caller had no way to tell it had failed.
+            #
+            # The bare form is detected by the payload naming any *known layer* at the top level.  A payload
+            # that only carries `params`/`seed`/`standard` and so on has none, so the nested path is used.
+            _layers = {l for l in self.store.schema.layer_names()} if hasattr(self.store, "schema") else set()
+            if not _layers:
+                from ..core.profiles import SCHEMA as _S
+                _layers = set(_S.layer_names())
+            _bare = [k for k in payload if k in _layers]
             if "params" in payload and isinstance(payload["params"], dict):
-                p.params = merge_values(p.params or {}, payload["params"])
+                merged = dict(payload["params"])
+                # a caller that nested twice leaves a layer literally called `params`; unfurl it so the
+                # values reach the layer they name
+                if isinstance(merged.get("params"), dict):
+                    inner = dict(merged.pop("params"))
+                    inner.update(merged)
+                    merged = inner
+                p.params = merge_values(p.params or {}, merged)
+            elif _bare:
+                p.params = merge_values(p.params or {}, {k: payload[k] for k in _bare})
             if "seed" in payload:
                 p.seed = int(payload["seed"])
             if "standard" in payload:

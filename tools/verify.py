@@ -2908,5 +2908,57 @@ def check_osd_multiline() -> None:
            "%d line(s) reported, ink bands %s" % (rep.get("lines"), bands),
            len(bands) == 2 and rep.get("lines") == 2,
            "measured: both lines at y=10..36, one band, 12 glyphs drawn")
+def check_payload_shapes() -> None:
+    """
+    Both ways of naming a layer must work, because a caller that sends the wrong one used to be ignored.
+
+    `App.set_project` merges `payload["params"]` per layer -- that is the server's own convention, and
+    `set_levels` wraps its argument that way -- but the route passes the body straight through, so a client
+    that sends a bare `{"overlay": {...}}` sets a layer literally named `params` and the real layer is never
+    touched. Measured before the fix: the bare form left `overlay.enabled` at 0.0 with no error and no
+    warning, so a UI could look like it was working while every value went somewhere nothing reads.
+
+    That is exactly what happened: the subtitle was stored as
+    `"params": {"overlay": {"enabled": 1, "text": "1"}}` inside a saved project while the `overlay` layer read
+    `enabled=0.0, text=""`, and the panel's own state came back from a payload it had failed to change.
+
+    So the check exercises all three shapes -- bare, nested, and nested twice -- on the real `App`, and asserts
+    that none of them leaves a stray `params` layer behind.
+    """
+    import tempfile
+
+    from atsim.web.server import App
+
+    app = App(data_dir=tempfile.mkdtemp(prefix="payload-"))
+    app.set_project({"params": {"overlay": {"enabled": 0.0, "text": ""}}})
+
+    shapes = [
+        ("bare layer map", {"overlay": {"enabled": 1.0, "text": "BARE"}}),
+        ("nested under params", {"params": {"overlay": {"enabled": 1.0, "text": "NESTED"}}}),
+        ("nested twice", {"params": {"params": {"overlay": {"enabled": 1.0, "text": "DOUBLE"}}}}),
+    ]
+    results = []
+    for label, payload in shapes:
+        app.set_project(payload)
+        d = app.project_dict()
+        p = d.get("params") or {}
+        ov = p.get("overlay") or {}
+        results.append((label, ov.get("enabled"), ov.get("text"), "params" in p))
+        print("    %-20s -> enabled=%s text=%r  stray params layer: %s"
+              % (label, ov.get("enabled"), ov.get("text"), "params" in p))
+
+    ok = all(r[1] == 1.0 and r[3] is False for r in results)
+    record("every payload shape sets the layer it names",
+           "a caller that sends a bare layer map must not be silently ignored",
+           "; ".join("%s -> text=%r" % (r[0], r[2]) for r in results),
+           ok,
+           "measured before the fix: the bare form left overlay.enabled at 0.0 with no error, and a saved "
+           "project grew a layer named `params` holding the subtitle")
+
+    record("no payload shape leaves a stray `params` layer",
+           "a layer named after the payload key stores values where nothing reads them",
+           "stray layers after all three shapes: %s"
+           % ([r[0] for r in results if r[3]] or "none"),
+           not any(r[3] for r in results))
 if __name__ == "__main__":
     raise SystemExit(main())
