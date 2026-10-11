@@ -798,6 +798,13 @@ def build_schema() -> ParamSchema:
     # 所以一个汉字占两个半格，这就是那个年代的半角/全角约定。
     osd = s.layer("overlay")
     g = "字幕机"
+    osd.define("at", "发生器位置", 0.0, 0.0, 1.0, unit="0-1", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0,
+               help="**0 = 画面成形之后**（摄像机自身的 OSD）：字幕写在已成形的画面上，"
+                    "所以之后发生的磁带损伤落在画面上、**不落在字上**。"
+                    "**1 = 介质之前**（字幕机往磁带上录）："
+                    "录像机的失落、磁头磨损、时基误差**连字一起毁**。"
+                    "两者都是真实设备；差别正好在磁带很差的时候看得出来。")
     osd.define("enabled", "启用字幕机", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
                phys_min=0.0, phys_max=1.0)
     osd.define("font", "字体", 0.0, 0.0, 2.0, unit="0-2", group=g, step=1.0,

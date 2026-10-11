@@ -550,6 +550,182 @@
   }
 
   /* ------------------------------------------------------------ 装配 */
+  /* ---------------------------------------------------------------- 字幕机 */
+
+  /* The font list, with the coverage the user stated.  Recorded here as well as in the engine so the
+     editor can warn before a render, and so the warning is specific: "this font has no Chinese" is
+     actionable, "some glyphs are missing" is not. */
+  const OSD_FONTS = [
+    ["osd", "VCR OSD Mono", "仅英文/数字"],
+    ["lyusung", "柳宋", "中英文数字"],
+    ["apos", "A-POS 点阵", "中英文数字"],
+  ];
+
+  /* Which characters a font can draw, as far as the editor needs to know: the OSD font has no CJK at
+     all, and the two Chinese fonts cover the common range.  Used only for a live warning beside the
+     text; the engine reports the authoritative list after a render. */
+  function charSupported(fontKey, ch) {
+    const c = ch.codePointAt(0);
+    if (c < 0x80) return true;
+    if (fontKey === "osd") return false;
+    return (c >= 0x3000 && c <= 0x30ff) || (c >= 0x4e00 && c <= 0x9fff)
+        || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xff00 && c <= 0xffef);
+  }
+
+  let osdEls = null;
+
+  function osdPanels() {
+    // the editor is a bespoke control, not a slider: the text is multi-line and the font is a named
+    // choice, so the schema-driven parameter rows cannot express it.  The numeric parameters
+    // (cell height, offsets, colour) stay in the parameter panel as usual, which is why this only
+    // builds the parts that need it.
+    if (osdEls) return osdEls;
+    const host = $("osdPanel");
+    if (!host) return null;
+    host.textContent = "";
+
+    const note = el("p", "ssNote");
+    note.innerHTML = "**字符发生器不是排版引擎。** OSD 芯片有字模 ROM、每字一个固定字格、"
+      + "一个位置寄存器：它把字形画进格子，<b>不测量、不调字距、不换行、不重排</b>。"
+      + "汉字占两格、西文占一格——这就是当年的半角/全角约定。"
+      + "一行超出右边缘的部分会直接丢失，因为真实发生器没有断行逻辑。";
+    host.append(note);
+
+    // --- the text, multi-line, because a subtitle is
+    const lab = el("div", "palGroup", "字幕文本");
+    const ta = el("textarea", "ssTextArea");
+    ta.rows = 4;
+    ta.placeholder = "每行一条字幕，例如：\nREC 00:12:34\n婚礼录像";
+    ta.spellcheck = false;
+    host.append(lab, ta);
+
+    const warn = el("div", "ssWarn");
+    host.append(warn);
+
+    // --- the font
+    const fl = el("div", "palGroup", "字体");
+    const fsel = el("select", "ssSel");
+    OSD_FONTS.forEach(([k, name, cover]) => {
+      const o = el("option", null, name + "（" + cover + "）");
+      o.value = k;
+      fsel.append(o);
+    });
+    host.append(fl, fsel);
+
+    // --- the position, which is the whole point of the feature
+    const pl = el("div", "palGroup", "发生器位置");
+    const psel = el("select", "ssSel");
+    [["0", "画面成形之后（摄像机自身 OSD）"],
+     ["1", "介质之前（字幕机录到磁带上）"]].forEach(([v, t]) => {
+      const o = el("option", null, t);
+      o.value = v;
+      psel.append(o);
+    });
+    host.append(pl, psel);
+    const pnote = el("div", "ssHelp");
+    pnote.style.marginLeft = "0";
+    pnote.innerHTML = "位置<b>不是</b>画面上的先后，而是信号链里的位置："
+      + "摄像机 OSD 写在已成形的画面上，所以之后的磁带损伤落在画面、<b>不落在字上</b>；"
+      + "字幕机录到磁带上，所以失落、磁头磨损、时基误差<b>连字一起毁</b>。"
+      + "差别正好在磁带很差的时候看得出来。";
+    host.append(pnote);
+
+    // --- the enable switch and a live readout
+    const row = el("div", "ssRow");
+    const chkLab = el("label", "chk");
+    const chk = el("input");
+    chk.type = "checkbox";
+    chkLab.append(chk, document.createTextNode(" 启用"));
+    const btn = el("button", "ghost", "应用到工程");
+    row.append(chkLab, btn);
+    host.append(row);
+
+    const readout = el("div", "ssReadout");
+    host.append(readout);
+
+    osdEls = { ta, fsel, psel, chk, warn, readout, btn };
+
+    let timer = null;
+    const refreshWarn = () => {
+      const font = fsel.value;
+      const bad = [];
+      Array.from(ta.value).forEach((ch) => {
+        if (ch === "\n" || ch === "\r" || ch === "\t") return;
+        if (!charSupported(font, ch) && bad.indexOf(ch) < 0) bad.push(ch);
+      });
+      if (!ta.value.trim()) {
+        warn.textContent = "";
+      } else if (bad.length) {
+        warn.innerHTML = "字体 <b>" + font + "</b> 画不出：<b>" + bad.join(" ")
+          + "</b> —— 这些字会被<b>明确报告为缺字</b>，而不是画成方块。换柳宋或 A-POS。";
+      } else {
+        warn.textContent = "";
+      }
+      const lines = ta.value ? ta.value.split("\n").length : 0;
+      const chars = Array.from(ta.value).filter((c) => c !== "\n").length;
+      const cells = Array.from(ta.value).reduce(
+        (a, c) => a + (c === "\n" ? 0 : (c.codePointAt(0) >= 0x3000 ? 2 : 1)), 0);
+      readout.innerHTML = lines + " 行、共 <b>" + chars + "</b> 字（占 <b>" + cells
+        + "</b> 个半格）。字格高度、行列偏移和字色在右侧参数面板里调。";
+    };
+
+    /* The push is debounced: a subtitle is typed, not dragged, and one request per keystroke would
+       re-render the preview on every character.  700 ms is longer than the font-commit delay because
+       typing is continuous and a mid-word render is wasted. */
+    const push = () => {
+      const idx = OSD_FONTS.findIndex(([k]) => k === fsel.value);
+      pushProject({ overlay: {
+        enabled: chk.checked ? 1 : 0,
+        text: ta.value,
+        font: idx < 0 ? 0 : idx,
+        at: parseFloat(psel.value) || 0,
+      } });
+      refreshWarn();
+    };
+    const schedule = () => {
+      refreshWarn();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(push, 700);
+    };
+    ta.oninput = schedule;
+    fsel.onchange = () => { refreshWarn(); push(); };
+    psel.onchange = push;
+    chk.onchange = push;
+    btn.onclick = push;
+    return osdEls;
+  }
+
+  /* Push a project patch using the host's own setProject, so the editor shares one state store with the
+     rest of the interface rather than keeping a copy that can drift. */
+  /* Layer values must go under `params`: `App.set_project` merges `payload["params"]` per layer, so a
+     bare `{"overlay": {...}}` is ignored without complaint.  This interface has a second entry point,
+     `set_levels`, which *does* take a bare layer mapping -- using the wrong one fails silently in both
+     directions, so the shape is written down here rather than remembered. */
+  function pushProject(patch) {
+    if (typeof setProject === "function") setProject({ params: patch });
+  }
+
+  function syncOsd(d) {
+    const e = osdPanels();
+    if (!e) return;
+    const cur = (d && d.params && d.params.overlay) || {};
+    // do not clobber what the user is typing: only adopt the server's value when the field is not focused
+    if (document.activeElement !== e.ta) {
+      const t = cur.text == null ? "" : String(cur.text);
+      if (e.ta.value !== t) e.ta.value = t;
+    }
+    const idx = Math.round(Number(cur.font == null ? 0 : cur.font));
+    if (OSD_FONTS[idx]) e.fsel.value = OSD_FONTS[idx][0];
+    e.psel.value = String(Math.round(Number(cur.at == null ? 0 : cur.at)));
+    e.chk.checked = Number(cur.enabled == null ? 0 : cur.enabled) > 0.5;
+    // the engine's own report, if a frame has been rendered since
+    const rep = (d && d.osd_report) || (S && S.osdReport) || null;
+    if (rep && rep.missing && rep.missing.length) {
+      e.warn.innerHTML = "引擎报告缺字：<b>" + rep.missing.join(" ") + "</b>"
+        + "（字体 " + (rep.font || "?") + "）";
+    }
+  }
+
   function mountTabs() {
     // 在左侧面板已有内容之上插入三个按钮，用同一个 .tabs 容器
     let host = $("ssTabs");
@@ -562,7 +738,7 @@
     }
     host.textContent = "";
     const panels = [["envPanel", "环境状态"], ["devicePanel", "设备个体"],
-                    ["tlPanel", "关键帧时间线"]];
+                    ["tlPanel", "关键帧时间线"], ["osdPanel", "字幕机"]];
     panels.forEach(([id, label]) => {
       const b = el("button", "tab", label);
       b.onclick = () => {
@@ -590,6 +766,7 @@
         renderEnv();
         renderDevice();
         renderKeyframes();
+        try { osdPanels(); } catch (err) {}
         SUI.ready = true;
       })
       .catch(() => { /* 面板拿不到不该影响主界面 */ });
@@ -606,6 +783,8 @@
       renderEnv();
       renderDevice();
       renderKeyframes();
+      // the editor is built from the project's own values, and reads them back from the same payload
+      try { syncOsd(d); } catch (err) { /* the editor must not take the interface down */ }
     }
   }
 

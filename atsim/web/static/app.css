@@ -274,3 +274,15 @@ button.wide{width:100%;margin-top:8px}
 .tlPt { display: flex; align-items: center; gap: 7px; }
 .tlPt input { width: 58px; background: #0f1319; border: 1px solid #232c38; color: #c7d3e2;
   border-radius: 3px; font-size: 11px; padding: 2px 4px; font-family: ui-monospace, monospace; }
+
+/* the subtitle editor: a multi-line field and a warning line, appended like the rest */
+.ssTextArea {
+  width: 100%; box-sizing: border-box; background: #0f1319; color: #c7d3e2;
+  border: 1px solid #232c38; border-radius: 4px; padding: 6px 7px;
+  font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5;
+  resize: vertical; min-height: 62px;
+}
+.ssTextArea::placeholder { color: #4a5666; }
+.ssWarn { color: #ffd166; font-size: 11.5px; line-height: 1.6; margin: 7px 0 4px; }
+.ssWarn b { color: #ffb020; }
+.ssRow .ghost { margin-left: auto; }

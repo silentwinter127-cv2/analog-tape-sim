@@ -22,10 +22,19 @@ class OverlayStage(Stage):
     name = "overlay"
     layers = ("overlay",)
 
-    def __init__(self, ctx: RenderContext):
+    #: which slot this instance occupies: 0 = after the display, 1 = after the camera
+    SLOT_TAIL = 0
+    SLOT_PRE_TAPE = 1
+
+    def __init__(self, ctx: RenderContext, slot: int = 0):
         super().__init__(ctx)
         cfg = self.cfg_of("overlay")
         self.enabled = float(cfg.get("enabled", 0.0)) > 0.5
+        # where the generator writes: 0 after the picture is formed (a camera's own OSD), 1 before the
+        # medium (a titler recording onto tape).  The renderer places this stage in the matching slot and
+        # sets `slot` accordingly; a stage whose slot does not match does nothing.
+        self.at = int(np.clip(round(float(cfg.get("at", 0.0))), 0, 1))
+        self.slot = int(slot)
         self.text = str(cfg.get("text", ""))
         self.font_kind = float(cfg.get("font", 0.0))
         self.cell_h = int(max(8, round(float(cfg.get("cell_h", 24)))))
@@ -72,6 +81,9 @@ class OverlayStage(Stage):
 
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
         if not self.enabled or not self.text:
+            return buf
+        if self.at != self.slot:
+            # this instance is in the slot the parameter did not choose; the other one draws
             return buf
         rgb = buf.rgb.astype(np.float32, copy=False)
         gen = self._generator(rgb.shape[1], rgb.shape[0])

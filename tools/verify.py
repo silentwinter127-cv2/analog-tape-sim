@@ -2752,5 +2752,118 @@ def check_preset_dimensions() -> None:
                          "unit_identities": saved[2]})
         if saved[3]:
             app.apply_preset(saved[3])
+def check_osd_positions() -> None:
+    """
+    The generator's two positions must land the tape damage in different places, and the editor must talk to
+    the API in the shape the API reads.
+
+    **The measurement had to be rebuilt, and the reason is worth keeping.** The first version fixed the damage
+    and varied the position, and took its text mask from one of the two positions -- so at the other position
+    the mask covered the wrong pixels, the numbers came out reversed, and the mask grew to nearly the whole
+    frame (15853 pixels of 76800) because placing the overlay *before* the tape changes the tape's plan and
+    therefore every pixel in the frame. That is a real consequence of the placement and it makes a
+    position-difference mask useless as a text mask.
+
+    The corrected measurement fixes the position and varies the damage, and takes the text's pixels from the
+    render where the text is clean by construction -- the camera position -- with the painted luma as the
+    target, which is known because a character generator draws opaque glyphs.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.io.source import SyntheticSource
+    from atsim.render.renderer import STAGE_ORDER, Renderer
+
+    W, H, FPS = 320, 240, 25.0
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["family_archive_1992"]["layers"])
+    COEF = np.array([0.299, 0.587, 0.114], np.float32)
+    OSD = {"enabled": 1.0, "font": 1.0, "text": "TITLE 标题", "cell_h": 20.0,
+           "shadow": 0.6, "margin": 0.06}
+    HEAVY = {"tape": {"dropout_rate": 9.0, "head_wear": 0.95, "tracking_error": 0.9,
+                      "head_switch_lines": 24.0},
+             "player": {"head_wear": 0.85, "tracking_error": 0.5}}
+
+    def render(over, n=6):
+        p = merge_values(BASE, over)
+        s = SyntheticSource(width=W, height=H, frames=n)
+        r = Renderer(s, W, H, FPS, p, seed=11)
+        return np.clip(r.render_frame(n - 1), 0, 1)
+
+    clean_cam = render({"overlay": dict(OSD, at=0.0)})
+    no_text = render({"overlay": {"enabled": 0.0}})
+    ink = (np.abs(clean_cam - no_text) @ COEF) > 0.05
+    print("    the text occupies %d pixel(s)" % int(ink.sum()))
+
+    if int(ink.sum()) < 20:
+        record("the generator's two positions land damage differently",
+               "a camera burns its OSD over the frame; a titler records onto the tape",
+               "the overlay drew only %d pixel(s), too few to test" % int(ink.sum()), False)
+    else:
+        target = (clean_cam @ COEF)[ink]
+        out = {}
+        for at in (0.0, 1.0):
+            clean = render({"overlay": dict(OSD, at=at)})
+            damaged = render({**HEAVY, "overlay": dict(OSD, at=at)})
+            out[at] = (float(np.abs((damaged @ COEF)[ink] - target).mean()),
+                       float(np.abs((damaged @ COEF)[~ink] - (no_text @ COEF)[~ink]).mean()))
+        t0, r0 = out[0.0]
+        t1, r1 = out[1.0]
+        record("the generator's two positions land damage differently",
+               "a camera's OSD survives the tape while a titler's text does not",
+               "over the text's own %d pixel(s): deviation %.5f at the camera position against a "
+               "picture move of %.5f; %.5f at the titler position against %.5f"
+               % (int(ink.sum()), t0, r0, t1, r1),
+               t0 < r0 and t1 > t0 * 5.0,
+               "an OSD written over the formed picture is not damaged by the tape, and one recorded "
+               "onto the tape is")
+
+    # --- the chain places exactly one instance, in the slot the parameter selects
+    # the comparison uses the *chain's* own order rather than STAGE_ORDER: the chain puts the overlay in a
+    # different slot per setting, so the tape's index is not the same in the two cases.  Measuring against
+    # the static tuple made the second case fail a correct chain.
+    for at, want in ((0.0, "after"), (1.0, "before")):
+        p = merge_values(BASE, {"overlay": dict(OSD, at=at)})
+        s = SyntheticSource(width=160, height=120, frames=2)
+        r = Renderer(s, 160, 120, FPS, p, seed=5)
+        r._build_chain()
+        names = [st.name for st in r.chain.stages]
+        i, th = names.index("overlay"), names.index("tape")
+        ok = (i > th) if at == 0.0 else (i < th)
+        record("the chain places the generator %s the tape" % want,
+               "exactly one instance, in the slot the parameter selects -- two would disagree about "
+               "what a cached frame contains",
+               "at=%.0f -> %s" % (at, names), ok and names.count("overlay") == 1)
+
+    # --- the editor's payload shape, whose failure was silent
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    js = open(os.path.join(root, "atsim", "web", "static", "session_ui.js"),
+              encoding="utf-8").read()
+    shaped = "setProject({ params: patch })" in js
+    record("the subtitle editor sends layer values under `params`",
+           "a bare layer mapping is silently ignored by the API",
+           "setProject wraps the patch: %s" % shaped, shaped,
+           "measured: the project still read enabled=0.0, text='' after the editor set them")
+
+    # --- and the engine's own missing-glyph report reaches the payload
+    from atsim.web.server import App
+    app = App(data_dir=os.path.join(root, "runs"))
+    cur = app.current
+    saved = dict((cur.params or {}).get("overlay") or {})
+    try:
+        app.set_project({"params": {"overlay": {"enabled": 1.0, "font": 0.0,
+                                                "text": "REC 婚礼", "cell_h": 20.0}}})
+        app.frame(0.0, 0.25, 80)
+        rep = app.project_dict().get("osd_report") or {}
+        missing = "".join(rep.get("missing") or [])
+        record("the engine reports which characters its font cannot draw",
+               "a subtitle that silently loses its Chinese is worse than one that says it cannot",
+               "the OSD font asked for 婚礼 reported missing=%r, drew %s glyph(s)"
+               % (missing, rep.get("drawn")),
+               missing == "婚礼" and (rep.get("drawn") or 0) > 0,
+               "the OSD font has no CJK at all")
+    finally:
+        app.set_project({"params": {"overlay": saved or {"enabled": 0.0, "text": ""}}})
+
 if __name__ == "__main__":
     raise SystemExit(main())

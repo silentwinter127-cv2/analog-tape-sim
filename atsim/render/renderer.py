@@ -219,11 +219,15 @@ class Renderer:
         # Connectors sit between the source and the recorder, so damage here is
         # recorded onto the tape rather than applied on playback.
         chain.add(ConnectorStage(ctx))
+        # The character generator's position is a property of the apparatus, not of the caller: a camera
+        # burns its OSD over the formed picture, a titler records onto the tape.  One instance is created,
+        # in the slot `overlay.at` selects, and it does nothing when the parameter disagrees with its slot.
+        _osd_at = int(round(float(self.params.get("overlay", {}).get("at", 0.0)) or 0.0))
+        if _osd_at == 1:
+            chain.add(OverlayStage(ctx, slot=OverlayStage.SLOT_PRE_TAPE))
         chain.add(TapeStage(ctx)).add(PlayerStage(ctx)).add(DisplayStage(ctx))
-        # The character generator runs last for a camera overlay.  A titler records onto the
-        # tape instead, which is a different position in the chain and therefore a different
-        # result in the presence of damage -- see `osd.at`.
-        chain.add(OverlayStage(ctx))
+        if _osd_at != 1:
+            chain.add(OverlayStage(ctx, slot=OverlayStage.SLOT_TAIL))
         chain.prepare()
         self.chain = chain
         self.stage = {s.name: s for s in chain.stages}

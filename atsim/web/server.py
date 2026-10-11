@@ -152,6 +152,9 @@ class App:
         self.lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
         self._clean: dict[tuple, Renderer] = {}
+        # what the character generator last drew.  Declared here so the payload can read it before any
+        # frame has been rendered, rather than raising on a missing attribute.
+        self.osd_report: dict = {}
         self.current = Project(name="新工程", seed=20240101)
         if default_clip:
             p = Path(default_clip)
@@ -190,6 +193,10 @@ class App:
             "keyframes": list(self.current.keyframes or []),
             "unit_identities": dict(self.current.unit_identities or {}),
             "unit_report": self.current.unit_report(),
+            # what the character generator last drew, and which characters its font could not draw.
+            # Empty until a frame has been rendered, which the interface handles by falling back to its
+            # own coverage check.
+            "osd_report": dict(getattr(self, "osd_report", {}) or {}),
         }
 
     def set_project(self, payload: dict) -> dict:
@@ -256,6 +263,15 @@ class App:
             # against a differently-scaled decode.
             r = self._clean_renderer(scale)
         rgb = r.render_frame(idx)
+        # the character generator fills its report while drawing, so this is the moment it is known.
+        # Captured here rather than in the stage so that every path which renders a preview updates it
+        # and the interface has one place to read from.
+        try:
+            st = (r.stage or {}).get("overlay")
+            if st is not None and getattr(st, "report", None):
+                self.osd_report = dict(st.report)
+        except Exception:                                             # noqa: BLE001
+            pass
         return _jpeg(rgb, quality) if quality < 100 else _png(rgb)
 
     def source_frame(self, t: float, scale: float, quality: int = 88) -> bytes:
