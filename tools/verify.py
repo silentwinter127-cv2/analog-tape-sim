@@ -23,6 +23,7 @@ What "verified" means here, and what it does not:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import sys
@@ -1163,6 +1164,34 @@ def check_mpeg1_branch() -> None:
 
 
 
+
+# Checks that are cheap enough to run with `--quick`.  A check not listed here is
+# skipped under `--quick`, deliberately: a missing check is visible, an accidentally
+# included slow one is not.
+QUICK = ("check_consistency", "check_engine", "check_presets", "check_shuttle")
+
+
+def _discover_checks() -> list[str]:
+    """
+    Every `check_*` function in this module, in the order they are defined.
+
+    Discovered rather than listed. A hand-maintained list has already produced a check
+    that never ran while the suite reported success, which is indistinguishable from the
+    check passing -- the worst failure mode a test suite can have. Order comes from the
+    source, so it is stable and needs no upkeep.
+    """
+    names = [n for n, v in globals().items()
+             if n.startswith("check_") and callable(v)]
+    try:
+        tree = ast.parse(open(__file__, encoding="utf-8").read())
+        order = {n.name: n.lineno for n in tree.body
+                 if isinstance(n, ast.FunctionDef) and n.name.startswith("check_")}
+        names.sort(key=lambda n: order.get(n, 10 ** 9))
+    except OSError:
+        names.sort()
+    return names
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="verify every mechanism claim")
     ap.add_argument("--quick", action="store_true",
@@ -1177,29 +1206,11 @@ def main(argv: list[str] | None = None) -> int:
     print("  analog-tape-sim  --  verification")
     print("=" * 78)
 
-    check_consistency()
-    check_engine()
-    check_presets()
-    check_shuttle()
-    if not args.quick:
-        check_drum_speed()
-        check_acc_gain()
-        check_binder_loss()
-        check_rf()
-        check_deck_osd()
-        check_graph_wiring()
-        check_dv_odd_size()
-        check_preset_independence()
-        check_server_control()
-        check_row_chroma()
-        check_row_timebase()
-        check_stripe_moire()
-        check_fingerprint_ordering()
-        check_row_timebase_shape()
-        check_tbc_reduces_error()
-        check_mpeg1_branch()
-        check_broadcast_noise()
-        check_head_switch()
+    checks = _discover_checks()
+    for name in checks:
+        if args.quick and name not in QUICK:
+            continue
+        globals()[name]()
 
     failed = [r for r in RESULTS if not r.ok]
     print()
@@ -1222,6 +1233,48 @@ def main(argv: list[str] | None = None) -> int:
                           "sheet": sheet}, ensure_ascii=False, indent=2))
     print("=" * 78)
     return 1 if failed else 0
+
+
+def check_discovery_completeness() -> None:
+    """
+    Every `check_*` function defined here must be one the runner will execute.
+
+    Written because a check that never runs looks exactly like a check that passes.
+    Three MPEG-1 assertions were written, registered next to another check's *definition*
+    rather than inside `main()`, and the suite reported 47 passes -- healthy, and wrong.
+    Discovery by name now makes that particular mistake impossible, and this asserts it
+    stays that way: if a check is defined with a name the discovery pattern misses, or
+    the file stops parsing, this fails rather than quietly shrinking the suite.
+    """
+    import ast as _ast
+    import re as _re
+
+    source = open(__file__, encoding="utf-8").read()
+    defined = set(_re.findall(r"^def (check_\w+)\(", source, _re.M))
+    discovered = set(_discover_checks())
+    missing = sorted(defined - discovered)
+    record("every defined check is discovered",
+           "a check that does not run must not look like one that passes",
+           "%d defined, %d discovered, %d missing" % (len(defined), len(discovered),
+                                                      len(missing)),
+           not missing, ", ".join(missing[:4]))
+
+    # and the file must parse, since discovery reads it with `ast`
+    try:
+        tree = _ast.parse(source)
+        parsed = True
+    except SyntaxError as exc:
+        parsed = False
+        tree = None
+    record("verify.py parses for its own discovery", "discovery depends on the AST",
+           "ok" if parsed else "syntax error", parsed)
+
+    if tree is not None:
+        quick_known = [n for n in QUICK if n in discovered]
+        record("the quick set is not empty and resolves",
+               "--quick must run something, and only real checks",
+               "%d of %d quick names resolve" % (len(quick_known), len(QUICK)),
+               bool(quick_known) and len(quick_known) == len(QUICK))
 
 
 if __name__ == "__main__":
