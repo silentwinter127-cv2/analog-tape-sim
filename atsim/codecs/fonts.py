@@ -115,6 +115,70 @@ def is_full_width(ch: str) -> bool:
     return any(lo <= c <= hi for lo, hi in CJK_RANGES)
 
 
+
+#: the height at which the cell is measured.  Large enough that the rounded pixel advance is accurate to
+#: better than one per cent, and small enough to be fast.
+PROBE_H = 200
+
+
+def _measure_cell(spec: "FontSpec") -> tuple[int, int, int]:
+    """
+    (half advance, full advance, ascent) in font units, measured from what the font draws.
+
+    The probe is a run of Latin characters at `PROBE_H` pixels: its pixel width divided by the count gives the
+    half-advance in pixels, and the same figure converted back to font units is what the rest of the model
+    expects.  A CJK character is then drawn at twice that, which is the half/full convention all three fonts
+    follow -- and it is checked rather than assumed, because a font whose CJK advance is not exactly double
+    would otherwise be silently mis-laid-out.
+
+    Falls back to the `hmtx` table only if the rasteriser cannot measure, so a font that cannot be drawn is
+    still described.
+    """
+    from PIL import ImageFont
+    upm = max(1, spec.units_per_em)
+    try:
+        face = ImageFont.truetype(spec.path, PROBE_H)
+        probes = [("HHHHHHHH", 1), ("婚婚婚婚", 2)]
+        widths = {}
+        for text, cells in probes:
+            try:
+                w = float(face.getlength(text))
+            except Exception:                                         # noqa: BLE001
+                w = float(face.getsize(text)[0])
+            per = w / max(1, len(text))
+            widths[cells] = per
+        half_px = widths.get(1, 0.0)
+        full_px = widths.get(2, 0.0)
+        if half_px <= 1e-6:
+            raise ValueError("no latin width")
+        half = int(round(half_px * upm / PROBE_H))
+        # the CJK cell should be twice the latin one; where it is not, the larger of the two is used so
+        # a wide glyph cannot overflow into its neighbour
+        full = int(round(full_px * upm / PROBE_H)) if full_px > 1e-6 else half * 2
+        if full < half * 1.5:
+            full = half * 2
+        ascent = int(round(face.getmetrics()[0] * upm / PROBE_H))
+        return half, full, ascent
+    except Exception:                                                 # noqa: BLE001
+        # the fallback: the smallest advance that occurs more than once, doubled for full width
+        try:
+            f = TTFont(spec.path, fontNumber=0, lazy=True)
+            cmap = f.getBestCmap()
+            hmtx = f["hmtx"]
+            widths: dict[int, int] = {}
+            for c in range(0x20, 0x7F):
+                g = cmap.get(c)
+                if g and g in hmtx.metrics:
+                    widths[hmtx[g][0]] = widths.get(hmtx[g][0], 0) + 1
+            half = min(widths) if widths else upm // 2
+            full = half * 2
+            asc = int(f["hhea"].ascent)
+            f.close()
+            return half, full, asc
+        except Exception:                                             # noqa: BLE001
+            return upm // 2, upm, int(upm * 0.8)
+
+
 def load_font(key: str) -> FontSpec:
     """
     Read a font's coverage and cell metrics, tolerating a malformed table.
@@ -135,25 +199,22 @@ def load_font(key: str) -> FontSpec:
         spec.glyph_count = int(f["maxp"].numGlyphs)
         try:
             hhea = f["hhea"]
-            spec.ascent = int(hhea.ascent)
             spec.descent = int(hhea.descent)
+            # `ascent` was measured with the cell; only fall back to the table when the measurement did
+            # not produce one
+            if not spec.ascent:
+                spec.ascent = int(hhea.ascent)
         except Exception:                                             # noqa: BLE001
-            spec.ascent = int(spec.units_per_em * 0.8)
             spec.descent = 0
+            if not spec.ascent:
+                spec.ascent = int(spec.units_per_em * 0.8)
         cmap = f.getBestCmap()
         spec.covered = set(cmap.keys())
-        hmtx = f["hmtx"]
-        widths: dict[int, int] = {}
-        for c in cmap:
-            g = cmap[c]
-            if g in hmtx.metrics:
-                widths[hmtx[g][0]] = widths.get(hmtx[g][0], 0) + 1
-        if widths:
-            ordered = sorted(widths.items(), key=lambda kv: -kv[1])
-            spec.half_advance = ordered[0][0]
-            # the full-width advance is the most common one that is larger, or twice the half
-            bigger = [w for w, n in ordered if w > spec.half_advance * 1.4]
-            spec.full_advance = bigger[0] if bigger else spec.half_advance * 2
+        # Measure the cell instead of reading the advance table.  `hmtx` describes *layout* -- how far to
+        # move the pen -- and in 柳宋 and A-POS its most common value belongs to the CJK glyphs, so taking it
+        # as the Latin advance doubled every Latin cell and put a gap after every character.  What the
+        # generator needs is what the font draws, so the font is asked by drawing it.
+        spec.half_advance, spec.full_advance, spec.ascent = _measure_cell(spec)
     finally:
         f.close()
     return spec

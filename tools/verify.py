@@ -2960,5 +2960,131 @@ def check_payload_shapes() -> None:
            "stray layers after all three shapes: %s"
            % ([r[0] for r in results if r[3]] or "none"),
            not any(r[3] for r in results))
+def check_osd_alignment() -> None:
+    """
+    Alignment must place text where it says, and the cell must come from what the font draws.
+
+    **Two faults found by looking at a rendered strip**, after the numbers had said the layout was right:
+
+      * 柳宋 and A-POS drew every character with a full character's worth of space after it. The half-cell was
+        taken as the *most common advance* in the font, and in those two fonts the most common advance belongs
+        to the CJK glyphs -- 2400 units in 柳宋 against 1200 for Latin -- so every Latin cell was twice its
+        proper width. The measured advance is now what the font actually draws: 1200 for 柳宋 and 500 for
+        A-POS, exactly half the previous values, and the string ink fills 0.94-0.98 of its advance instead of
+        0.74;
+      * the user had positioned a subtitle by typing `"\n\n\n\n\n\n\n      Kigurumi"` -- seven newlines
+        and six spaces -- because that was the only control the editor offered. A character generator has a
+        position register; it does not reflow, but it absolutely does place a line, so `halign`/`valign` are
+        the apparatus's own control and need no line breaking.
+
+    Both halves are asserted: the nine positions land where the rule says, and a character generator asked for
+    an overflow reports it rather than silently clipping.
+    """
+    import numpy as np
+
+    from atsim.codecs.fonts import load_font
+    from atsim.codecs.osd import CharacterGenerator, OSDLine, OSDPlan
+
+    COEF = np.array([0.299, 0.587, 0.114], np.float32)
+    W, H = 640, 360
+
+    # --- the cell is measured, and the full cell is twice the half one in every font
+    ratios = {}
+    for key in ("osd", "lyusung", "apos"):
+        s = load_font(key)
+        half_px = s.half_advance * 26 / max(1, s.units_per_em)
+        ratios[key] = (s.half_advance, s.full_advance, s.full_advance / max(1, s.half_advance),
+                       half_px)
+    bad = [k for k, v in ratios.items() if not (1.8 <= v[2] <= 2.2)]
+    record("every font's full cell is twice its half cell",
+           "the half/full convention is what lets mixed scripts share a layout without a layout engine",
+           "; ".join("%s half=%d full=%d (%.2f), %.1f px half-cell at 26 px"
+                     % (k, v[0], v[1], v[2], v[3]) for k, v in ratios.items()),
+           not bad,
+           "measured before: 柳宋 half=2400 and A-POS half=1008, taken from the most common advance in the "
+           "table, which belongs to the CJK glyphs -- so every Latin cell was twice its proper width and a "
+           "gap followed every character")
+
+    # --- a Latin string fills its advance
+    ratios_fill = {}
+    for key in ("osd", "lyusung", "apos"):
+        g = CharacterGenerator(key, OSDPlan(lines=[OSDLine("Kigurumi")], cell_h=32,
+                                            margin_x=8, margin_y=8))
+        half, _h = g.cell()
+        img, _rep = g.draw(np.zeros((64, 1200, 3), np.float32))
+        ink = (img @ COEF) > 0.5
+        cols = np.where(ink.any(axis=0))[0]
+        span = int(cols[-1] - cols[0] + 1) if cols.size else 0
+        ratios_fill[key] = span / max(1, 8 * half)
+    record("a Latin string fills its cells rather than leaving a gap after each character",
+           "a gap after every character is what a doubled cell looks like",
+           "; ".join("%s ink/advance %.2f" % (k, v) for k, v in ratios_fill.items()),
+           all(v > 0.88 for v in ratios_fill.values()),
+           "measured before the fix: 0.74 for both Chinese fonts")
+
+    # --- the nine positions land where the rule says
+    HA = [0, 1, 2, 0, 1, 2, 0, 1, 2]
+    VA = [0, 0, 0, 1, 1, 1, 2, 2, 2]
+    mx, my = 16, 12
+    bad_pos = []
+    for pos in range(9):
+        g = CharacterGenerator("lyusung", OSDPlan(lines=[OSDLine("TEST")], cell_h=24,
+                                                  margin_x=mx, margin_y=my,
+                                                  halign=HA[pos], valign=VA[pos]))
+        img, _rep = g.draw(np.zeros((H, W, 3), np.float32))
+        ink = (img @ COEF) > 0.5
+        cols = np.where(ink.any(axis=0))[0]
+        rows = np.where(ink.any(axis=1))[0]
+        if not cols.size:
+            bad_pos.append(pos)
+            continue
+        half, ch = g.cell()
+        line_w = g.line_width_cells("TEST") * half
+        uw, uh = W - 2 * mx, H - 2 * my
+        want_x = mx + (0 if HA[pos] == 0 else (uw - line_w) // 2 if HA[pos] == 1 else uw - line_w)
+        want_y = my + (0 if VA[pos] == 0 else (uh - ch) // 2 if VA[pos] == 1 else uh - ch)
+        if abs(int(cols[0]) - want_x) > 3 or abs(int(rows[0]) - want_y) > 3:
+            bad_pos.append(pos)
+    record("all nine positions place the text where the rule says",
+           "a convenience that places text wrongly is worse than no convenience",
+           "%d of 9 positions landed within 3 px of the computed corner; wrong: %s"
+           % (9 - len(bad_pos), bad_pos or "none"),
+           not bad_pos)
+
+    # --- alignment at its default must not move existing text
+    a = CharacterGenerator("lyusung", OSDPlan(lines=[OSDLine("X")], cell_h=24,
+                                              margin_x=16, margin_y=12))
+    b = CharacterGenerator("lyusung", OSDPlan(lines=[OSDLine("X")], cell_h=24,
+                                              margin_x=16, margin_y=12, halign=0, valign=0))
+    ia, _ = a.draw(np.zeros((H, W, 3), np.float32))
+    ib, _ = b.draw(np.zeros((H, W, 3), np.float32))
+    record("alignment at its default does not move the text",
+           "a new parameter must not shift every saved project",
+           "explicit 0,0 identical to omitting them: %s" % np.array_equal(ia, ib),
+           np.array_equal(ia, ib))
+
+    # --- an overflowing line is reported rather than silently clipped
+    # a line that genuinely overflows, and one that does not: the report has to separate them.  The first
+    # version used `cells_used`, which was the *drawn* width and is capped at the frame's capacity, so a line
+    # that ran off the edge could never be reported as too wide -- the one case a person needs told.
+    long_text = "这是一行非常长的中文字幕它一定会超出画面宽度，而且超出得非常多非常多，多到不可能放下"
+    cases = []
+    for text, want in ((("REC 00:12:34"), False), (long_text, True)):
+        g = CharacterGenerator("lyusung", OSDPlan(lines=[OSDLine(text)], cell_h=24,
+                                                  margin_x=16, margin_y=12))
+        _img, rep = g.draw(np.zeros((H, W, 3), np.float32))
+        cases.append((text[:12], rep.get("cells_wanted"), rep.get("cells_drawn"),
+                      rep.get("cells_fit"), bool(rep.get("overflow")), want))
+    record("an over-wide line is reported instead of silently clipped",
+           "a character generator does not wrap, so the commonest reason text is missing is that it ran off",
+           "; ".join("%r wanted %s, drew %s of %s, overflow=%s"
+                     % (c[0], c[1], c[2], c[3], c[4]) for c in cases),
+           all(c[4] == c[5] for c in cases)
+           # the drawn width is capped by the frame: it starts inside the safe area, so it can slightly
+           # exceed `cells_fit` (which is measured from the margin) but never the whole frame
+           and all(c[2] <= W // 2 for c in cases)
+           and cases[1][1] > cases[1][3])
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

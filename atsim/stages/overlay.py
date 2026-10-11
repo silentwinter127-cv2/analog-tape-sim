@@ -39,6 +39,14 @@ class OverlayStage(Stage):
         self.font_kind = float(cfg.get("font", 0.0))
         self.cell_h = int(max(8, round(float(cfg.get("cell_h", 24)))))
         self.col = int(round(float(cfg.get("col", 0))))
+        self.halign = int(np.clip(round(float(cfg.get("halign", 0.0))), 0, 2))
+        self.valign = int(np.clip(round(float(cfg.get("valign", 0.0))), 0, 2))
+        # `pos` is a convenience that sets both, so a person does not have to set two parameters to get
+        # "bottom right" -- and 8 is the placement a home recording's OSD usually has
+        _pos = int(np.clip(round(float(cfg.get("pos", 0.0))), 0, 8))
+        if float(cfg.get("pos", 0.0)) > 1e-6 or _pos:
+            self.halign = (0, 1, 2, 0, 1, 2, 0, 1, 2)[_pos]
+            self.valign = (0, 0, 0, 1, 1, 1, 2, 2, 2)[_pos]
         self.row = int(round(float(cfg.get("row", 0))))
         self.margin = float(cfg.get("margin", 0.03))
         self.shadow = float(cfg.get("shadow", 0.5))
@@ -60,6 +68,7 @@ class OverlayStage(Stage):
         margin_y = max(0, int(round(self.margin * height)))
         plan = OSDPlan(lines=parse_lines(self.text), cell_h=self.cell_h,
                        margin_x=margin_x, margin_y=margin_y,
+                       halign=self.halign, valign=self.valign,
                        colour=self.colour, shadow=self.shadow, opacity=self.opacity,
                        background=(0.0, 0.0, 0.0) if self.bg_on else None)
         # the row and column offsets apply to every line

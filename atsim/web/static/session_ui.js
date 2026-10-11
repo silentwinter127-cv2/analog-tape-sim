@@ -625,6 +625,33 @@
     });
     host.append(fl, fsel);
 
+    // --- alignment, so a subtitle is placed rather than spaced
+    const al = el("div", "palGroup", "对齐（不用再打空格挪位置）");
+    const arow = el("div", "ssRow");
+    const hsel = el("select", "ssSelMini");
+    [["0", "左"], ["1", "居中"], ["2", "右"]].forEach(([v, t]) => {
+      const o = el("option", null, "水平：" + t);
+      o.value = v;
+      hsel.append(o);
+    });
+    const vsel = el("select", "ssSelMini");
+    [["0", "上"], ["1", "中"], ["2", "下"]].forEach(([v, t]) => {
+      const o = el("option", null, "垂直：" + t);
+      o.value = v;
+      vsel.append(o);
+    });
+    arow.append(hsel, vsel);
+    const arow2 = el("div", "ssRow");
+    const quick = el("select", "ssSelMini");
+    [["-1", "快速位置…"], ["8", "右下（录像机常用）"], ["7", "下中（字幕常用）"],
+     ["4", "正中"], ["0", "左上"]].forEach(([v, t]) => {
+      const o = el("option", null, t);
+      o.value = v;
+      quick.append(o);
+    });
+    arow2.append(quick);
+    host.append(al, arow, arow2);
+
     // --- the position, which is the whole point of the feature
     const pl = el("div", "palGroup", "发生器位置");
     const psel = el("select", "ssSel");
@@ -652,7 +679,8 @@
     const readout = el("div", "ssReadout");
     host.append(readout);
 
-    osdEls = { ta, fsel, psel, chk: echk, state: estate, warn, readout, btn };
+    osdEls = { ta, fsel, psel, chk: echk, state: estate, warn, readout, btn,
+               hsel, vsel, quick };
 
     let timer = null;
     const refreshWarn = () => {
@@ -678,8 +706,24 @@
       state.innerHTML = on ? "<b>正在绘制</b>"
         : (chars > 0 ? "已关闭 —— 勾选「启用字幕机」后才会画" : "未输入文字");
       state.style.color = on ? "#7fe0bd" : "#5c6a7e";
+      /* The frame's capacity, from the engine's own report when one has been rendered, and otherwise
+         estimated from the image width -- a line wider than the frame is clipped at the edge, because a
+         character generator does not wrap, and that is the commonest reason for "my text did not appear". */
+      const rep = (SUI.osdReport) || null;
+      const fit = rep && rep.cells_fit ? rep.cells_fit : null;
+      // `cells_wanted` is the line's declared width; the drawn width is capped at the frame, so only the
+      // wanted figure can show an overflow
+      const used = Math.max(cells, rep && rep.cells_wanted ? rep.cells_wanted : 0);
+      const over = rep ? !!rep.overflow : false;
+      let width = "";
+      if (fit) {
+        width = (over || used > fit)
+          ? " <b style='color:#ff6b6b'>最宽一行需要 " + used + " / " + fit
+            + " 个半格，超出画面会被切掉（字符发生器不换行）</b>"
+          : " 最宽一行占 " + used + " / " + fit + " 个半格，放得下。";
+      }
       readout.innerHTML = lines + " 行、共 <b>" + chars + "</b> 字（占 <b>" + cells
-        + "</b> 个半格）。字格高度、行列偏移和字色在右侧参数面板里调。";
+        + "</b> 个半格）。" + width + " 字格高度和字色在右侧参数面板里调。";
     };
 
     /* The push is debounced: a subtitle is typed, not dragged, and one request per keystroke would
@@ -700,6 +744,11 @@
         text: ta.value,
         font: idx < 0 ? 0 : idx,
         at: parseFloat(psel.value) || 0,
+        halign: parseFloat(hsel.value) || 0,
+        valign: parseFloat(vsel.value) || 0,
+        // `pos` sets both alignments in the engine, so leaving a stale non-zero value here would silently
+        // overrule the two dropdowns the user is looking at
+        pos: 0,
       } } });
       refreshWarn();
     };
@@ -711,6 +760,17 @@
     ta.oninput = schedule;
     fsel.onchange = () => { refreshWarn(); push(); };
     psel.onchange = push;
+    hsel.onchange = push;
+    vsel.onchange = push;
+    quick.onchange = () => {
+      const p = parseInt(quick.value, 10);
+      quick.value = "-1";
+      if (p < 0 || isNaN(p)) return;
+      const HA = [0, 1, 2, 0, 1, 2, 0, 1, 2], VA = [0, 0, 0, 1, 1, 1, 2, 2, 2];
+      hsel.value = String(HA[p]);
+      vsel.value = String(VA[p]);
+      push();
+    };
     echk.onchange = () => {
       explicitOff = !echk.checked && ta.value.trim().length > 0;
       push();
@@ -749,6 +809,9 @@
     const idx = Math.round(Number(cur.font == null ? 0 : cur.font));
     if (OSD_FONTS[idx]) e.fsel.value = OSD_FONTS[idx][0];
     e.psel.value = String(Math.round(Number(cur.at == null ? 0 : cur.at)));
+    e.hsel.value = String(Math.round(Number(cur.halign == null ? 0 : cur.halign)));
+    e.vsel.value = String(Math.round(Number(cur.valign == null ? 0 : cur.valign)));
+    SUI.osdReport = (d && d.osd_report) || null;
     e.chk.checked = Number(cur.enabled == null ? 0 : cur.enabled) > 0.5;
     if (e.ta.value.trim().length && !e.chk.checked) {
       // the server says off while the field has text: that is a legitimate state (the user unticked), so

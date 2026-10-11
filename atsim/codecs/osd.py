@@ -55,6 +55,10 @@ class OSDPlan:
     gap: int = 0
     margin_x: int = 24
     margin_y: int = 24
+    #: 0 left, 1 centre, 2 right -- within the frame's safe area, per line
+    halign: int = 0
+    #: 0 top, 1 middle, 2 bottom
+    valign: int = 0
     colour: tuple[float, float, float] = (0.92, 0.94, 0.90)
     background: tuple[float, float, float] | None = None
     shadow: float = 0.0
@@ -160,7 +164,8 @@ class CharacterGenerator:
         plan = self.plan
         half, cell_h = self.cell()
         reported: dict = {"drawn": 0, "missing": [], "lines": len(plan.lines),
-                          "cell": [half, cell_h], "font": self.font_key}
+                          "cell": [half, cell_h], "font": self.font_key,
+                          "halign": plan.halign, "valign": plan.valign}
         if not plan.lines or plan.opacity <= 1e-3:
             return out, reported
 
@@ -168,19 +173,44 @@ class CharacterGenerator:
         layer = np.zeros((h, w), np.float32)
         missing: set[str] = set()
 
+        # the block's vertical extent, needed for middle and bottom alignment
+        n_lines = max(1, len(plan.lines))
+        block_h = n_lines * cell_h + max(0, n_lines - 1) * plan.gap
+        usable_h = max(0, h - 2 * plan.margin_y)
+        if plan.valign == 1:
+            y0_block = plan.margin_y + max(0, (usable_h - block_h) // 2)
+        elif plan.valign == 2:
+            y0_block = plan.margin_y + max(0, usable_h - block_h)
+        else:
+            y0_block = plan.margin_y
+        usable_w = max(0, w - 2 * plan.margin_x)
+
+        drawn_cells = 0
         for line in plan.lines:
-            y = plan.margin_y + line.row * (cell_h + plan.gap)
+            y = y0_block + line.row * (cell_h + plan.gap)
             if y >= h or y + cell_h < 0:
                 continue
-            x = plan.margin_x + max(0, line.col) * half
+            # alignment first, then the line's own column offset, so an explicit placement still works
+            line_cells = self.line_width_cells(line.text or "")
+            line_w = line_cells * half
+            if plan.halign == 1:
+                x = plan.margin_x + max(0, (usable_w - line_w) // 2)
+            elif plan.halign == 2:
+                x = plan.margin_x + max(0, usable_w - line_w)
+            else:
+                x = plan.margin_x
+            x += max(0, line.col) * half
             for ch in (line.text or ""):
                 cw = half * 2 if is_full_width(ch) else half
                 if x >= w:
-                    break                     # a generator does not wrap; it runs off the edge
+                    # a generator does not wrap; it runs off the edge.  The remaining characters of this
+                    # line are counted as wanted but not drawn, so the overflow is visible in the report.
+                    break
                 g = self._glyph(ch, cell_h)
                 if g is None or not self.spec.can_draw(ch):
                     missing.add(ch)
                     x += cw
+                    drawn_cells += 2 if cw == half * 2 else 1
                     continue
                 gh, gw = g.shape[:2]
                 y0, x0 = max(0, y), max(0, x)
@@ -190,8 +220,22 @@ class CharacterGenerator:
                     dest = layer[y0:y1, x0:x1]
                     np.maximum(dest, sub, out=dest)
                     reported["drawn"] += 1
+                    drawn_cells += 2 if cw == half * 2 else 1
                 x += cw
         reported["missing"] = sorted(missing)
+        # the widest line in cells, and the frame's capacity, so an overflowing line is visible before it
+        # is rendered and silently clipped at the edge
+        # `wanted` is the width the line declares, `drawn` how much of it reached the frame, and `fit` how
+        # much the frame holds.  The old report only had the drawn width, which is capped at `fit` -- so a
+        # line that ran off the edge could never be reported as too wide, which is exactly the case a person
+        # needs told.
+        reported["cells_wanted"] = max([self.line_width_cells(l.text or "")
+                                        for l in plan.lines] or [0])
+        reported["cells_drawn"] = drawn_cells
+        reported["cells_fit"] = self.cells_wide(w)
+        reported["overflow"] = reported["cells_wanted"] > reported["cells_fit"]
+        # kept for anything already reading the old name
+        reported["cells_used"] = reported["cells_drawn"]
 
         if reported["drawn"] == 0:
             return out, reported
