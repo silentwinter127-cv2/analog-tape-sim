@@ -1561,5 +1561,81 @@ def check_connectors() -> None:
            "link = %s at full degradation" % info.get("link"),
            info.get("link") == "no signal",
            "a faded picture would be the wrong behaviour for a digital link")
+def check_stiction() -> None:
+    """
+    Tape-deck stiction must be *episodic*: quiet most of the time, far from normal briefly.
+
+    This is the one property no existing mechanism has. Every other tape fault scales
+    smoothly, so the model could not represent what a real capture shows -- per-row
+    displacement flipping between roughly 0.1 and 3 pixels within seconds, uncorrelated with
+    picture content. A smooth field cannot do that, and smoothing one to make it look like a
+    fault removes exactly the discontinuities that define it.
+
+    Two assertions, and the second is the one that matters:
+
+      * the events appear on the timeline at all, and their rate follows the parameter;
+      * the *effect* is concentrated -- most frames are untouched. A mechanism that moved
+        every frame by a similar amount would produce a displacement field, not an
+        intermittent fault, and would pass any check written only against the mean.
+    """
+    from atsim.core.pipeline import FrameBuffer, RenderContext
+    from atsim.core.signal import composite_encode
+    from atsim.core.standards import NTSC_525_60 as std
+    from atsim.stages.tape import TapeStage
+
+    H, W = 240, 360
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    x = np.arange(W, dtype=np.float32)
+    y_plane = np.tile((0.30 + 0.45 * np.maximum.reduce(
+        [(np.abs(x - c) < 1.5).astype(np.float32) for c in (60, 150, 250, 340)]))[None, :],
+        (H, 1))
+    comp = composite_encode(y_plane, 0.10 * np.cos(yy / 13.0),
+                            0.10 * np.sin(yy / 13.0), std, chroma_gain=0.63)
+    QUIET = {"line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0,
+             "noise_floor": 0.0, "head_switching": 0.0, "dropout_rate": 0.0,
+             "row_timebase": 0.0, "tracking_error": 0.0, "vertical_instability": 0.0}
+
+    def make(over: dict, frames: int = 64) -> TapeStage:
+        tape = dict(QUIET)
+        tape.update(over)
+        params = _neutral({"tape": tape})
+        # the merge trap: assert the sweep value arrived rather than trusting it
+        for k, v in over.items():
+            assert abs(float(params["tape"][k]) - float(v)) < 1e-9, \
+                "override %s was dropped by the merge" % k
+        ctx = RenderContext(std=std, params=params, seed=7, frame_count=frames,
+                            fps=25.0, width=W, height=H)
+        st = TapeStage(ctx)
+        st.prepare()
+        st._ensure(frames - 1)
+        return st
+
+    def plane(st: TapeStage, frame: int) -> np.ndarray:
+        buf = FrameBuffer(np.zeros((H, W, 3), np.float32), comp, frame, frame / 25.0,
+                          std, {"field": frame % 2})
+        return st._decompose(st.apply(buf).composite)[0]
+
+    counts = []
+    for rate in (0.0, 0.5, 2.0):
+        st = make({"stiction_rate": rate, "stiction_amount": 0.8})
+        counts.append(len(getattr(st.plan, "stiction", [])))
+    record("stiction events appear at the set rate",
+           "an episodic fault must put events on the timeline",
+           "counts at rate 0 / 0.5 / 2.0 over 64 frames = %s" % counts,
+           counts[0] == 0 and counts[2] > counts[1] > 0)
+
+    quiet = make({"stiction_rate": 0.0})
+    loud = make({"stiction_rate": 2.0, "stiction_amount": 0.9})
+    deltas = [float(np.abs(plane(loud, f) - plane(quiet, f)).mean()) for f in range(24)]
+    active = [d for d in deltas if d > 1e-4]
+    share = len(active) / max(1, len(deltas))
+    record("the effect is intermittent, not uniform",
+           "most frames must be untouched and a few strongly changed",
+           "%d of %d frames affected, largest %.4f against a median of %.4f across "
+           "all frames" % (len(active), len(deltas),
+                           max(deltas), float(np.median(deltas))),
+           0.05 < share < 0.8,
+           "a smooth mechanism would move every frame similarly and would pass a "
+           "mean-only check")
 if __name__ == "__main__":
     raise SystemExit(main())

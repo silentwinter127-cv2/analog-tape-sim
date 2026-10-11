@@ -114,6 +114,8 @@ class TapePlan:
     frame_dy: np.ndarray = dfield(default_factory=lambda: np.zeros(0, np.float32))
     head_switch_amp: np.ndarray = dfield(default_factory=lambda: np.zeros(0, np.float32))
     dropouts: list[DropoutEvent] = dfield(default_factory=list)
+    # stiction events: episode-driven, so they cannot be a per-frame field
+    stiction: list = dfield(default_factory=list)
     creases: list[CreaseEvent] = dfield(default_factory=list)
     # --- contamination -------------------------------------------------
     # Head clog and surface damage are *fixed in space*, not random per frame.
@@ -196,6 +198,12 @@ class TapeStage(Stage):
         # granularity (uncorrelated line to line), so a preset can state which
         # physical cause it means.
         self.row_timebase = float(cfg.get("row_timebase", 0.0))
+        # Tape-deck stiction: damp binder sticking to the capstan, then releasing.  Three
+        # parameters because the fault is episodic: how often, how strongly, and how much
+        # worse it gets along the tape.
+        self.stiction_rate = float(cfg.get("stiction_rate", 0.0))
+        self.stiction_amount = float(cfg.get("stiction_amount", 0.6))
+        self.stiction_stretch = float(cfg.get("stiction_stretch", 0.0))
         # Curved stripes from beat interference with a residual carrier.  Three
         # parameters because the spacing and the bend are independent: how strong,
         # how tightly spaced, and how much they curve.
@@ -305,6 +313,14 @@ class TapeStage(Stage):
         self._grow_lines(target_lines)
         self._grow_frames(target_frames)
         self._grow_dropouts(target_frames)
+        # The stiction timeline is planned in one pass rather than grown in blocks.  Its
+        # events come from a Poisson process over the whole clip, so growing it block by
+        # block would make each block independent of the last and the arrival times would
+        # depend on how the renderer happened to seek -- which would break the guarantee that
+        # the same project produces the same frames.
+        if not getattr(self.plan, "stiction", None):
+            self._plan_stiction(int(self.ctx.frame_count) if self.ctx.frame_count
+                                else target_frames)
 
     def _grow_lines(self, target_lines: int) -> None:
         plan = self.plan
@@ -341,6 +357,10 @@ class TapeStage(Stage):
         new = (phase + micro_seq).astype(np.float32)
         plan.line_phase = np.concatenate([plan.line_phase, new]) \
             if plan.line_phase.size else new
+
+    def _plan_stiction_once(self, frames: int) -> None:
+        if not getattr(self.plan, "stiction", None):
+            self._plan_stiction(frames)
 
     def _grow_frames(self, target_frames: int) -> None:
         plan = self.plan
@@ -667,6 +687,51 @@ class TapeStage(Stage):
         gain = np.clip(1.0 + gain_amt * (line_gain + 0.5 * drift_a) * mask,
                        0.0, 3.0).astype(np.float32)[:, None]
         return (i_rot * gain).astype(np.float32), (q_rot * gain).astype(np.float32)
+
+    def _plan_stiction(self, frames: int) -> None:
+        """
+        Build the stiction timeline once, deterministically from the seed.
+
+        Events rather than a field, because the fault is episodic: a smoothly varying field
+        cannot produce a fourteen-fold change between neighbouring samples, and smoothing one
+        to make it look like a fault removes exactly the discontinuities that define it.
+        """
+        from ..codecs.stiction import plan_stiction
+        self.plan.stiction = plan_stiction(
+            rate_hz=self.stiction_rate, amount=self.stiction_amount, frames=frames,
+            fps=self.ctx.fps, seed=derive_seed(self.ctx.seed, "tape", "stiction"),
+            stretch=self.stiction_stretch)
+
+    def _apply_stiction(self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
+                        frame_index: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Apply this frame's grab, if there is one.
+
+        Returns the planes unchanged outside an event, so a tape that is merely damp behaves
+        normally between grabs -- which is the whole character of the fault.
+        """
+        from ..codecs.stiction import stiction_displacement
+        events = getattr(self.plan, "stiction", None)
+        if not events:
+            return y, i, q
+        disp, loss = stiction_displacement(events, frame_index, y.shape[0])
+        if not np.any(np.abs(disp) > 1e-4) and loss <= 1e-4:
+            return y, i, q
+        if np.any(np.abs(disp) > 1e-4):
+            # the whole line moves, luma and chroma together: a grab displaces the track,
+            # it does not shift colour relative to brightness
+            y = horizontal_shift(y, disp)
+            i = horizontal_shift(i, disp)
+            q = horizontal_shift(q, disp)
+        if loss > 1e-4:
+            # and the tape is momentarily not in contact, so signal is lost with it
+            n = self._luma_band_noise(np.random.default_rng(
+                derive_seed(self.ctx.seed, "tape", "stiction", frame_index)), y.shape)
+            w = np.clip(loss, 0.0, 1.0)
+            y = y * (1.0 - 0.8 * w) + (0.05 + 0.10 * np.abs(n)) * (0.8 * w)
+            i = i * (1.0 - 0.6 * w)
+            q = q * (1.0 - 0.6 * w)
+        return y, i, q
 
     def _build_creases(self) -> None:
         rng = self._crease_rng
@@ -1758,6 +1823,11 @@ class TapeStage(Stage):
         #     Placed with the other sampling/clamping errors, before the noise, so
         #     the grain is added around the shifted level rather than lifted with it.
         y, i, q = self._apply_luma_pedestal(y, i, q)
+
+        # 1f. stiction: the damp binder grabbing the capstan and releasing.  Applied with
+        #     the other transport errors because it displaces the track rather than the
+        #     picture content.
+        y, i, q = self._apply_stiction(y, i, q, frame_index)
 
         # 1e. moire from a residual carrier: curved fringes, added to luma only.
         #     It is an interference product in the video path, so it brightens and
