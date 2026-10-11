@@ -1150,6 +1150,11 @@ FACTORY_PRESETS = {
                 "sensor_type": 0.0, "sensor_noise": 0.075, "fixed_pattern": 0.05,
                 "sharpness": 0.8, "chroma_aberration": 0.06, "ccd_smear": 0.4,
                 "halation": 0.5, "dynamic_range": 7.2, "lens_wear": 0.12,
+                # the note's optical and sensor faults, all belonging to this one camera.
+                # `lens_fog` is deliberately *not* set here: it is a state that clears as the glass
+                # warms, so it is driven by the timeline below, alongside the warmth.
+                "bloom_amount": 0.35, "bloom_threshold": 0.80,
+                "dead_sites": 2.0, "stuck_fraction": 0.5,
             },
             # head wear is the machine's, not the medium's: it is on the player layer, which is also
             # where its per-unit spread lives
@@ -1163,6 +1168,12 @@ FACTORY_PRESETS = {
             {"layer": "environment", "key": "warmth", "absolute": True,
              "points": [{"t": 0.0, "value": 0.0, "curve": "exp"},
                         {"t": 6.0, "value": 1.0, "curve": "hold"}]},
+            # the fog clears as the front element warms: the same physical process as the warmth track
+            # above, acting on the glass instead of on the electronics.  It starts heavy and falls away
+            # over about eight seconds.
+            {"layer": "camera", "key": "lens_fog", "absolute": True,
+             "points": [{"t": 0.0, "value": 0.55, "curve": "exp"},
+                        {"t": 8.0, "value": 0.02, "curve": "hold"}]},
         ],
     },
     "warm_archival": {
@@ -1177,6 +1188,9 @@ FACTORY_PRESETS = {
                 "sensor_type": 0.0, "sensor_noise": 0.075, "sharpness": 0.8,
                 "chroma_aberration": 0.06, "ccd_smear": 0.4, "halation": 0.5,
                 "dynamic_range": 7.2, "lens_wear": 0.12,
+                # the same camera, so the same failed sites and the same iris -- but warm, so no fog
+                "bloom_amount": 0.35, "bloom_threshold": 0.80,
+                "dead_sites": 2.0, "stuck_fraction": 0.5,
             },
             # head wear is the machine's, not the medium's: it is on the player layer, which is also
             # where its per-unit spread lives

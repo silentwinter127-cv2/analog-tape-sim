@@ -1,0 +1,30 @@
+put the optical parameters in the presets, and fix the timeline editor's schema reading
+
+The finishing piece for the optical work: the three mechanisms were in the schema and therefore in the
+parameter panel, but no preset set them, so a user would have had to know they were there.
+
+**The fog recovers, so it is a timeline track rather than a value.** The note describes fog as the moisture
+that condenses when a cold camera comes into a warm room, and it clears over minutes as the glass warms --
+a state that changes during the recording. So the cold-start preset drives `camera.lens_fog` from 0.55 down
+to 0.02 across the clip, alongside the `environment.warmth` track already there: the same physical process,
+acting on the glass instead of the electronics, which is exactly the interaction the timeline exists to
+express. Measured: sharpness 0.00478 -> 0.00510, a rise of 6.8%, against 0.00020 of variation in the warm
+preset where there is no fog.
+
+**A direction worth recording, because I got it wrong first.** The check asserts the picture gets *sharper*,
+not brighter, and the reason is that fog is an **additive veil** -- so clearing it makes the frame *darker*,
+measured 0.7963 to 0.7457. My first version expected the brightness to rise as the machine warmed, which is
+what an exposure loop does to a brightening scene and is not what happens when a veil of scattered light is
+taken away.
+
+**And a real bug in the timeline editor.** `paramOptions` read the schema as `schema[layer]`, but the payload
+is `{layers: [{layer, groups: {name: [spec, ...]}}]}` -- so the lookup was `undefined` for every layer and
+the parameter dropdown offered nothing usable. `app.js` has always read it correctly through
+`S.schema.layers`, so the fix takes the same path and the two cannot drift. Worth noting how this was found:
+by reading the payload the server actually sends, after the editor's own code had read as plausible.
+
+Adding a parameter to Python now demonstrably reaches the interface: 172 parameters, 8 layers and 175
+dropdown options over HTTP, with the five new optical parameters present in the payload with every field a
+row needs, and no duplicates in the generated option list.
+
+114 checks pass, 17 presets render, selftest ALL CHECKS PASSED.

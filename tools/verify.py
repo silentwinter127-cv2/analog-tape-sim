@@ -2668,5 +2668,77 @@ def check_optics() -> None:
     record("a camera with none of the new optics is unchanged",
            "all three default to zero, so no existing preset moves",
            "two default renders identical: %s" % np.array_equal(x, y), np.array_equal(x, y))
+def check_preset_dimensions() -> None:
+    """
+    A dimension nobody sets is a dimension nobody finds, so the demonstration presets must use them.
+
+    Every new mechanism defaults to off, for the good reason that an unrequested dimension must not move an
+    existing preset. The cost is that a user opening the tool meets none of them, so the presets are the
+    only way in. This checks that they set what they claim, that the timeline survives the trip through the
+    API and into the renderer, and that the fog actually clears -- which is the visible consequence of the
+    two tracks in the cold-start preset.
+
+    The sharpness direction is asserted rather than the brightness, and that correction is worth recording:
+    fog is an *additive* veil, so removing it makes the picture **darker**. The first version of this check
+    expected the brightness to rise as the machine warmed, which is what an exposure loop does when a scene
+    brightens -- and it is not what happens here, because the veil was adding light.
+    """
+    import numpy as np
+
+    from atsim.core.profiles import FACTORY_PRESETS
+    from atsim.web.server import App
+
+    NEW = ("lens_fog", "bloom_amount", "bloom_threshold", "dead_sites", "stuck_fraction")
+    cold = FACTORY_PRESETS.get("cold_start_handheld") or {}
+    warm = FACTORY_PRESETS.get("warm_archival") or {}
+    cold_cam = (cold.get("layers") or {}).get("camera") or {}
+    warm_cam = (warm.get("layers") or {}).get("camera") or {}
+    used = [k for k in NEW if k in cold_cam or k in warm_cam]
+    record("the demonstration presets use the optical parameters",
+           "a dimension no preset sets is one a user will never meet",
+           "cold_start uses %s; warm_archival uses %s; the camera layer carries %d of the five"
+           % ([k for k in NEW if k in cold_cam], [k for k in NEW if k in warm_cam], len(used)),
+           len(used) >= 4,
+           "`lens_fog` is driven by the timeline instead of set as a value, because it clears")
+
+    env = cold.get("environment") or {}
+    tl = cold.get("timeline") or []
+    keys = [(t.get("layer"), t.get("key")) for t in tl]
+    record("the cold-start preset carries a state and a timeline",
+           "the machine's condition and its life are separate fields from the parameters",
+           "environment %s; timeline %s" % (env, ["%s.%s" % k for k in keys]),
+           bool(env) and ("environment", "warmth") in keys and ("camera", "lens_fog") in keys)
+
+    # --- and it survives into the renderer, and the fog clears
+    app = App(data_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    "runs"))
+    cur = app.current
+    saved = (dict(cur.environment or {}), list(cur.keyframes or {}), dict(cur.unit_identities or {}),
+             cur.preset)
+    try:
+        d = app.apply_preset("cold_start_handheld")
+        through_api = [(t["layer"], t["key"]) for t in (d.get("keyframes") or [])]
+        r, _s = app.store.renderer_for(app.current, preview=True, scale=0.5)
+        reaches = r._keyframes is not None and r._environment is not None
+
+        def sharp(f):
+            g = f @ np.array([0.299, 0.587, 0.114], np.float32)
+            return float(np.abs(np.diff(g, axis=1)).mean())
+
+        s = [sharp(np.clip(r.render_frame(i), 0, 1)) for i in (0, 12, 30)]
+        rises = s[-1] > s[0] * 1.03
+        record("the cold-start fog clears over the clip",
+               "the fog is a state that recovers as the glass warms, not a constant",
+               "timeline through the API: %s; renderer holds it: %s; sharpness %s"
+               % (["%s.%s" % k for k in through_api], reaches,
+                  " ".join("%.5f" % v for v in s)),
+               reaches and rises,
+               "fog is an additive veil, so clearing it makes the picture darker, not brighter -- "
+               "an earlier version of this check expected brightness to rise and was wrong")
+    finally:
+        app.set_project({"environment": saved[0], "keyframes": saved[1],
+                         "unit_identities": saved[2]})
+        if saved[3]:
+            app.apply_preset(saved[3])
 if __name__ == "__main__":
     raise SystemExit(main())

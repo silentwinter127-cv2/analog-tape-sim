@@ -287,25 +287,31 @@
   }
 
   function paramOptions(selected) {
-    // 用服务端的 schema 生成候选，所以新增参数会自动出现
+    // The schema is `{layers: [{layer, groups: {name: [spec, ...]}}]}`, which is how `renderParams` reads
+    // it.  An earlier version indexed it as `schema[layer]`, which is undefined for every layer, so the
+    // dropdown offered nothing usable -- the shape has to come from the payload the server sends, not from
+    // what the reader expects.
     const sel = el("select", "ssSel");
-    const schema = (typeof S !== "undefined" && S.schema) || {};
-    const layers = Object.keys(schema);
     const add = (value, label) => {
       const o = el("option", null, label);
       o.value = value;
       if (value === selected) o.selected = true;
       sel.append(o);
     };
-    // 环境是虚拟层：它不直接是器件参数，而是驱动一组偏移
+    // the environment is a virtual layer: it is not a device parameter but a condition that drives a set
+    // of shifts, so it is offered first and separately
     add("environment.warmth", "environment · 暖度（驱动温度效应）");
     add("environment.age", "environment · 电容老化");
     add("environment.humidity", "environment · 湿度");
-    layers.forEach((layer) => {
-      const spec = schema[layer];
-      const keys = (spec && (spec.keys || Object.keys(spec))) || [];
-      (Array.isArray(keys) ? keys : Object.keys(keys)).forEach((k) => {
-        add(layer + "." + k, layer + " · " + k);
+    const schema = (typeof S !== "undefined" && S.schema) || {};
+    (schema.layers || []).forEach((layer) => {
+      const groups = layer.groups || {};
+      Object.keys(groups).forEach((gname) => {
+        (groups[gname] || []).forEach((sp) => {
+          if (!sp || !sp.key) return;
+          add(layer.layer + "." + sp.key,
+              layer.layer + " · " + (sp.label || sp.key));
+        });
       });
     });
     return sel;
