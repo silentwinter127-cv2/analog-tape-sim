@@ -128,7 +128,7 @@ def check_engine() -> None:
     from atsim.render.renderer import STAGE_ORDER
     from atsim.core.profiles import SCHEMA as S
     got = set(S.layer_names())
-    want = {"camera", "format", "codec", "rf", "tape", "player", "display"}
+    want = {"camera", "format", "codec", "connector", "rf", "tape", "player", "display"}
     record("device layers", "camera..display all present",
            f"{len(got)} layers, missing={sorted(want - got) or 'none'}", got == want)
 
@@ -1485,5 +1485,81 @@ def check_spread_not_artefact() -> None:
            % (rows_weak, "n/a" if not np.isfinite(s_weak) else "%.2f px" % s_weak),
            rows_weak < rows_strong,
            "so a varying stock of usable rows cannot be mistaken for varying displacement")
+def check_connectors() -> None:
+    """
+    Every interface must damage the picture, and must write to both representations.
+
+    Two defects, both found by tracing rather than by reading.
+
+    The first: HDMI and S-Video reported *exactly* zero effect while AV and RF worked.
+    They were modifying the picture, but the player stage rebuilds its output from the
+    composite plane, so a change to the rgb buffer was discarded one stage later --
+    measured, the difference went from 0.037383 after the connector to 0.000000 after the
+    player. The analogue connectors appeared to work only because they happened to modify
+    the composite. The stage now rebuilds one coherent signal and re-encodes both views
+    from it. Same shape of defect as the deck's blue screen being rebuilt from the tape
+    signal it had rejected, and the seventh instance in this project of a change to one
+    representation being annulled by a stage that reads the other.
+
+    The second is the point of the module: the *kind* of damage must differ by interface,
+    because the signal domain differs. A digital link has no smooth degradation, so it must
+    produce block errors and then lose the link; a composite connector with a bad shell must
+    produce a rolling bar; RF damage must be frequency selective.
+    """
+    from atsim.core.pipeline import FrameBuffer, RenderContext
+    from atsim.core.standards import NTSC_525_60 as std
+    from atsim.render.renderer import Renderer
+    from atsim.io.source import SyntheticSource
+    from atsim.codecs.connectors import (CONNECTORS, impedance,  # shared helpers
+                                         reflection_coefficient)
+
+    # --- the electrical model itself
+    z_clean = impedance(CONNECTORS["rf"], 0.0, 0.0)
+    z_wet = impedance(CONNECTORS["rf"], 1.0, 0.0)
+    g = abs(reflection_coefficient(CONNECTORS["rf"].nominal_z, z_wet))
+    record("moisture moves the impedance off nominal",
+           "water raises the dielectric constant and reflects energy",
+           "RF 75 ohm -> %.1f ohm wet, |gamma| %.3f" % (z_wet, g),
+           abs(z_wet - z_clean) > 20.0 and g > 0.1)
+
+    # --- each connector must change the picture through the whole chain
+    W, H = 240, 160
+    src = SyntheticSource(width=W, height=H, frames=16)
+
+    def shot(over: dict) -> np.ndarray:
+        layers = _neutral({"connector": over})
+        r = Renderer(src, W, H, src.fps, layers, seed=20240101)
+        for i in range(5):
+            img = r.render_frame(i)
+        return np.clip(img, 0, 1)
+
+    base = shot({})
+    results = []
+    for label, over in (
+        ("hdmi", {"hdmi_present": 1.0, "hdmi_moisture": 0.5}),
+        ("svideo", {"svideo_present": 1.0, "svideo_leakage": 0.5}),
+        ("av", {"av_present": 1.0, "av_ground_loop": 0.6}),
+        ("rf", {"rf_present": 1.0, "rf_moisture": 0.5}),
+    ):
+        img = shot(over)
+        d = float(np.abs(img - base).mean())
+        results.append((label, d))
+    record("every interface damages the picture",
+           "each must survive to the output, not be discarded downstream",
+           ", ".join("%s %.4f" % (l, d) for l, d in results),
+           all(d > 0.001 for _l, d in results),
+           "HDMI and S-Video measured exactly zero until the representations were "
+           "reconciled")
+
+    # --- and the digital one must be able to fail the link outright
+    from atsim.codecs.connectors import degrade_digital
+    rng = np.random.default_rng(4)
+    tile = (rng.random((H, W, 3)) * 0.4 + 0.3).astype(np.float32)
+    _out, info = degrade_digital(tile, CONNECTORS["hdmi"], 1.0, 1.0, 0, 9)
+    record("a badly corroded HDMI link drops rather than degrades",
+           "digital video has no slight-snow state",
+           "link = %s at full degradation" % info.get("link"),
+           info.get("link") == "no signal",
+           "a faded picture would be the wrong behaviour for a digital link")
 if __name__ == "__main__":
     raise SystemExit(main())

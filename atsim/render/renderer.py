@@ -39,16 +39,19 @@ from ..core.profiles import SCHEMA
 from ..core.standards import get_standard
 from ..stages.camera import CameraStage
 from ..stages.codec import CodecStage
+from ..stages.connector import ConnectorStage
 from ..stages.display import DisplayStage
 from ..stages.format import FormatStage
 from ..stages.player import PlayerStage
 from ..stages.tape import TapeStage
 
-STAGE_ORDER = ("camera", "format", "codec", "tape", "player", "display")
+STAGE_ORDER = ("camera", "format", "codec", "connector", "tape", "player",
+               "display")
 STAGE_LABELS = {
     "camera": "01 成像",
     "format": "02 编码",
     "codec": "02b DV",
+    "connector": "02c 接口",
     "tape": "03 介质",
     "player": "04 读取",
     "display": "05 显示",
@@ -58,6 +61,9 @@ STAGE_LAYERS = {
     "camera": ("camera",),
     "format": ("format",),
     "codec": ("codec",),
+    # the connectors read only their own layer: they sit between the source and the
+    # recorder, so a tape or player change must not dirty them
+    "connector": ("connector",),
     "tape": ("tape",),
     "player": ("player", "format"),
     "display": ("display",),
@@ -198,6 +204,9 @@ class Renderer:
         )
         chain = Chain(ctx)
         chain.add(CameraStage(ctx)).add(FormatStage(ctx)).add(CodecStage(ctx))
+        # Connectors sit between the source and the recorder, so damage here is
+        # recorded onto the tape rather than applied on playback.
+        chain.add(ConnectorStage(ctx))
         chain.add(TapeStage(ctx)).add(PlayerStage(ctx)).add(DisplayStage(ctx))
         chain.prepare()
         self.chain = chain

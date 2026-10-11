@@ -76,7 +76,8 @@ def main() -> int:
           str([s.name for s in r.chain.stages]))
     # assert the layer *set* rather than a count: a count breaks every time a
     # device layer is added, which is noise rather than signal
-    expected_layers = {"camera", "format", "codec", "rf", "tape", "player", "display"}
+    expected_layers = {"camera", "format", "codec", "connector", "rf", "tape",
+                       "player", "display"}
     got_layers = set(SCHEMA.layer_names())
     check("device layers present", got_layers == expected_layers,
           f"missing={sorted(expected_layers - got_layers)} "

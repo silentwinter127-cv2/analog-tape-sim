@@ -19,6 +19,7 @@ from .params import ParamSchema, merge_values
 LAYER_LABELS = {
     "camera": "01 成像系统 (摄像机)",
     "format": "02 信号编码 (格式)",
+    "connector": "02c 链路接口",
     "tape": "03 记录介质 (磁带)",
     "player": "04 读取解码 (播放设备)",
     "display": "05 显示设备 (CRT)",
@@ -490,6 +491,71 @@ def build_schema() -> ParamSchema:
                     "即画面被噪声抹平而不是偏色。磁带劣化则相反：色度先死、"
                     "亮度还撑得住（参考 S-VHS 烂碟：sat 0.94 而 mean 0.09）。"
                     "两者用不同的参数，因为它们本来就不是同一个环节的故障。")
+
+    # ------------------------------------------------------------------
+    # Physical connectors between the source and the recorder.  Kept per-connector
+    # rather than as one "damage" control, because in a real chain one joint in the run
+    # is corroded and the others are not, and locating the fault is the point.
+    cn = s.layer("connector")
+    g = "链路中的接口"
+    cn.define("hdmi_present", "HDMI 接口", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+              phys_min=0.0, phys_max=1.0, source="HDMI 转 AV 转换器的输入",
+              help="高速差分数字接口。损坏的表现与模拟接口**完全不同**："
+                   "数字没有「轻微雪花」这个状态，位要么对要么错，所以看到的是"
+                   "马赛克、局部冻结、闪黑；再差就是握手失败直接「无信号」。")
+    cn.define("hdmi_moisture", "HDMI 受潮", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6,
+              help="水在缝隙里把介电常数从空气的 1 拉到约 80，单位长度电容上升，"
+                   "差分阻抗偏离 100Ω。差分对对此极其敏感，眼图很快闭合。")
+    cn.define("hdmi_corrosion", "HDMI 氧化", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6,
+              help="氧化层是差的导体，接触电阻上升，结点更像开路而不是匹配负载。")
+    g = "AV / RCA 接口"
+    cn.define("av_present", "AV 接口", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+              phys_min=0.0, phys_max=1.0, source="RCA 复合视频（黄莲花头）")
+    cn.define("av_moisture", "AV 受潮", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6)
+    cn.define("av_corrosion", "AV 氧化", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6)
+    cn.define("av_ground_loop", "地环路", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.5,
+              help="RCA 的**外壳就是地**。外壳接触电阻大，线缆参考电位与信号源不同，"
+                   "差值就是市电上的交流声——表现为一条**缓慢滚动**的亮暗条。"
+                   "滚动是这类故障的全部特征；静止的条是另一种故障。")
+    cn.define("mains_hz", "市电频率", 50.0, 45.0, 65.0, unit="Hz", group=g,
+              phys_min=50.0, phys_max=60.0,
+              help="滚动的速度取决于市电与场频之**差**，所以 50Hz 与 60Hz 地区的滚动方向"
+                   "与速度不同。这解释了同一台设备在不同地区观感不同。")
+    g = "S-Video 接口"
+    cn.define("svideo_present", "S-Video 接口", 0.0, 0.0, 1.0, unit="bool", group=g,
+              step=1.0, phys_min=0.0, phys_max=1.0)
+    cn.define("svideo_moisture", "S-Video 受潮", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6)
+    cn.define("svideo_corrosion", "S-Video 氧化", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6)
+    cn.define("svideo_leakage", "Y/C 串扰", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.5,
+              help="Y 与 C 在相隔几毫米的两个针脚上，受潮形成漏电通路。"
+                   "结果是**边缘上的彩色镶边**而不是整体偏色：亮度的陡变出现在色度通道里，"
+                   "反过来也一样，所以镶边正好落在边缘上——"
+                   "这就是为什么它读起来像坏磁带，而源头是湿了的接口。")
+    g = "RF / 天线接口"
+    cn.define("rf_present", "RF 接口", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+              phys_min=0.0, phys_max=1.0, source="75Ω 同轴天线接口")
+    cn.define("rf_moisture", "RF 受潮", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6,
+              help="水改变介电常数，阻抗偏离 75Ω，能量被反射回去。反射波与前进波干涉，"
+                   "而干涉是相加还是相消取决于**电长度**，所以损伤是**频率选择性的**——"
+                   "咬住某些频率而放过另一些，不是整体衰减。")
+    cn.define("rf_corrosion", "RF 氧化", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6,
+              help="氧化层加潮气可以像一个粗糙的二极管：一个方向比另一个方向更容易导通，"
+                   "正弦波被削掉一边。削顶会产生**谐波**，所以腐蚀的 RF 接点会干扰"
+                   "**别的频道**——干扰是在接点上产生的，不是从外面收进来的。")
+    cn.define("rf_shielding", "屏蔽损失", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.5,
+              help="屏蔽层破损会让外部射频进入。与「氧化」的区别：氧化是接点**自己产生**"
+                   "干扰，屏蔽损失是**外部**干扰进来。")
 
     # ------------------------------------------------------------------ D
     ply = s.layer("player")

@@ -16,6 +16,39 @@ python tools/measure_response.py                       # 频响标定测量
 
 ---
 
+## Rule one: suspect the instrument first
+
+Before changing a mechanism because it "has no effect", validate the measurement. This is
+written down because it has been learned repeatedly and at cost:
+
+| What was concluded | What was true |
+|---|---|
+| `row_timebase` is inert, not wired | the harness dropped the parameter via `merge_values` |
+| `binder_loss` changes saturation the wrong way | the check measured in RGB, where clipping ate the evidence |
+| `luma_pedestal` points the wrong way | the target frame was fed back in, so the measurement compared damage with damage |
+| `chroma dies first` fails, tune the mechanism | the mixing law is a step; no partial population exists to observe |
+| the sweep says `row_chroma_error` does nothing | the sweep harness was wrong; it moves the metric by 0.0252 |
+| broadcast noise is inert | the tracker's own floor was above the effect |
+
+Every one of those was a measurement fault first and a mechanism fault only sometimes. The
+costs are asymmetric:
+
+* **concluding "mechanism broken" when the measurement is broken** leads to editing working
+  code, and the real fault is never found because it is never looked at;
+* **concluding "measurement broken" when the mechanism is broken** costs one round.
+
+So the default is to suspect the instrument. Concretely, before concluding a mechanism does
+nothing:
+
+1. **assert the parameter arrived** where it is used, rather than trusting the call;
+2. **validate the instrument against a case whose answer is known** — this is what resolved
+   the hue-spread contradiction and what showed the displacement tracker was non-linear;
+3. **differencing against the mechanism switched off**, never against the original signal,
+   which mixes every other mechanism in;
+4. **check the metric can move at all** — a metric that saturates reports "no effect" for
+   everything.
+
+The order that works is: prove the instrument, then measure, then change code.
 ## 一、为什么它和「VHS 滤镜」不是一回事
 
 ### 1. 效果产生于信号机制，不是叠加
