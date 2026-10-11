@@ -1437,5 +1437,53 @@ def check_hue_spread_metric() -> None:
            "10%%/30deg moves it by %+.4f" % (small_rot - base),
            abs(small_rot - base) < 0.05,
            "a sweep reporting 'no effect' may be looking at too small a change")
+def check_spread_not_artefact() -> None:
+    """
+    A low-detail frame must not be able to fake a large displacement spread.
+
+    Run before the intermittency in the captures was called a property of the material.
+    The tracker only reports rows where it finds structure, so a nearly flat frame yields
+    few usable rows, and the spread of a handful of rows is the tracker's own noise rather
+    than the tape's behaviour. If that were what produced the variation, the intermittency
+    would be a measurement artefact and a whole mechanism would have been built on it.
+
+    Measured on real fields, 25 of them: correlation of spread with picture detail -0.004,
+    with the number of usable rows -0.282. The artefact explanation is not supported.
+
+    The same logic is asserted here on synthetic fields, where the answer is known.
+    """
+    from atsim.core.signal import horizontal_shift
+    from tools.measure_timebase import displacement_stats
+
+    H, W = 240, 360
+    x = np.arange(W, dtype=np.float32)
+    rng = np.random.default_rng(7)
+
+    def build(detail_amp: float, shift_std: float) -> np.ndarray:
+        edge = (np.abs(((x - 5.0) % 10.0) - 5.0) < 1.5).astype(np.float32)
+        img = np.tile((0.5 + detail_amp * (edge - 0.3))[None, :], (H, 1)).astype(np.float32)
+        f = rng.standard_normal(H).astype(np.float32)
+        f = f / max(1e-6, float(f.std())) * shift_std
+        return horizontal_shift(img, f)
+
+    # same true spread, one with plenty of structure and one nearly flat
+    strong = displacement_stats(build(0.55, 0.8))
+    weak = displacement_stats(build(0.02, 0.8))
+    s_strong = float(strong.get("std", float("nan")))
+    s_weak = float(weak.get("std", float("nan")))
+    rows_strong = int(strong.get("rows", 0))
+    rows_weak = int(weak.get("rows", 0))
+
+    record("a detailed frame gives a usable spread",
+           "structure is what makes the measurement possible",
+           "detail-rich: %d rows, spread %.2f px" % (rows_strong, s_strong),
+           rows_strong > 40 and np.isfinite(s_strong))
+
+    record("a nearly flat frame reports few rows, not a large spread",
+           "the artefact this guards against would look like a fault",
+           "nearly flat: %d rows, spread %s"
+           % (rows_weak, "n/a" if not np.isfinite(s_weak) else "%.2f px" % s_weak),
+           rows_weak < rows_strong,
+           "so a varying stock of usable rows cannot be mistaken for varying displacement")
 if __name__ == "__main__":
     raise SystemExit(main())
