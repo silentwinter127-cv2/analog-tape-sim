@@ -14,11 +14,41 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..codecs.operator import HAND
 from ..codecs.autocontrol import (ExposureLoop, FocusLoop, WhiteBalanceLoop,
                                   centre_weights)
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
-from ..core.rng import ValueNoise3D, bandlimited_noise, rng_for
+from ..core.rng import ValueNoise3D, bandlimited_noise, derive_seed, rng_for
 from ..core.signal import gaussian_kernel, lowpass
+
+
+def _subpixel_shift(rgb: np.ndarray, dx: float, dy: float) -> np.ndarray:
+    """
+    Move the frame by a fractional number of pixels.
+
+    A hand does not move in whole pixels, and the difference is visible: an integer shift gives a
+    stepped, mechanical shake, while a fractional one gives a smooth movement.  Bilinear sampling is
+    enough here because the shift is small -- at the amplitudes a hand produces, the interpolation
+    error is far below the sensor noise the frame is about to receive.
+    """
+    if abs(dx) < 1e-3 and abs(dy) < 1e-3:
+        return rgb
+    h, w = rgb.shape[:2]
+    ys = np.arange(h, dtype=np.float32)[:, None] - dy
+    xs = np.arange(w, dtype=np.float32)[None, :] - dx
+    y0 = np.clip(np.floor(ys).astype(np.int32), 0, h - 1)
+    x0 = np.clip(np.floor(xs).astype(np.int32), 0, w - 1)
+    y1 = np.clip(y0 + 1, 0, h - 1)
+    x1 = np.clip(x0 + 1, 0, w - 1)
+    fy = np.clip(ys - y0, 0.0, 1.0)[:, :, None]
+    fx = np.clip(xs - x0, 0.0, 1.0)[:, :, None]
+    a = rgb[y0, x0]
+    b = rgb[y0, x1]
+    c = rgb[y1, x0]
+    d = rgb[y1, x1]
+    top = a * (1.0 - fx) + b * fx
+    bot = c * (1.0 - fx) + d * fx
+    return (top * (1.0 - fy) + bot * fy).astype(np.float32)
 
 
 class CameraStage(Stage):
@@ -37,6 +67,9 @@ class CameraStage(Stage):
                                      presettle_s=self.autopresettle_s)
         self._af = FocusLoop(tau_s=self.af_tau_s)
         self._weights = None
+        self._bumps = None
+        self._zoom_softness = 0.0
+        self._defocus = 0.0
         self._af_offset = 0.0
         # state that must survive a parameter change: the auto-control loops take time to
         # settle, so re-creating them on every edit would defeat the time constant they exist
@@ -74,6 +107,13 @@ class CameraStage(Stage):
         self.sharpness = float(cfg.get("sharpness", 1.0))
         self.aberration = float(cfg.get("chroma_aberration", 0.0))
         self.motion_blur = float(cfg.get("motion_blur", 0.0))
+        # --- the operator's hand ------------------------------------------------
+        # Shake is the camera body moving, so it is applied before the sensor sees anything.
+        self.shake_intensity = float(cfg.get("shake_intensity", 0.0))
+        self.bump_rate_hz = float(cfg.get("bump_rate_hz", 0.0))
+        self.bump_amount = float(cfg.get("bump_amount", 0.0))
+        self.zoom_travel = float(cfg.get("zoom_travel", 0.0))
+        self.zoom_kind = str(cfg.get("zoom_kind", 1.0))
         self.smear = float(cfg.get("ccd_smear", 0.0))
         self.halation = float(cfg.get("halation", 0.0))
         self.gain = float(cfg.get("ccd_gain", 0.0))
@@ -404,11 +444,45 @@ class CameraStage(Stage):
         rgb = buf.rgb.astype(np.float32, copy=False)
         dt = 1.0 / max(1e-6, self.ctx.fps)
 
+        # --- the hand, before the sensor sees anything -------------------------
+        # Applying the shake later would give a sharp picture with an offset, which is not the same
+        # thing as a picture taken by a moving camera -- and it would leave the sensor's own motion
+        # blur unrelated to the movement that caused it.
+        # The zoom's own consequence: at long travel a consumer lens softens, because the elements are
+        # furthest from the spacing they were designed around.  Applied through the operator's motor
+        # curve rather than linearly, because that is how the control moves.  Without this the parameter
+        # is read and never used -- which is the "reachable but inert" fault this project keeps finding.
+        if self.zoom_travel > 1e-6:
+            from ..codecs.operator import zoom_curve
+            # at long travel a consumer lens softens: the elements are furthest from the spacing they
+            # were designed around, and the motor's own curve is how the control gets there
+            self._zoom_softness = 0.22 * zoom_curve(self.zoom_travel, "motor")
+        else:
+            self._zoom_softness = 0.0
+        # the total defocus this frame: the loop's motor position plus the zoom's softness.  Applied as
+        # a blur, not as the coating loss `_lens_wear` models -- a misfocused lens convolves the image,
+        # while a worn coating scatters light and lifts the blacks, and they are different faults.
+        self._defocus = float(np.clip(getattr(self, "_af_offset", 0.0) + self._zoom_softness,
+                                      0.0, 1.6))
+
+        if self.shake_intensity > 1e-6 or self.bump_amount > 1e-6:
+            from ..codecs.operator import plan_bumps, shake_offset
+            if self._bumps is None:
+                self._bumps = plan_bumps(self.bump_rate_hz, self.bump_amount,
+                                         int(getattr(self.ctx, "frame_count", 0) or 600),
+                                         self.ctx.fps,
+                                         derive_seed(self.ctx.seed, "camera", "bumps"))
+            dx, dy = shake_offset(HAND, self.shake_intensity, buf.index, self.ctx.fps,
+                                  derive_seed(self.ctx.seed, "camera", "hand"), self._bumps,
+                                  width=rgb.shape[1])
+            rgb = _subpixel_shift(rgb, dx, dy)
+
         # --- automatic control, in the order the camera makes its decisions ----
         # focus first: it is the lens, before anything else in the chain
         if self.af_enabled:
             pos = self._af.update(rgb, dt)
-            # Kept separately from `self.defocus`, which `_read_params` re-reads whenever a keyframe
+            # Kept separately from the lens parameters, which `_read_params` re-reads whenever a
+            # keyframe
             # or the environment fires -- so writing the loop's result there would let the static
             # parameter overwrite it on those frames and the loop would stutter.
             # The loop reports a motor position; how much blur that is, is the lens's business.
@@ -462,6 +536,10 @@ class CameraStage(Stage):
         rgb = self._flare(rgb)
         rgb = self._aberration(rgb)
         rgb = self._sharpen(rgb)
+        if getattr(self, "_defocus", 0.0) > 1e-4:
+            # a Gaussian of radius growing with defocus.  The factor is chosen so that full defocus
+            # (1.0) is a clearly soft picture and the loop's typical steps are visible but gentle.
+            rgb = lowpass(rgb, 0.6 + 4.5 * self._defocus, axis=None)
         rgb = self._lens_wear(rgb)
         rgb = self._color_science(rgb)
 

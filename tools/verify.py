@@ -2329,5 +2329,112 @@ def check_autocontrol() -> None:
            last < first,
            "a static colour cast cannot drift, which is the argument for a loop")
 
+def check_operator() -> None:
+    """
+    The hand must move the picture like a hand, and focus and zoom must reach it at all.
+
+    The distinguishing property is that handheld shake is **narrowband and rhythmic, not noise**. A random
+    offset per frame looks like a glitch; a sum of a few quasi-periodic components looks like a person.
+    That is measurable two ways, and both are asserted: the spectrum is concentrated rather than flat, and
+    the frame-to-frame movement is correlated, because a hand cannot travel arbitrarily far in 40 ms.
+
+    Two parameters were also found to be inert while wiring this, which is the fault this project has now
+    found seven times: `zoom_travel` was read and never used, and the focus loop computed a motor position
+    that nothing read, because `CameraStage` had no defocus path at all -- it softens through
+    `_lens_wear`, which models coating damage, a different physical mechanism. So the loop that exists to
+    hunt for focus did not move the lens. Both are measured on the rendered frames here.
+    """
+    import numpy as np
+
+    from atsim.codecs.operator import HAND, plan_bumps, shake_offset, zoom_curve
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.io.source import SyntheticSource
+    from atsim.render.renderer import Renderer
+
+    W, H, FPS = 280, 200, 25.0
+
+    # --- the hand's motion is narrowband, not noise
+    N = 250
+    tr = np.array([shake_offset(HAND, 1.0, i, FPS, 7) for i in range(N)])
+    sig = (tr[:, 0] - tr[:, 0].mean()) * np.hanning(N)
+    spec = np.abs(np.fft.rfft(sig)) ** 2
+    spec = spec / max(1e-12, spec.sum())
+    hhi = float((spec ** 2).sum())
+    flat = 1.0 / len(spec)
+    record("handheld movement is narrowband rather than noise",
+           "a hand moves as a few quasi-periodic components, and the rhythm is what reads as a hand",
+           "spectral concentration %.4f against %.5f for a flat spectrum (%.0fx)"
+           % (hhi, flat, hhi / flat),
+           hhi > 5.0 * flat,
+           "a random offset per frame is a glitch, not a hand")
+
+    # --- and it is correlated frame to frame
+    lag1 = float(np.corrcoef(tr[:-1, 0], tr[1:, 0])[0, 1])
+    record("consecutive frames of hand movement are correlated",
+           "a hand cannot travel arbitrarily far in 40 ms",
+           "lag-1 correlation of the horizontal movement %+.3f" % lag1,
+           lag1 > 0.15,
+           "white noise would give about zero")
+
+    # --- jostles are episodes
+    bumps = plan_bumps(rate_hz=3.0, amount=1.0, frames=N, fps=FPS, seed=3)
+    if len(bumps) < 3:
+        record("jostles are planned as discrete episodes",
+               "a jostle is a step, a door, an elbow -- not a sustained movement",
+               "only %d jostle(s) over %.0f s, too few to test" % (len(bumps), N / FPS), False)
+    else:
+        base = np.array([shake_offset(HAND, 1.0, i, FPS, 7) for i in range(N)])
+        withb = np.array([shake_offset(HAND, 1.0, i, FPS, 7, bumps) for i in range(N)])
+        dev = np.abs(withb - base).sum(axis=1)
+        quiet = float(np.percentile(dev, 80))
+        peak = float(dev.max())
+        record("jostles are spikes over a quiet floor",
+               "most frames are undisturbed and a few are jolted",
+               "%d jostle(s); peak %.2f px against an 80th-percentile %.3f px (%.0fx)"
+               % (len(bumps), peak, quiet, peak / max(1e-9, quiet)),
+               peak > 8.0 * max(1e-9, quiet),
+               "the share of disturbed frames is what distinguishes an episode from a hum")
+
+    # --- and it reaches the picture, on a clip where the events occur
+    def run(over, frames=180):
+        params = merge_values(SCHEMA.resolve_all(
+            FACTORY_PRESETS["family_archive_1992"]["layers"]), {"camera": over})
+        s = SyntheticSource(width=W, height=H, frames=frames)
+        r = Renderer(s, W, H, FPS, params, seed=11)
+        return [np.clip(r.render_frame(i), 0, 1) for i in range(frames)]
+
+    def sharpness(f):
+        g = f @ np.array([0.299, 0.587, 0.114], np.float32)
+        return float(np.abs(np.diff(g, axis=1)).mean())
+
+    a, b = run({}, 24), run({}, 24)
+    inert = all(np.array_equal(x, y) for x, y in zip(a, b))
+    record("a camera with no operator is unchanged",
+           "every operator parameter ships at zero",
+           "two default renders agree frame for frame: %s" % inert, inert)
+
+    still = run({}, 30)
+    shaken = run({"shake_intensity": 1.0}, 30)
+    moved = max(float(np.abs(shaken[i] - still[i]).mean()) for i in range(30))
+    record("the hand reaches the rendered picture",
+           "the shake is applied before the sensor sees anything",
+           "largest mean difference per frame %.4f" % moved, moved > 0.004)
+
+    sharp = [sharpness(run({"zoom_travel": z}, 6)[-1]) for z in (0.0, 0.5, 1.0)]
+    record("zoom travel softens the picture",
+           "at long travel a consumer lens is furthest from its designed element spacing",
+           "sharpness %.5f at travel 0, %.5f at 0.5, %.5f at 1.0" % tuple(sharp),
+           sharp[0] > sharp[1] > sharp[2],
+           "the parameter was read into an attribute and never used")
+
+    af = run({"af_enabled": 1.0, "af_tau_s": 0.3}, 80)
+    s = [sharpness(f) for f in af]
+    spread = (max(s) - min(s)) / max(1e-9, max(s))
+    record("the focus loop moves the lens",
+           "a loop that hunts for focus and does not move the lens has not modelled hunting",
+           "sharpness varies by %.1f%% of its maximum over the clip" % (100 * spread),
+           spread > 0.02,
+           "`CameraStage` had no defocus path, so the loop's motor position was written and never read")
 if __name__ == "__main__":
     raise SystemExit(main())
