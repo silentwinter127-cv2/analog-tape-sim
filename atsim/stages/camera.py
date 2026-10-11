@@ -68,6 +68,7 @@ class CameraStage(Stage):
         self._af = FocusLoop(tau_s=self.af_tau_s)
         self._weights = None
         self._bumps = None
+        self._sites = None
         self._zoom_softness = 0.0
         self._defocus = 0.0
         self._af_offset = 0.0
@@ -116,6 +117,12 @@ class CameraStage(Stage):
         self.zoom_kind = str(cfg.get("zoom_kind", 1.0))
         self.smear = float(cfg.get("ccd_smear", 0.0))
         self.halation = float(cfg.get("halation", 0.0))
+        # --- the note's optical and sensor mechanisms ---------------------------
+        self.lens_fog = float(cfg.get("lens_fog", 0.0))
+        self.bloom_amount = float(cfg.get("bloom_amount", 0.0))
+        self.bloom_threshold = float(cfg.get("bloom_threshold", 0.82))
+        self.dead_sites_rate = float(cfg.get("dead_sites", 0.0))
+        self.stuck_fraction = float(cfg.get("stuck_fraction", 0.45))
         self.gain = float(cfg.get("ccd_gain", 0.0))
         self.color_cast = float(cfg.get("color_cast", 0.0))
         self.highlight_tint = float(cfg.get("highlight_tint", 0.0))
@@ -531,7 +538,15 @@ class CameraStage(Stage):
             rgb = self._color_cleanup(rgb)
 
         rgb = self._roll_off(rgb)
+        # fog is on the front element, so light passes through it before anything else
+        if self.lens_fog > 1e-4:
+            from ..codecs.optics import lens_fog
+            rgb = lens_fog(rgb, self.lens_fog)
         rgb = self._halation(rgb)
+        # charge, at the sensor: vertical because the transfer channel is vertical
+        if self.bloom_amount > 1e-4:
+            from ..codecs.optics import blooming
+            rgb = blooming(rgb, self.bloom_threshold, self.bloom_amount)
         rgb = self._lens_flare(rgb)
         rgb = self._flare(rgb)
         rgb = self._aberration(rgb)
@@ -542,6 +557,20 @@ class CameraStage(Stage):
             rgb = lowpass(rgb, 0.6 + 4.5 * self._defocus, axis=None)
         rgb = self._lens_wear(rgb)
         rgb = self._color_science(rgb)
+        # The sensor's own readout, at the very end.  A stuck site is a *readout* defect, so it happens
+        # after the charge has accumulated, after the analogue gain and after the camera's own signal
+        # processing -- which means after `_sharpen` in particular.  Writing it earlier looked right and
+        # did nothing: an unsharp mask computes `0 * (1 + k) - k * neighbour_mean` at a dead site and pulls
+        # it straight back to the neighbourhood average.  Measured before this move: the site was set to
+        # 0.0000 and the stage's cached output read 0.5199 at the same position.
+        if self.dead_sites_rate > 1e-6:
+            from ..codecs.optics import apply_defect_sites, plan_defect_sites
+            if self._sites is None:
+                self._sites = plan_defect_sites(
+                    self.dead_sites_rate, self.stuck_fraction,
+                    rgb.shape[0], rgb.shape[1],
+                    derive_seed(self.ctx.seed, "camera", "dead_sites"))
+            rgb = apply_defect_sites(rgb, self._sites)
 
         return FrameBuffer(np.clip(rgb, 0.0, 2.0).astype(np.float32), None,
                            buf.index, buf.time, buf.std, dict(buf.meta))

@@ -1,0 +1,59 @@
+add the note's optical and sensor mechanisms: dead sites, blooming, lens fog
+
+The note's fifth dimension. Three mechanisms, each a different physical process that nothing else in the
+model could stand in for, and each belonging to *this particular camera* rather than to the medium or the
+chain.
+
+**Dead and stuck sites.** A CCD is a large array of independent structures and some fail. A *dead* site
+reads black, a *stuck* site reads full, and both are at fixed positions forever -- which is the point, since
+a defect that moves is noise and a defect that stays is a memory of that camera. Planned as a Poisson
+process, seeded from the unit so one camera has one set of defects across every clip.
+
+**Blooming.** When a site saturates the excess charge flows along the transfer channel, and a CCD's channel
+runs *vertically* -- so a bright source makes a vertical streak, not a round halo. That is exactly the
+distinction from `halation`, which the model already had as a round veil, and it is why the note lists them
+separately: a round halo is optical (scattering) while a vertical streak is charge transport. Measured
+vertical spread 25.5 px against 5.7 px horizontally, a ratio of 4.5.
+
+**Lens fog.** Moisture on the front element, and the note is right that it is distinct from everything it is
+easily confused with: dirt blocks light with sharp edges, coating wear scatters into a structured veil,
+defocus convolves symmetrically -- and fog is a smooth high-gloss diffusion whose veil is a *fixed* amount
+of scattered light, so it matters most where there was least light. The source grows a soft skirt because a
+blown highlight has the most light to scatter. Measured: the dark far field rises +0.090 and the ring just
+outside the source +0.094.
+
+**Three faults, and the third is a new kind for this project.**
+
+  * **the rate was a hundred times too low.** `rate * area / 1e6` made 6 sites on a 200x150 frame into
+    `poisson(0.18)`, which returns zero most of the time -- so the mechanism was present, correctly written,
+    correctly wired, and **never fired at any setting a user could choose**. It is the ninth member of this
+    project's "reachable but inert" family and the first whose cause was a *unit* rather than a missing read;
+  * **the write happened before the unsharp mask.** At a dead site `_sharpen` computes
+    `0 * (1 + k) - k * neighbour_mean`, which pulls the site back to the neighbourhood average: measured,
+    set to 0.0000 and read back as 0.5199. My own comment had the physics backwards -- it said "nothing
+    optical may modify it", which is true but not the point, because the processing that was modifying it is
+    *electrical*. A stuck site is a readout defect, so it happens after the sensor, after the analogue gain
+    and after the camera's own processing. The arithmetic is what showed the comment was wrong;
+  * **the fog was weighted the wrong way round.** Adding `spread * (1 - luma)` looks like it favours the
+    dark and does the opposite, because a blurred copy is already large where the picture is bright, so the
+    two factors cancel: measured, the brightest decile rose +0.1136 against +0.0502 for the darkest -- the
+    opposite of the signature that distinguishes fog from defocus.
+
+**Four audits, four confounded results, and only one real fault found by them.** I audited every camera
+parameter for liveness before writing anything, and the audit produced four successive false positives:
+
+  * `ae_target`, `awb_limit`, `af_tau_s`, `autopresettle_s` and the two time constants read "inert" because
+    I set each alone while the loop it configures is off by default. A parameter that needs its master
+    switch is *gated*, not inert, and "fixing" those would have broken working code;
+  * `bump_rate_hz` read inert because jostles are Poisson and 6 frames at 1/s expects 0.24 arrivals;
+  * `awb_tau_s` read inert because the test scene was dark grey and had no cast to correct;
+  * `af_tau_s` read inert because the scene was flat and the loop correctly refused to lock;
+  * and `flare_blades` -- which `_lens_flare` genuinely returns before reading, unless a pixel exceeds 0.80
+    luminance, so a flat test scene has no flare at all. It works: 3 against 12 blades differ by 61 levels.
+
+The lesson is sharper than the earlier one about instruments: **a liveness audit needs a scenario per
+parameter, not a scene per audit.** Two of the three faults above were found by measurement and none by
+reading, but four of the five zeros were phantoms, and acting on any of them would have meant "fixing"
+correct code.
+
+111 checks pass, 17 presets render, selftest ALL CHECKS PASSED.

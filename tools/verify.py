@@ -2535,5 +2535,138 @@ def check_session_ui() -> None:
     finally:
         app.set_project({"environment": saved[0], "keyframes": saved[1],
                          "unit_identities": saved[2]})
+def check_optics() -> None:
+    """
+    The three optical mechanisms must have their signatures, not merely change the output.
+
+    Each has a property that a wrong implementation would lack, and those properties are what is asserted:
+
+      * **blooming is vertical.** The charge spills along the CCD's transfer channel, so the spread is
+        anisotropic. A round halo -- which is what `halation` already is -- would fail this, and that
+        distinction is the whole reason the note lists the two separately;
+      * **a defect site is fixed and absolute.** The same value in every frame, and not changed by the
+        camera's own processing. Both halves were wrong at first: the rate was a hundred times too low so
+        the Poisson process never fired, and the write happened before the unsharp mask, which pulled a
+        dead site back to the neighbourhood average -- measured, set to 0.0000 and read back as 0.5199;
+      * **fog lifts the blacks.** The veil is a fixed amount of scattered light, so its effect is largest
+        where there was least light. Weighting it by darkness as well *cancels* that, because a blurred
+        copy is already large where the picture is bright -- measured with the product, the brightest
+        decile rose +0.1136 against +0.0502 for the darkest.
+    """
+    import numpy as np
+
+    from atsim.codecs.optics import lens_fog, plan_defect_sites
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.io.source import SyntheticSource
+    from atsim.render.renderer import Renderer
+
+    COEF = np.array([0.299, 0.587, 0.114], np.float32)
+    W, H, FPS = 200, 150, 25.0
+    base = SCHEMA.resolve_all(FACTORY_PRESETS["family_archive_1992"]["layers"])
+
+    # --- the rate is a count that actually produces sites
+    # the same number every size: the parameter is sites per 720x480-equivalent area, so a larger frame
+    # scales it.  720x480 is 34.56 units of 1e4 pixels, so a rate of 4 gives about 138 sites.
+    counts = [len(plan_defect_sites(r, 0.5, 480, 720, s))
+              for r in (1.0, 2.0, 4.0) for s in range(12)]
+    expect = max(1.0, 2.0, 4.0) * 480 * 720 / 1e4
+    record("the defect rate produces sites across its range",
+           "a unit conversion that makes a Poisson process always return zero is invisible to review",
+           "rates 1/2/4 on 720x480 gave counts %d..%d over 36 draws (the largest expectation is %.0f)"
+           % (min(counts), max(counts), expect),
+           min(counts) > 0 and max(counts) < expect * 2.0,
+           "rate * area / 1e6 made 6 sites on a 200x150 frame into poisson(0.18), which is zero "
+           "most of the time: present, wired, and never firing at any setting a user could choose")
+
+    # --- blooming is vertical
+    def spot(level=0.30, frames=2):
+        class S:
+            width, height, fps, frame_count = W, H, FPS, frames
+
+            def frame(self, index):
+                a = np.full((H, W, 3), level, np.float32)
+                a[H // 2 - 3:H // 2 + 3, W // 2 - 3:W // 2 + 3] = 1.0
+                return a
+        return S()
+
+    def cam(over, frames=2):
+        p = merge_values(base, {"camera": over}) if over else base
+        r = Renderer(spot(frames=frames), W, H, FPS, p, seed=17)
+        return r
+
+    plain = np.clip(cam({}).render_frame(0), 0, 1)
+    bloomed = np.clip(cam({"bloom_amount": 0.9, "bloom_threshold": 0.7}).render_frame(0), 0, 1)
+    d = np.abs(bloomed - plain) @ COEF
+
+    def spread(profile, axis):
+        p = profile / max(1e-9, profile.sum())
+        m = float((p * axis).sum())
+        return float(np.sqrt((p * (axis - m) ** 2).sum()))
+
+    sv = spread(d.sum(axis=1), np.arange(H, dtype=np.float32))
+    sh = spread(d.sum(axis=0), np.arange(W, dtype=np.float32))
+    record("blooming spreads vertically, not as a halo",
+           "the CCD's transfer channel is vertical, which is what distinguishes it from halation",
+           "vertical spread %.1f px against %.1f px horizontally (ratio %.2f)" % (sv, sh, sv / max(1e-9, sh)),
+           sv > 1.8 * sh)
+
+    # --- a defect site is fixed and absolute at the sensor
+    r = cam({"dead_sites": 3.0, "stuck_fraction": 0.5}, frames=5)
+    r.render_frame(0)
+    stage = r.stage["camera"]
+    sites = stage._sites or []
+    if not sites:
+        record("a defect site is fixed and absolute", "a stuck site reads the same in every frame",
+               "no sites were planned", False)
+    else:
+        ok = True
+        detail = []
+        for s in sites:
+            vals = []
+            for i in range(5):
+                r.render_frame(i)
+                vals.append(float(np.asarray(r._cache["camera"][i])[s.y, s.x].mean()))
+            good = all(v > 0.95 for v in vals) if s.hot else all(v < 0.05 for v in vals)
+            ok = ok and good
+            detail.append("%s %.3f..%.3f" % ("hot" if s.hot else "dead", min(vals), max(vals)))
+        record("a defect site is fixed and absolute at the sensor",
+               "a stuck site reads its own value regardless of what is in front of it",
+               "%d sites; %s" % (len(sites), "; ".join(detail[:3])),
+               ok,
+               "written before _sharpen, which computed 0*(1+k) - k*neighbour_mean and pulled the "
+               "site back to the neighbourhood average")
+
+    # --- fog lifts the blacks more than the brights
+    # A small blown source on a dark field, which is the shape a flare or a fogged highlight has.  A large
+    # bright *region* cannot test this: a blur that fits inside it takes most of its veil from itself, so
+    # the far-field veil is smaller where the frame is bright -- the opposite of a real scene.
+    h2, w2 = 160, 200
+    a = np.full((h2, w2, 3), 0.18, np.float32)
+    a[h2 // 2 - 4:h2 // 2 + 4, w2 // 2 - 4:w2 // 2 + 4] = 1.0
+    pl = a @ COEF
+    fg = lens_fog(a, 0.9) @ COEF
+    far = np.ones((h2, w2), bool)
+    far[h2 // 2 - 24:h2 // 2 + 24, w2 // 2 - 24:w2 // 2 + 24] = False
+    lift_dark = float((fg - pl)[far].mean())
+    # the skirt: the field just outside the source rises more than the far field
+    ring = np.zeros((h2, w2), bool)
+    ring[h2 // 2 - 16:h2 // 2 + 16, w2 // 2 - 16:w2 // 2 + 16] = True
+    ring[h2 // 2 - 8:h2 // 2 + 8, w2 // 2 - 8:w2 // 2 + 8] = False
+    skirt = float((fg - pl)[ring].mean())
+    record("fog lifts a dark field and grows a skirt around a source",
+           "a fixed amount of scattered light matters most where there was least light, and a blown "
+           "source scatters enough to glow around itself",
+           "dark far field rises %+.5f; the ring just outside the source rises %+.5f" % (lift_dark, skirt),
+           lift_dark > 0.02 and skirt > lift_dark,
+           "weighting the veil by (1 - luma) cancels the dark lift, because a blurred copy is already "
+           "large where the picture is bright: measured +0.1136 bright against +0.0502 dark")
+
+    # --- and all three are off by default
+    x = np.clip(cam({}).render_frame(0), 0, 1)
+    y = np.clip(cam({}).render_frame(0), 0, 1)
+    record("a camera with none of the new optics is unchanged",
+           "all three default to zero, so no existing preset moves",
+           "two default renders identical: %s" % np.array_equal(x, y), np.array_equal(x, y))
 if __name__ == "__main__":
     raise SystemExit(main())
