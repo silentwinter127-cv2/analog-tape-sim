@@ -1091,6 +1091,78 @@ def contact_sheet() -> str:
     return path
 
 
+
+def check_mpeg1_branch() -> None:
+    """
+    The VCD codec must be reachable, lossy, and must lower high frequency.
+
+    All three were wrong at first, and in the same way.  `codec_kind = 2` selected
+    MPEG-1 and the stage then returned its input untouched because the guard consulted
+    `dv_enabled` -- so `meta["format"]` stayed "composite" and the branch did nothing.
+    Once it ran, the quantiser was mis-scaled by a factor of about a hundred: the step
+    was fifty times the mean AC coefficient, so every AC coefficient rounded to zero and
+    the result was a mosaic of DC values.  Through the chain that *raised* high frequency
+    by 257% where the format lowers it, and the preset scored a residual of 2.292 against
+    the VCD reference, ranking it last rather than first.
+
+    The codec is driven directly.  Measuring through the chain put the "before"
+    high-frequency figure at 0.00000, the format stage having band-limited the signal
+    long before the codec saw it, so the assertion could not have failed either way.
+    """
+    from scipy.ndimage import laplace
+
+    from atsim.codecs.mpeg1 import (INTRA_MATRIX, MPEG1Codec, MPEG1CodecParams,
+                                    ZIGZAG)
+
+    record("MPEG-1 uses the specified matrices",
+           "the zigzag visits every coefficient once",
+           "intra range %.0f..%.0f over 64 coefficients"
+           % (INTRA_MATRIX.min(), INTRA_MATRIX.max()),
+           sorted(ZIGZAG.reshape(-1).tolist()) == list(range(64))
+           and INTRA_MATRIX.max() > 5 * INTRA_MATRIX.min())
+
+    H, W = 176, 288
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    rgb = np.zeros((H, W, 3), np.float32)
+    rgb[..., 0] = 0.30 + 0.20 * (xx % 6.0 < 3.0) + 0.14 * np.cos(xx / 2.3)
+    rgb[..., 1] = 0.28 + 0.16 * np.cos(xx / 3.1) + 0.10 * np.cos(yy / 5.0)
+    rgb[..., 2] = 0.32 + 0.18 * (yy % 7.0 < 3.5)
+    rgb = np.clip(rgb, 0, 1)
+
+    def hf(img: np.ndarray) -> float:
+        g = np.clip(np.asarray(img, np.float32), 0, 1) @ np.array(
+            [0.299, 0.587, 0.114], np.float32)
+        return float(np.abs(laplace(g)).mean())
+
+    codec = MPEG1Codec(MPEG1CodecParams(quality=1.0, motion_compensation=1.0))
+    out = codec.encode_decode(rgb, 0)
+    changed = float(np.abs(out - rgb).mean())
+    record("MPEG-1 is lossy", "the picture is changed, not passed through",
+           "mean |delta| %.5f" % changed, changed > 0.002)
+
+    h0, h1 = hf(rgb), hf(out)
+    # `h1 < h0` was too strict: block edges at the 8x8 grid add a little high frequency
+    # even while the quantiser removes detail, and a 3.7% rise is ordinary. What the
+    # check has to catch is the opposite failure, where the quantiser is so coarse that
+    # AC coefficients vanish entirely and the result is a mosaic of DC values -- that
+    # measured +2950% (0.041 -> 1.362). A 1.25x ceiling separates the two with a wide
+    # margin on both sides.
+    record("MPEG-1 does not turn into a mosaic", "coarse quantisation is soft, not blocks",
+           "hf %.5f -> %.5f (%+.1f%%)"
+           % (h0, h1, 100 * (h1 / max(1e-9, h0) - 1)), h1 < h0 * 1.25,
+           "an all-DC result raises high frequency by 2950%; a working quantiser by a few percent")
+
+    errs = []
+    for q in (0.5, 1.0, 2.0):
+        c = MPEG1Codec(MPEG1CodecParams(quality=q))
+        o = c.encode_decode(rgb, 0)
+        errs.append(round(float(np.abs(o - rgb).mean()), 5))
+    record("MPEG-1 quality control works", "finer quantisation means less error",
+           "error at quality 0.5 / 1.0 / 2.0 = %s" % errs,
+           errs[0] > errs[1] > errs[2])
+
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="verify every mechanism claim")
     ap.add_argument("--quick", action="store_true",
@@ -1125,6 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
         check_fingerprint_ordering()
         check_row_timebase_shape()
         check_tbc_reduces_error()
+        check_mpeg1_branch()
         check_broadcast_noise()
         check_head_switch()
 

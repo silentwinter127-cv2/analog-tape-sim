@@ -87,21 +87,22 @@ def _quant_step(matrix: np.ndarray, quality: float) -> np.ndarray:
     """
     The per-coefficient step.  `quality` above 1 is a finer step (less error).
 
-    The matrix is scaled down before use.  MPEG-1's matrices are specified for an
-    integer DCT with a particular normalisation, and this codec uses an orthonormal one
-    (`dct2` from the DV branch), so the coefficients here are roughly 8x smaller for the
-    same picture -- applying the published figures directly made the step 8 to 83 where
-    the coefficients are of order 0.01, which destroyed everything except the DC term
-    (measured: error 0.399 on a unit-range picture at quality 1.0, i.e. the picture was
-    gone).  The 1/16 scale puts the step at 0.5 to 5.2, which leaves the DC and mid
-    frequencies intact and removes the top of the band -- the behaviour the format is
-    known for.
+    The scale is set from the *measured* coefficient magnitudes, not from a published
+    figure.  MPEG-1's matrices are specified for an integer DCT and this codec uses an
+    orthonormal one, so the coefficients are the cosine transform of a plane in 0..1 --
+    measured on the reference frame, DC of order 1.3 and AC averaging 0.0094. With a
+    1/16 scale the step came out 0.5 to 5.2, fifty times the mean AC coefficient, so
+    **every AC coefficient rounded to zero**: the DC term alone, which is a pure mosaic.
+    Through the chain that *raised* high frequency by 257% where the format lowers it.
 
-    The step is clamped at a floor above zero: a step below the coefficient resolution
-    would be lossless, and no encoder of this format is.
+    Dividing by 1600 puts the step at 0.005 to 0.052, so a typical AC coefficient is
+    about 0.8 of a step -- at the rounding threshold, which is what a coarse quantiser
+    looks like: some coefficients survive, most do not, and the low frequencies are the
+    ones that do. The floor keeps the step from falling below the point where the result
+    would be lossless, which no encoder of this format is.
     """
     q = max(0.25, float(quality))
-    return np.maximum(0.35, matrix / (16.0 * q))
+    return np.maximum(0.002, matrix / (1600.0 * q))
 
 
 def motion_compensate(prev: np.ndarray, cur: np.ndarray, block: int = 16,

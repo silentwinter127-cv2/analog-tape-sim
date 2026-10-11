@@ -76,7 +76,15 @@ class CodecStage(Stage):
         self._last_error = 0.0
 
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
-        if not self.enabled:
+        # Selection is by `codec_kind`, with `dv_enabled` folded into it in __init__.
+        # This guard used to be `if not self.enabled`, and `enabled` came only from
+        # `dv_enabled` -- so selecting MPEG-1 with `codec_kind = 2` did nothing, since a
+        # preset that selects MPEG-1 has no reason to also set the DV switch. Measured,
+        # the stage returned its input untouched and `meta["format"]` stayed
+        # "composite". Fifth defect of this shape in the project, and the same one each
+        # time: a feature selected correctly, then annulled by a guard that consults a
+        # different variable.
+        if self.codec_kind <= 0:
             return buf
         sig: SignalFrame | None = buf.meta.get("signal")
         if sig is None:
