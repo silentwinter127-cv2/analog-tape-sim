@@ -823,6 +823,15 @@
     if (rep && rep.missing && rep.missing.length) {
       e.warn.innerHTML = "引擎报告缺字：<b>" + rep.missing.join(" ") + "</b>"
         + "（字体 " + (rep.font || "?") + "）";
+    } else if (rep && rep.legible === false) {
+      /* The engine measured the frame under the text and the text's own colour.  When they are too close the
+         subtitle is drawn and invisible, which is exactly what happened: white text on a white corner of the
+         picture, three glyphs reported as drawn and nothing to see.  The panel has to say so, because the
+         reason is a parameter two groups further down and no one would guess it. */
+      e.warn.innerHTML = "<b>字幕画出来了但看不见</b>：文字亮度 " + rep.text_luma
+        + " 与它背后" + (rep.background_luma != null ? "的<b>底色块</b>" : "的<b>画面</b>")
+        + "亮度 " + rep.behind_luma + " 太接近（对比度 " + rep.contrast
+        + "）。打开右侧参数面板的<b>底色块</b>，或把字色改成深色。";
     }
   }
 

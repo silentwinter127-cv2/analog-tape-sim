@@ -838,9 +838,11 @@ def build_schema() -> ParamSchema:
                phys_min=0.02, phys_max=0.12)
     osd.define("shadow", "投影强度", 0.5, 0.0, 1.0, unit="0-1", group=g,
                help="字下方偏移一份暗影。这是消费级发生器为了保证亮场景可读性用的最省的做法。")
-    osd.define("background", "底色块", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
-               help="在文字后面烧一个实心黑框。有些发生器有、有些没有，"
-                    "而这个差别在亮场景上非常显眼。")
+    osd.define("background", "底色块", 1.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               help="在文字后面烧一个实心黑框。**默认开启**——"
+                    "每个在任意画面上叠字的消费级发生器要么烧底框、要么给字形描边，原因就是"
+                    "**白字画在白画面上等于不存在**。关掉它请自己确认当前画面的亮度，"
+                    "面板会告诉你是否还看得清。")
     osd.define("opacity", "不透明度", 1.0, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.5, phys_max=1.0)
     osd.define("red", "字色 R", 0.92, 0.0, 1.0, unit="0-1", group=g)

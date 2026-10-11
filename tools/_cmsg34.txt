@@ -1,0 +1,38 @@
+make the subtitle legible by default, and report when it is not
+
+**The text was always drawn.** The engine reported `drawn=3` at both slots and it was telling the truth; what
+was missing was any *contrast*. The default text is near-white (0.92, 0.94, 0.90) and the user's source has a
+white top-left corner, so three glyphs were composited white-on-white and produced no measurable difference at
+all -- a 0.64 maximum in the frame's own edge noise and nothing where the text was.
+
+**Why it is a design fault and not a user error.** Every consumer OSD that draws on an arbitrary picture either
+burns a background box or outlines its glyphs, and this is the reason. The panel defaulted the box *off*, so a
+subtitle on a bright frame vanished, and nothing anywhere said why: the fix was a parameter two groups further
+down the right-hand panel. So `background` now defaults on, and the engine reports what the text sits on.
+
+**Three wrong turns, all of them mine, and the pattern is worth recording.**
+
+  * I read a downscaled preview and concluded the text was absent, twice. The glyphs are 12x24 pixels in a
+    334x485 frame; the third time I cropped and magnified the exact region, 387 pixels of change were there;
+  * I built an explanation on a truncated `grep` -- reading one line as two definitions of `pushProject` -- and
+    changed the server to compensate for a client bug that did not exist. The function is defined once and was
+    always correct. Reading those four lines directly would have taken ten seconds;
+  * and three HTTP measurements contradicted each other because I had changed the project's own state between
+    them, including its *source*: a later frame was of the synthetic chart rather than the doll photograph, so
+    I was measuring a different picture. An in-process test settled it in one run -- both slots draw, with the
+    ink in the text's cell.
+
+The lesson this turn adds to the project's list is narrower than the earlier ones: **a measurement is only
+comparable to another if the state is the same**, and a live server's state is not a constant when the
+measuring tool is also writing to it.
+
+**And the legibility judgement itself was wrong twice.** It compared the text against the *frame* even when a
+background box was drawn -- the box is what the text actually sits on -- and it passed white text on a white box
+with a contrast of 0.0705 while failing nothing. It now measures against whatever is behind the glyphs, and the
+three cases separate cleanly: white on a bright frame 0.0205 (illegible), white on a black box 0.9295 (legible),
+white on a white box 0.0705 (illegible).
+
+**Restored.** My measurements had switched the user's own project to the synthetic chart; the doll photograph
+is back as the source with the overlay enabled at the titler position, and the project saved.
+
+130 checks pass, selftest ALL CHECKS PASSED.

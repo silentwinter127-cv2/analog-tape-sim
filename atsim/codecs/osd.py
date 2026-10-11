@@ -186,6 +186,8 @@ class CharacterGenerator:
         usable_w = max(0, w - 2 * plan.margin_x)
 
         drawn_cells = 0
+        ink_rows = [h, 0]
+        ink_cols = [w, 0]
         for line in plan.lines:
             y = y0_block + line.row * (cell_h + plan.gap)
             if y >= h or y + cell_h < 0:
@@ -220,6 +222,10 @@ class CharacterGenerator:
                     dest = layer[y0:y1, x0:x1]
                     np.maximum(dest, sub, out=dest)
                     reported["drawn"] += 1
+                    ink_rows[0] = min(ink_rows[0], y0)
+                    ink_rows[1] = max(ink_rows[1], y1)
+                    ink_cols[0] = min(ink_cols[0], x0)
+                    ink_cols[1] = max(ink_cols[1], x1)
                     drawn_cells += 2 if cw == half * 2 else 1
                 x += cw
         reported["missing"] = sorted(missing)
@@ -236,6 +242,29 @@ class CharacterGenerator:
         reported["overflow"] = reported["cells_wanted"] > reported["cells_fit"]
         # kept for anything already reading the old name
         reported["cells_used"] = reported["cells_drawn"]
+        # the luma of the frame *under* the text, so a caller can tell whether the text is legible on it.
+        # Measured where the text was placed rather than over the whole frame, because that is where it
+        # matters; and reported rather than estimated, because estimating it is what would have been wrong.
+        if drawn_cells and ink_rows:
+            r0, r1 = max(0, ink_rows[0]), min(h, ink_rows[1])
+            c0, c1 = max(0, ink_cols[0]), min(w, ink_cols[1])
+            if r1 > r0 and c1 > c0:
+                under = (rgb[r0:r1, c0:c1] @ np.array([0.299, 0.587, 0.114], np.float32))
+                reported["under_luma"] = round(float(under.mean()), 4)
+        COEF = np.array([0.299, 0.587, 0.114], np.float32)
+        text_luma = float(np.mean(np.asarray(plan.colour, np.float32) @ COEF))
+        reported["text_luma"] = round(text_luma, 4)
+        if plan.background is not None:
+            # the text sits on the box, not on the picture: measuring it against the picture is what let the
+            # judgement say "legible" about white-on-white with a white box behind it
+            bg = np.asarray(plan.background, np.float32) @ COEF
+            reported["background_luma"] = round(float(bg), 4)
+            behind = float(bg)
+        else:
+            behind = float(reported.get("under_luma", 0.5))
+        reported["behind_luma"] = round(behind, 4)
+        reported["contrast"] = round(abs(behind - text_luma), 4)
+        reported["legible"] = reported["contrast"] >= 0.18
 
         if reported["drawn"] == 0:
             return out, reported
