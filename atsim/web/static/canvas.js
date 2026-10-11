@@ -44,6 +44,38 @@ const svgEl = (tag, attrs = {}) => {
 const NODE_W = 168, NODE_H = 54;
 const COL_STEP = 224, ROW_STEP = 108;
 
+/* Build stamp and live drag diagnostic.
+ *
+ * The stamp exists because "which version is the browser running" could not be answered from
+ * the server: it has been verified to serve the fixed file, but a cached page looks identical
+ * from here. The drag error exists because reading it off a screen recording costs a round
+ * trip, and its shape identifies the fault -- constant along the path means the offset has the
+ * wrong units, growing with the cursor means the transform is wrong, zero means it is correct.
+ */
+const ATSIM_CANVAS_BUILD = "canvas 2026-10-11 13:52 drag-offset-from-toWorld";
+try {
+  console.info("[atsim] " + ATSIM_CANVAS_BUILD);
+} catch (e) { /* a console that is closed is not an error */ }
+
+/* Distance, in page pixels, between the cursor and the point of the node that was grabbed. */
+function dragTrackingError(moving, ev) {
+  try {
+    const [wx, wy] = toWorld(ev);
+    const x = wx - moving.dx * (moving.scale ? G.scale / moving.scale : 1);
+    const y = wy - moving.dy * (moving.scale ? G.scale / moving.scale : 1);
+    /* the grabbed point in world units, back to page coordinates */
+    const gx = (moving.gx != null ? moving.gx : x) * G.scale + G.pan[0]
+             + (ev.target && ev.target.ownerSVGElement
+                ? ev.target.ownerSVGElement.getBoundingClientRect().left : 0);
+    const gy = (moving.gy != null ? moving.gy : y) * G.scale + G.pan[1]
+             + (ev.target && ev.target.ownerSVGElement
+                ? ev.target.ownerSVGElement.getBoundingClientRect().top : 0);
+    return Math.hypot(gx - ev.clientX, gy - ev.clientY);
+  } catch (e) {
+    return NaN;
+  }
+}
+
 function px(node) {
   /* Positions are pixels, and this is now a pass-through.
    *
@@ -316,7 +348,8 @@ function renderCanvas() {
          `scale` is recorded too, so that scrolling mid-drag compensates instead of
          compounding. */
       const [wx, wy] = toWorld(ev);
-      G.moving = { name: n.name, dx: wx - x, dy: wy - y, scale: G.scale };
+      G.moving = { name: n.name, dx: wx - x, dy: wy - y, scale: G.scale,
+                   gx: x, gy: y };
       ev.stopPropagation();
       // Positions are pixels everywhere; the flag is asserted for clarity, not conversion.
       n.px = true;
@@ -501,6 +534,15 @@ function initCanvas() {
         const k = G.moving.scale ? G.scale / G.moving.scale : 1;
         nd.position = [x - G.moving.dx * k, y - G.moving.dy * k];
         renderCanvas();
+        /* Report the tracking error.  A drag that follows the pointer prints nothing; one
+           that does not prints how far off it is, which is what says whether the offset units
+           or the transform is at fault. */
+        const err = dragTrackingError(G.moving, ev);
+        if (isFinite(err) && err > 1.0) {
+          console.warn("[atsim] drag tracking error " + err.toFixed(1)
+            + " px (cursor " + ev.clientX.toFixed(0) + "," + ev.clientY.toFixed(0)
+            + ", scale " + G.scale.toFixed(3) + ")");
+        }
       }
     } else if (G.panning) {
       G.pan[0] += ev.movementX; G.pan[1] += ev.movementY; renderCanvas();

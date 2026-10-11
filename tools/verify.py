@@ -1762,24 +1762,30 @@ def check_node_positions() -> None:
            "the previous design kept adding client-side machinery, and it kept failing")
 def check_drag_tracking() -> None:
     """
-    A dragged node must stay under the cursor, and the check must run the shipped arithmetic.
+    A dragged node must stay under the cursor, measured on the shipped arithmetic.
 
-    This is the bug the user kept reporting as "the nodes run around and are hard to control",
-    and it was in the arithmetic, not in the coordinates or the storage:
+    This is the bug the user reported as "the nodes run around and are hard to control", and it
+    was in the arithmetic rather than in the coordinates or the storage:
 
         dx: ev.clientX / G.scale - x - G.pan[0] / G.scale
 
-    Only the first term was divided by the scale. The world-space offset from the cursor to
-    the node is `clientX/scale - pan[0]/scale - x`, so the missing grouping shifted every drag
-    by `(scale - 1) * pan / scale`. Measured before the fix: 313 px of tracking error,
-    *constant* along the whole path -- the signature of a units mistake, since a coordinate
-    mistake would vary with the cursor.
+    Only the first term was divided by the scale. The world-space offset from the cursor to the
+    node is `clientX/scale - pan[0]/scale - x`, so the missing grouping shifted every drag by
+    `(scale - 1) * pan / scale`. Measured before the fix: 313 px of error, *constant* along the
+    whole path -- the signature of a units mistake, since a coordinate mistake would vary with
+    the cursor.
 
-    The previous version of this check reimplemented the arithmetic, which is why it passed
-    while the real handler was wrong: it tested the transcription. This one lifts `toWorld`
-    and the offset computation out of canvas.js, so what runs is what ships. It also asserts
-    the mid-drag scale case, because the wheel handler changes `G.scale` and the stored offset
-    was measured at the old one -- measured, that compounded the error to 484 px.
+    An earlier version of this check reimplemented the arithmetic and therefore passed while the
+    handler was wrong: it tested the transcription. This one lifts `toWorld` and the offset
+    assignment out of canvas.js, so what runs is what ships. It also asserts the mid-drag scale
+    case, because the wheel handler changes `G.scale` while a stored offset was measured at the
+    old one -- measured, that compounded the error to 484 px.
+
+    The extraction is bounded by the assignment itself. It was previously bounded by
+    `ev.stopPropagation()`, which was the last line of the handler until the drag diagnostic was
+    inserted after it, at which point the extraction swept in `dragTrackingError` and
+    `renderCanvas` and the check failed on a missing identifier. A bound chosen because it
+    happened to be last breaks as soon as something is added after it.
     """
     import json as _json
     import subprocess
@@ -1795,43 +1801,64 @@ def check_drag_tracking() -> None:
         return
     to_world = js[i:js.find("};", i) + 2]
 
-    k = js.find("const [wx, wy] = toWorld(ev);")
+    # Search from the node's own handler, not from the top of the file: the expression
+    # `toWorld(ev)` also appears in the drag diagnostic, which is defined earlier, so a
+    # whole-file search for it captured the wrong region.
+    handler = js.find("ng.onmousedown")
+    if handler < 0:
+        record("a dragged node follows the cursor", "the node must stay under the pointer",
+               "the node's mousedown handler was not found", False)
+        return
+    k = js.find("const [wx, wy] = toWorld(ev);", handler)
     if k < 0:
         record("a dragged node follows the cursor", "the node must stay under the pointer",
                "the offset is not computed from toWorld -- the units bug may be back", False)
         return
-    m = js.find("ev.stopPropagation();", k)
-    offset = js[k:m + len("ev.stopPropagation();")]
+    endmark = js.find("G.moving = {", k)
+    if endmark < 0:
+        record("a dragged node follows the cursor", "the node must stay under the pointer",
+               "the offset assignment was not found", False)
+        return
+    close = js.find("};", endmark)
+    offset = js[k:close + 2]
+    # guard the bound: the region must be the cursor-to-node offset and nothing else
+    if "renderCanvas" in offset or "console." in offset or "catch" in offset:
+        record("a dragged node follows the cursor", "the node must stay under the pointer",
+               "the extraction swept in unrelated statements -- tighten its bound", False)
+        return
 
-    harness = ("let G = { scale: 0.8, pan: [40, 40] };\n"
-               "const svg = { getBoundingClientRect: () => ({ left: 300, top: 90 }) };\n"
-               + to_world + "\n"
-               "const n = { name: 'camera', position: [300.0, 200.0] };\n"
-               "function px(x) { return [x.position[0], x.position[1]]; }\n"
-               "function pageOf() { return [n.position[0]*G.scale + G.pan[0] + 300,\n"
-               "                             n.position[1]*G.scale + G.pan[1] + 90]; }\n"
-               "function stub(ev) { ev.stopPropagation = () => {}; return ev; }\n"
-               "function beginDrag(ev) {\n  const [x, y] = px(n);\n"
-               + "\n".join("  " + l for l in offset.split("\n")) + "\n"
-               "  return G.moving;\n}\n"
-               "function applyMove(moving, ev) {\n  const [x, y] = toWorld(ev);\n"
-               "  const kk = moving.scale ? G.scale / moving.scale : 1;\n"
-               "  n.position = [x - moving.dx * kk, y - moving.dy * kk];\n}\n"
-               "function run(mutate) {\n"
-               "  G = { scale: 0.8, pan: [40, 40] }; n.position = [300.0, 200.0];\n"
-               "  const [gx, gy] = pageOf();\n"
-               "  const moving = beginDrag(stub({ clientX: gx, clientY: gy }));\n"
-               "  const path = [[gx,gy],[gx+40,gy+25],[gx+120,gy+60],[gx+200,gy-30],"
-               "[gx+260,gy+90]];\n"
-               "  let worst = 0, done = false;\n"
-               "  for (const [cx, cy] of path) {\n"
-               "    if (mutate && !done) { mutate(); done = true; }\n"
-               "    applyMove(moving, stub({ clientX: cx, clientY: cy }));\n"
-               "    const [nx, ny] = pageOf();\n"
-               "    worst = Math.max(worst, Math.hypot(nx - cx, ny - cy));\n"
-               "  }\n  return worst;\n}\n"
-               "console.log(JSON.stringify({ steady: run(null),\n"
-               "  scaled: run(() => { G.scale = 1.1; }) }));\n")
+    harness = (
+        "const ATSIM_CANVAS_BUILD = 1;\n"
+        "let G = { scale: 0.8, pan: [40, 40] };\n"
+        "const svg = { getBoundingClientRect: () => ({ left: 300, top: 90 }) };\n"
+        + to_world + "\n"
+        "const n = { name: 'camera', position: [300.0, 200.0] };\n"
+        "function px(x) { return [x.position[0], x.position[1]]; }\n"
+        "function pageOf() { return [n.position[0]*G.scale + G.pan[0] + 300,\n"
+        "                             n.position[1]*G.scale + G.pan[1] + 90]; }\n"
+        "function stub(ev) { ev.stopPropagation = () => {}; return ev; }\n"
+        "function beginDrag(ev) {\n  const [x, y] = px(n);\n"
+        + "\n".join("  " + l for l in offset.split("\n")) + "\n"
+        "  return G.moving;\n}\n"
+        "function applyMove(moving, ev) {\n"
+        "  const [x, y] = toWorld(ev);\n"
+        "  const kk = moving.scale ? G.scale / moving.scale : 1;\n"
+        "  n.position = [x - moving.dx * kk, y - moving.dy * kk];\n}\n"
+        "function run(mutate) {\n"
+        "  G = { scale: 0.8, pan: [40, 40] }; n.position = [300.0, 200.0];\n"
+        "  const [gx, gy] = pageOf();\n"
+        "  const moving = beginDrag(stub({ clientX: gx, clientY: gy }));\n"
+        "  const path = [[gx,gy],[gx+40,gy+25],[gx+120,gy+60],[gx+200,gy-30],"
+        "[gx+260,gy+90]];\n"
+        "  let worst = 0, done = false;\n"
+        "  for (const [cx, cy] of path) {\n"
+        "    if (mutate && !done) { mutate(); done = true; }\n"
+        "    applyMove(moving, stub({ clientX: cx, clientY: cy }));\n"
+        "    const [nx, ny] = pageOf();\n"
+        "    worst = Math.max(worst, Math.hypot(nx - cx, ny - cy));\n"
+        "  }\n  return worst;\n}\n"
+        "console.log(JSON.stringify({ steady: run(null),\n"
+        "  scaled: run(() => { G.scale = 1.1; }) }));\n")
 
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, "t.js")
