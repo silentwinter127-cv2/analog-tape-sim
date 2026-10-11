@@ -253,11 +253,6 @@ def build_schema() -> ParamSchema:
                phys_max=0.8, source="两个视频磁头切换期间的信号缺失",
                help="画面底部那条细条。这是 VHS 最有辨识度的痕迹之一。"
                     "0.5 左右得到「细而清晰」的一条，超过 0.8 会变成大块噪点。")
-    tpe.define("head_switch_lines", "切换带行数", 10.0, 2.0, 40.0, unit="行/场", group=g,
-               phys_min=4.0, phys_max=16.0, source="VHS 磁头切换约 5-15 行/场",
-               help="每场末尾受影响的行数。因隔行交织，画面中表现为底部 "
-                    "2×该行数 的一条带：8 行/场 → 底部约 16 行 ≈ 画面的 3.3%，"
-                    "在 720×480 上约合 1.6 mm（按 4:3 显像管有效高度换算）。")
     tpe.define("tracking_error", "跟踪误差", 0.45, 0.0, 1.0, unit="0-1", group=g,
                phys_max=0.6, source="走带控制轨迹与磁头位置的相位差",
                help="把整条切换带横向推开的量。这就是录像机前面板上「跟踪」旋钮"
@@ -426,7 +421,7 @@ def build_schema() -> ParamSchema:
                phys_max=0.8, source="两个视频磁头切换期间的信号缺失",
                help="画面底部那条细条，VHS 最有辨识度的痕迹之一。"
                     "0.5 左右得到「细而清晰」的一条，超过 0.8 会变成大块噪点。")
-    tpe.define("head_switch_lines", "切换带行数", 10.0, 2.0, 40.0, unit="行/场", group=g,
+    tpe.define("head_switch_lines", "切换带行数", 16.0, 2.0, 40.0, unit="行/场", group=g,
                phys_min=4.0, phys_max=16.0, source="VHS 磁头切换约 5-15 行/场",
                help="每场末尾受影响的行数。因隔行交织，画面中表现为底部 "
                     "2x 该行数 的一条带：8 行/场 → 底部约 16 行 ≈ 画面的 3.3%。")
@@ -776,7 +771,7 @@ FACTORY_PRESETS = {
                        "edge_boost": 0.25, "chroma_gain": 1.0},
             "tape": {"tape_speed": 0.0, "tape_stability": 0.55, "wear": 0.25,
                      "dropout_rate": 0.35, "noise_floor": 0.18, "head_switching": 0.85,
-                     "head_switch_lines": 10.0, "tracking_error": 0.45},
+                     "head_switch_lines": 16.0, "tracking_error": 0.45},
             "player": {"transport_jitter": 0.45, "tbc_enabled": 0.0, "head_wear": 0.30,
                        "frequency_response": 0.15},
             "display": {"gamma": 2.35, "scanlines": 0.35, "bloom": 0.35, "overscan": 0.0,

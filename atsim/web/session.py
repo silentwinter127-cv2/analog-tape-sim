@@ -264,6 +264,13 @@ class SessionStore:
                 "camera": "01 成像系统（摄像机）",
                 "format": "02 信号编码（格式）",
                 "codec": "02b DV 编解码",
+                # These labels duplicate LAYER_LABELS in core/profiles.py, which is how
+                # the connector layer came to show as untranslated "connector" in the
+                # interface: the UI reads this copy, and adding the layer to the other
+                # one was not enough.  Kept in step by the check that every schema layer
+                # has a label here.
+                "connector": "02c 链路接口（受潮/氧化）",
+                "rf": "02r RF 射频链路",
                 "tape": "03 记录介质（磁带）",
                 "player": "04 读取解码（播放设备）",
                 "display": "05 显示设备（CRT）",

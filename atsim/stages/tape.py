@@ -1049,14 +1049,21 @@ class TapeStage(Stage):
         w = (amp * depth * in_band).astype(np.float32)[:, None]
 
         noise = self._luma_band_noise(rng, y.shape)
-        # A narrow strip of lost signal reads as a distinctly DARK band with a
-        # little noise in it -- not a white flash, and not mostly noise.  Two
-        # earlier versions missed in opposite directions: `0.10 + 0.22*noise` was
-        # too subtle to see on a bright scene, and a noise-dominated mix gave a
-        # band whose level wandered (0.48 / 0.45 / 0.38 across adjacent rows),
-        # which reads as grain rather than as a lost track.  The strip is
-        # therefore mostly a low, stable level with only a light noise ripple.
-        level = 0.045 + 0.055 * np.abs(noise)
+        # The strip is a lost track, which is a *level* and a *displacement*, not grain.
+        #
+        # Measured on real VHS content frames, the noise inside the band is only 1.1 to
+        # 1.4 times the picture's own noise -- it is not a noisy strip at all. The
+        # previous form, `0.045 + 0.055*|noise|`, gave the band a per-pixel standard
+        # deviation of about 0.006 against a picture noise of 0.00096, i.e. six times the
+        # surrounding grain, and 4.8 times by the time it reached the output. That is why
+        # the band read as a fuzzy grey smear rather than as a clean line with a hard edge:
+        # the horizontal discontinuity, which is the actual defining feature, was buried
+        # under noise the real medium does not have.
+        #
+        # So the level is now flat and the grain is a small ripple on it. The edge stays
+        # hard because the band's *depth* ramp still starts abruptly at the picture
+        # boundary; what changed is what the inside of the band is made of.
+        level = 0.030 + 0.014 * np.abs(noise)
         y_out = y * (1.0 - w) + level * w
         kill = np.clip(w * 1.4, 0.0, 1.0)
         i_out = i * (1.0 - kill)
