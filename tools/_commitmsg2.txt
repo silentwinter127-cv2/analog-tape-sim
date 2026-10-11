@@ -1,0 +1,45 @@
+add curving stripes, measured against a quantity that can tell them apart
+
+The last of the three properties in the feedback. Building it required settling what
+"curving" means as a measurement first, and that changed what the mechanism had to be.
+
+**Displacement cannot bend a stripe, and this was measured, not assumed.** A grating
+of known pitch was demodulated to recover its phase field, and the *second* derivative
+was taken: a straight but slanted stripe has a nonzero first derivative and zero
+second, so the second derivative is what separates "curved" from "tilted". Measured:
+
+    intact grating      within-row 0.00001   across-row 0.00014
+    slanted grating     within-row 0.00001   across-row 0.00018   (correctly not curved)
+    row_timebase 1.0    within-row 0.00001   across-row 0.54927   (3990x)
+
+The existing per-line time-base mechanism moves the *across-row* figure by a factor of
+3990 while leaving the within-row figure at the floor. A first version of the check
+used the across-row figure and would have accepted any displacement mechanism as
+"curving". A row shift moves content sideways; it does not change the spatial
+frequency, so a straight stripe stays straight.
+
+**What bends a stripe is a beat.** If a residual carrier at a slightly different
+frequency is present -- bias or audio subcarrier leaking into the video path, a
+neighbouring channel, a clock not synchronous with the one the picture was recorded
+with -- the difference frequency produces a slow envelope and the relative phase
+drifts across the frame. The fringes curve because the phase difference is a function
+of position. Implemented as luma-only, since it is an interference product in the
+video path; giving it colour would be a separate claim.
+
+Measured with the mechanism on:
+
+    stripe_moire 0.3        within-row 0.00152  (117x baseline)
+    stripe_moire 0.6        within-row 0.00301  (231x baseline)
+    row_timebase 1.0        within-row 0.00001  (unchanged -- the distinction holds)
+    stripe_curve 0 -> 0.8   across-row 0.00010 -> 0.00232
+    pattern across frames   phase moves 0.1403 rad
+
+**A check of mine was wrong, not the mechanism.** I first asserted that stripe_curve
+changes the *within-row* curvature and it reported failure. The control actually
+governs how the fringe *family* bends down the picture -- the across-row figure -- and
+that is now what is asserted. Recording it because the failure looked like a broken
+parameter and was a broken expectation.
+
+44 checks pass, 14 presets render. The three properties from the feedback -- device
+specificity, temporal change, and whole-line structure -- now each have a mechanism
+and a measurement behind them.

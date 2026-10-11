@@ -196,6 +196,12 @@ class TapeStage(Stage):
         # granularity (uncorrelated line to line), so a preset can state which
         # physical cause it means.
         self.row_timebase = float(cfg.get("row_timebase", 0.0))
+        # Curved stripes from beat interference with a residual carrier.  Three
+        # parameters because the spacing and the bend are independent: how strong,
+        # how tightly spaced, and how much they curve.
+        self.stripe_moire = float(cfg.get("stripe_moire", 0.0))
+        self.stripe_beat = float(cfg.get("stripe_beat", 0.055))
+        self.stripe_curve = float(cfg.get("stripe_curve", 0.35))
         self.walk = float(cfg.get("walk_amplitude", 0.30))
         self.micro = float(cfg.get("micro_jitter", 0.20))
         self.vert = float(cfg.get("vertical_instability", 0.08))
@@ -808,6 +814,68 @@ class TapeStage(Stage):
         if plan.line_stride > 1 and len(ph) != H:
             ph = np.interp(np.arange(H), np.linspace(0, H - 1, len(ph)), ph)
         return ph.astype(np.float32)
+
+    def _apply_stripe_moire(self, y: np.ndarray, frame_index: int) -> np.ndarray:
+        """
+        Curved stripes from beat interference with a residual carrier.
+
+        Displacement cannot bend a stripe, and this was measured rather than assumed:
+        the per-line time-base mechanism produces a large *across-row* phase change
+        (3990x the intact baseline) while its *within-row* curvature stays at the floor
+        (0.00001 rad/px^2).  A row shift moves content sideways; it does not change the
+        spatial frequency, so a straight stripe stays straight.
+
+        What bends a stripe is a beat. If a residual carrier at a slightly different
+        frequency is present -- a bias or audio subcarrier leaking into the video path,
+        a neighbouring channel, a clock that is not quite synchronous with the one the
+        picture was recorded with -- then the *difference* frequency produces a slow
+        envelope, and the relative phase of the two carriers drifts across the frame.
+        The resulting fringes curve, because the phase difference is a function of
+        position, not a constant.
+
+        Two independent phases give the shape:
+
+        * along the row, from the difference between the residual's frequency and the
+          sampling clock, which sets the fringe spacing;
+        * down the frame, from a slowly varying term, which is what makes the fringes
+          bend rather than run parallel.
+
+        The amplitude is modulated by the same mechanism that produces the drift, so
+        the fringes fade in and out rather than sitting on the picture as a static
+        texture -- the fault changes as the tape is read, which is how it was
+        described.
+        """
+        amt = float(self.stripe_moire)
+        if amt <= 1e-4:
+            return y
+        H, W = y.shape[:2]
+        beat = max(0.02, float(self.stripe_beat))
+        curve = float(self.stripe_curve)
+
+        # along-row phase: the difference frequency, in cycles per pixel
+        x = np.arange(W, dtype=np.float32)[None, :]
+        along = (2.0 * np.pi * beat) * x
+
+        # down-frame phase: this is the term that bends the fringes.  A quadratic
+        # term gives a consistent bend (a family of nested arcs); a smooth noise term
+        # gives the irregular wandering a real tape shows.  Both, so it does not look
+        # like a formula.
+        rows = np.arange(H, dtype=np.float32)[:, None]
+        centre = 0.5 + 0.15 * float(np.sin(2.0 * np.pi * frame_index / 29.0))
+        bend = (curve * 6.0e-3) * (rows - centre * H) ** 2
+        rng = np.random.default_rng(derive_seed(
+            self.ctx.seed, "tape", "stripe_moire", frame_index))
+        wander = rng.standard_normal(H).astype(np.float32)
+        k = np.array([1.0, 2.0, 3.0, 2.0, 1.0], np.float32)
+        k /= k.sum()
+        wander = np.convolve(wander, k, mode="same")[:, None] * (curve * 1.2)
+
+        phase = along + bend + wander
+        # the envelope: fringes fade in and out over time rather than being a fixed
+        # overlay, which is the difference between a texture and a fault
+        env = 0.55 + 0.45 * np.sin(2.0 * np.pi * frame_index / 17.0
+                                  + 2.0 * np.pi * rows / max(4.0, H * 0.8))
+        return (y + amt * 0.14 * env * np.cos(phase)).astype(np.float32)
 
     def _row_timebase_field(self, height: int, frame_index: int) -> np.ndarray:
         """
@@ -1640,6 +1708,11 @@ class TapeStage(Stage):
         #     Placed with the other sampling/clamping errors, before the noise, so
         #     the grain is added around the shifted level rather than lifted with it.
         y, i, q = self._apply_luma_pedestal(y, i, q)
+
+        # 1e. moire from a residual carrier: curved fringes, added to luma only.
+        #     It is an interference product in the video path, so it brightens and
+        #     darkens; giving it colour would be a separate claim.
+        y = self._apply_stripe_moire(y, frame_index)
 
         # 1d. shed-coating grain: fine luminance noise, no colour
         y, i, q = self._apply_shed_grain(y, i, q, frame_index, rng)

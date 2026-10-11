@@ -831,6 +831,82 @@ def check_row_timebase() -> None:
            "luma std %.2f px, luma-vs-chroma difference %.2f px" % (sy.std(), diff),
            sy.std() > 0.5 and diff < 0.6)
 
+
+def check_stripe_moire() -> None:
+    """
+    Curved stripes must actually curve, and must be distinguishable from displacement.
+
+    The discriminating quantity is *within-row* curvature.  The per-line time-base
+    mechanism raises the across-row figure by a factor of 3990 while leaving the
+    within-row figure at the floor (0.00001 rad/px^2), so across-row alone cannot
+    demonstrate curvature -- a first version of this check would have accepted any
+    displacement mechanism as "curving".  A stripe bends only if the spatial
+    frequency varies across the frame, which is what a beat produces.
+
+    `stripe_curve` governs the *across-row* figure, not the within-row one: it shapes
+    how the family of fringes bends down the picture.  Measured, 0 gives 0.00010 and
+    0.8 gives 0.00231 -- twenty-three times more.  An earlier check asserted it moved
+    the within-row number and reported a failure that was the check's fault.
+    """
+    from scipy.ndimage import uniform_filter1d
+
+    from atsim.core.pipeline import FrameBuffer, RenderContext
+    from atsim.core.signal import composite_encode
+    from atsim.core.standards import NTSC_525_60 as std
+    from atsim.stages.tape import TapeStage
+
+    H, W, PITCH = 240, 360, 24.0
+    x = np.arange(W, dtype=np.float32)
+    y_plane = np.tile((0.45 + 0.25 * np.cos(2.0 * np.pi * x / PITCH))[None, :], (H, 1))
+    yy = np.mgrid[0:H, 0:W][0].astype(np.float32)
+    comp = composite_encode(y_plane, 0.10 * np.cos(yy / 13.0),
+                            0.10 * np.sin(yy / 13.0), std, chroma_gain=0.63)
+
+    def field(plane: np.ndarray) -> np.ndarray:
+        c = np.cos(2.0 * np.pi * x / PITCH)[None, :]
+        s = np.sin(2.0 * np.pi * x / PITCH)[None, :]
+        re = uniform_filter1d(plane * c, int(PITCH), axis=1)
+        im = uniform_filter1d(plane * s, int(PITCH), axis=1)
+        return np.unwrap(np.arctan2(im, re), axis=1)
+
+    def curvature(ph: np.ndarray) -> tuple[float, float]:
+        along = float(np.median(np.abs(np.diff(ph, 2, axis=1))))
+        m = ph.mean(axis=1)
+        across = float(np.median(np.abs(np.diff(m, 2)))) if m.size > 3 else 0.0
+        return along, across
+
+    def run(tape_over: dict, frame: int = 10) -> np.ndarray:
+        params = _neutral({"tape": tape_over})
+        ctx = RenderContext(std=std, params=params, seed=20240101, frame_count=40,
+                            fps=25.0, width=W, height=H)
+        st = TapeStage(ctx)
+        st.prepare()
+        buf = FrameBuffer(np.zeros((H, W, 3), np.float32), comp, frame,
+                          frame / 25.0, std, {"field": frame % 2})
+        out = st.apply(buf)
+        y, _i, _q = st._decompose(out.composite)
+        return y
+
+    base_a, _base_c = curvature(field(run({})))
+    a_on, _c_on = curvature(field(run({"stripe_moire": 0.6})))
+    a_disp, _c_disp = curvature(field(run({"row_timebase": 1.0})))
+    record("stripes curve, displacement does not",
+           "within-row curvature is the discriminating quantity",
+           "baseline %.5f, moire %.5f (%.0fx), row_timebase %.5f"
+           % (base_a, a_on, a_on / max(base_a, 1e-9), a_disp),
+           a_on > 50 * max(base_a, 1e-9) and a_disp < 5 * max(base_a, 1e-9))
+
+    _pa, c_par = curvature(field(run({"stripe_moire": 0.6, "stripe_curve": 0.0})))
+    _pc, c_cur = curvature(field(run({"stripe_moire": 0.6, "stripe_curve": 0.8})))
+    record("stripe bend is controllable", "stripe_curve bends the fringe family",
+           "across-row %.5f -> %.5f" % (c_par, c_cur), c_cur > 3 * max(c_par, 1e-9))
+
+    f = [field(run({"stripe_moire": 0.6}, frame=k)) for k in (8, 10, 12, 14)]
+    moved = float(np.abs(f[3] - f[0]).mean())
+    record("stripe pattern changes as the tape is read",
+           "not a fixed texture on the picture", "phase moved %.4f rad" % moved,
+           moved > 0.05)
+
 # ---------------------------------------------------------------------------
 def contact_sheet() -> str:
     """One image showing every headline effect, for eyeballing."""
@@ -890,6 +966,7 @@ def main(argv: list[str] | None = None) -> int:
         check_server_control()
         check_row_chroma()
         check_row_timebase()
+        check_stripe_moire()
         check_broadcast_noise()
         check_head_switch()
 

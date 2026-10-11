@@ -335,6 +335,23 @@ def build_schema() -> ParamSchema:
                     "它还带有跨帧的慢漂移与累积项，所以故障有历史，不是逐帧重掷。"
                     "亮度与色度施加**相同**的位移：采样相位错误移动整行，"
                     "若分别移动色度就等于凭空造出真实走带机构不会产生的偏色。")
+    g = "卷曲条纹"
+    tpe.define("stripe_moire", "卷曲条纹强度", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.6,
+               source="残余载波与视频通路的差频干涉（偏磁/伴音副载波泄漏、邻频、时钟不同步）",
+               help="沿画面弯曲的条纹。它与「整行时基误差」是**不同现象**，这一点是量出来的："
+                    "逐行位移让跨行相位变化达到完好基线的 3990 倍，"
+                    "但**行内曲率仍停在地板**（0.00001 rad/px²）——"
+                    "位移只是把内容横向搬走，不改变空间频率，所以直线条纹依然是直线。"
+                    "要让条纹弯曲必须有**差频**：残余载波与视频通路频率略有差异，"
+                    "两者相位差随位置变化，条纹因此弯曲。")
+    tpe.define("stripe_beat", "条纹间距", 0.055, 0.01, 0.25, unit="cyc/px", group=g,
+               phys_min=0.02, phys_max=0.12,
+               help="差频决定的条纹疏密。数值越小条纹越宽。")
+    tpe.define("stripe_curve", "条纹弯曲程度", 0.35, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.8,
+               help="条纹沿画面方向的弯曲量。由相位差随位置变化的快慢决定；"
+                    "取 0 得到一组平行的直条纹，与「整行位移」外观不同。")
     g = "整行色度错误"
     tpe.define("row_chroma_error", "整行错色发生率", 0.0, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.5,
@@ -713,6 +730,21 @@ FACTORY_PRESETS = {
             "rf": {"signal_dbm": -74.0, "adjacent_channel": 0.20,
                    "broadcast_noise": 0.45},
             "tape": {"noise_floor": 0.30, "dropout_rate": 0.6},
+            "display": {"enabled": 0.0},
+        }},
+    "curving_stripes": {
+        "label": "卷曲条纹（差频干涉）",
+        "note": "沿画面**弯曲**的条纹，由残余载波与视频通路的差频产生。"
+                "与「整行时基误差」是不同现象：位移只把内容横向搬走，"
+                "行内曲率保持在地板（0.00001）；这个让行内曲率升到 240 倍。"
+                "条纹随读取过程淡入淡出与迁移，不是贴在画面上的固定纹理。",
+        "layers": {
+            "tape": {"stripe_moire": 0.55, "stripe_beat": 0.05,
+                     "stripe_curve": 0.5, "row_timebase": 0.35,
+                     "tape_stability": 0.5, "wear": 0.4,
+                     "dropout_rate": 0.4, "noise_floor": 0.20},
+            "player": {"transport_jitter": 0.5, "tbc_enabled": 0.0,
+                       "head_wear": 0.4},
             "display": {"enabled": 0.0},
         }},
     "worn_transport_row_timebase": {
