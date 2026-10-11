@@ -450,6 +450,30 @@ class Graph:
                 digest_size=10).hexdigest()
         return hashes
 
+    # --- position units ---------------------------------------------------
+    # Node positions are pixels.  Presets are authored in grid columns because that is readable
+    # in source, so any graph built from one has to be converted -- once, here, rather than in
+    # whichever caller remembered.  This was previously done only in the preset route, so the
+    # graph built at start-up kept its columns and the nodes rendered one unit apart, stacked.
+    GRID_COL_STEP = 224.0
+    GRID_ROW_STEP = 108.0
+
+    def normalise_positions(self) -> "Graph":
+        """
+        Convert this graph's grid columns to pixels, and mark every node as being in pixels.
+
+        Unconditional, which is safe because every construction path starts from a preset:
+        `vhs_consumer` and the other `GRAPH_PRESETS` entries are all authored in columns.  A
+        value-based test would be impossible anyway -- column 5 and pixel 5 are the same number
+        -- which is why the unit has to come from the caller, and here the caller is the graph's
+        own constructor.
+        """
+        for node in self.nodes.values():
+            node.position = (float(node.position[0]) * self.GRID_COL_STEP,
+                             float(node.position[1]) * self.GRID_ROW_STEP)
+            node.px_position = True
+        return self
+
     def describe(self) -> dict:
         h = self.node_hashes()
         return {

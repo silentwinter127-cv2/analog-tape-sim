@@ -1737,12 +1737,16 @@ def check_node_positions() -> None:
 
     src_server = open(os.path.join(os.path.dirname(HERE), "atsim", "web", "server.py"),
                       encoding="utf-8").read()
-    converts = ("_node.position = _preset_columns_to_pixels(_node.position)"
-                in src_server)
+    # The preset route now calls the graph's own method rather than converting in a loop, so
+    # that the start-up constructor and this route cannot drift apart -- which is what produced
+    # the nodes overlapping at start-up. Accept either form; what matters is that this route
+    # normalises.
+    converts = ("self.graph.normalise_positions()" in src_server
+                or "_node.position = _preset_columns_to_pixels(_node.position)" in src_server)
     flags = "self.graph.nodes[name].px_position = True" in src_server
     record("every route that places a node states its unit",
            "a preset converts, a palette node is marked, and a drag was already marked",
-           "graph_load_preset converts: %s; graph_add marks the flag: %s" % (converts, flags),
+           "graph_load_preset normalises: %s; graph_add marks the flag: %s" % (converts, flags),
            converts and flags,
            "graph_add did not set the flag, so a palette node was reinterpreted on every "
            "payload")
@@ -1942,5 +1946,58 @@ def check_canvas_scopes() -> None:
            "the arithmetic check supplies the identifier as a global, so it could never fail "
            "for this reason -- which is how the bug reached the user")
 
+def check_graph_build_positions() -> None:
+    """
+    Every graph a user can be shown must already be in pixels, whichever path built it.
+
+    Reported as "the nodes start out stacked on top of each other". The start-up graph is built
+    as `GRAPH_PRESETS["vhs_consumer"]["build"]()`, which produces grid columns, and only the
+    preset route converted them -- so a freshly booted server handed the canvas
+    `[0,0] [1,0] [2,0] ...`, one unit apart, and the nodes rendered as a single pile. Loading a
+    preset from the UI looked right, which is why it only appeared on a fresh start.
+
+    That is the same shape as the bug that made positions ambiguous in the first place: the rule
+    existed in one path and not in another. So this checks the paths, not the arithmetic -- every
+    construction route must hand back pixel positions, and the conversion must be reachable from
+    the graph itself rather than living in a caller.
+    """
+    from atsim.graph import GRAPH_PRESETS
+
+    bad = []
+    for key, spec in GRAPH_PRESETS.items():
+        g = spec["build"]()
+        # a raw build is in columns; that is fine, but it must be convertible without a caller
+        if not hasattr(g, "normalise_positions"):
+            bad.append((key, "no normalise_positions method"))
+            continue
+        g.normalise_positions()
+        xs = [float(n.position[0]) for n in g.nodes.values()]
+        offsets = set(getattr(n, "px_position", False) for n in g.nodes.values())
+        # after normalisation, adjacent preset nodes must be a column apart in pixels, not 1
+        spread = (max(xs) - min(xs)) if xs else 0.0
+        if not all(offsets):
+            bad.append((key, "a node is not marked as pixels"))
+        elif len(xs) > 1 and spread < 100:
+            bad.append((key, "spread only %.1f px -- still in columns" % spread))
+
+    record("every graph preset normalises to pixel positions",
+           "the start-up path and the preset path must not differ, or nodes overlap",
+           "%d presets checked; %s" % (len(GRAPH_PRESETS),
+                                        "all spread out" if not bad else "problems: %s" % bad),
+           not bad,
+           "the initial graph was built without conversion and rendered one unit apart")
+
+    # and the server must actually call it on both routes
+    srv = open(os.path.join(os.path.dirname(HERE), "atsim", "web", "server.py"),
+               encoding="utf-8").read()
+    boot = "GRAPH_PRESETS[\"vhs_consumer\"][\"build\"]()" in srv and \
+        ".normalise_positions()" in srv
+    preset_route = "self.graph.normalise_positions()" in srv or \
+        "_preset_columns_to_pixels" in srv
+    record("both server routes that build a graph normalise it",
+           "the start-up constructor and the preset route are separate and must agree",
+           "start-up calls it: %s; preset route calls it: %s" % (boot, preset_route),
+           boot and preset_route,
+           "the rule living in one path and not the other is what produced the overlap")
 if __name__ == "__main__":
     raise SystemExit(main())

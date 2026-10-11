@@ -184,7 +184,11 @@ class App:
         # the apparatus the user wires up; starts as the classic VHS path, which
         # matches the default preset above
         from ..graph import GRAPH_PRESETS, Graph
-        self.graph: Graph = GRAPH_PRESETS["vhs_consumer"]["build"]()
+        # Normalise here as well as in the preset route: the graph is built from a
+        # preset, so it arrives in grid columns, and a server that hands the canvas
+        # columns renders every node on top of the next one.
+        self.graph: Graph = (GRAPH_PRESETS["vhs_consumer"]["build"]()
+                             .normalise_positions())
         self._graph_execs: dict[tuple, object] = {}
         # renderer revision counter: lets the client tell whether a tweak needs
         # a full re-render of the preview or can reuse a cached prefix
@@ -418,10 +422,9 @@ class App:
             self.graph = spec["build"]()
             self._graph_execs.clear()
             # The preset declares grid columns; store pixels, so that everything downstream --
-            # the canvas, a later drag, the renderer -- agrees on one unit.
-            for _node in self.graph.nodes.values():
-                _node.position = _preset_columns_to_pixels(_node.position)
-                _node.px_position = True
+            # the canvas, a later drag, the renderer -- agrees on one unit.  The conversion
+            # lives on the graph so that this route and the start-up constructor cannot drift.
+            self.graph.normalise_positions()
             # a graph preset may also declare the reception conditions it was
             # designed around; without this the RF loop loaded a clean signal and
             # showed none of the artefacts it exists to demonstrate
