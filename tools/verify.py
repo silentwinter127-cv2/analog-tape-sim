@@ -1351,5 +1351,91 @@ def check_tracker_response() -> None:
            % (ratio_smooth, ratio_fast),
            abs(ratio_smooth - 1.0) > 0.2 and abs(ratio_fast - 1.0) > 0.2,
            "absolute figures from it are unusable; only comparisons are")
+def check_hue_spread_metric() -> None:
+    """
+    The hue-spread metric must respond to a known hue rotation, and its scale matters.
+
+    Measured by rotating the hue of a known fraction of rows by a known angle:
+
+        untouched                    0.4230
+        10% of rows rotated 30 deg   0.4266   (+0.0037)
+        10% of rows rotated 90 deg   0.7207   (+0.2977)
+        30% of rows rotated 90 deg   1.0698   (+0.6469)
+        100% of rows rotated 90 deg  0.4030   (-0.0200)
+
+    Two things follow, and the second is why this is worth asserting rather than noting.
+
+    Small rotations are nearly invisible to it: a 30-degree rotation across a tenth of the
+    rows moves it by 0.004, which is inside the noise of a fingerprint -- so a sweep that
+    reports a parameter as having no effect may simply be looking at too small a change.
+
+    And rotating *every* row moves it backwards, because hue spread is measured relative
+    to the distribution: a uniform rotation relocates the whole distribution instead of
+    widening it.
+
+    That second effect is what the sweep got wrong. It reported `row_chroma_error` as
+    changing hue spread by exactly 0.0000 across three values; measured through the
+    renderer the same configuration changes the output by 0.066 mean absolute difference
+    and the metric by 0.0252. The metric was correct and the harness was not.
+    """
+    from atsim.core.signal import SignalFrame
+    from atsim.core.standards import NTSC_525_60 as std
+    from tools.fingerprint import fingerprint
+
+    # A narrow hue distribution with fine structure, which is both what the reference
+    # material looks like and what makes a rotation the dominant term.  A wide synthetic
+    # palette gave a base spread of 1.3670 against the reference's 0.4230, and against a
+    # distribution that broad, rotating a tenth of the rows moved the metric by 0.098 --
+    # the pattern was the obstacle, not the metric.
+    H, W = 96, 160
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    img = np.zeros((H, W, 3), np.float32)
+    img[..., 2] = 0.72 + 0.06 * np.cos(xx / 21.0)
+    img[..., 0] = 0.20 + 0.05 * (np.cos(xx / 13.0) > 0.2)
+    img[..., 1] = 0.22 + 0.05 * (np.sin(yy / 17.0) > 0.1)
+    img = np.clip(img, 0, 1)
+
+    def rotate(frac: float, deg: float) -> np.ndarray:
+        sig = SignalFrame.from_rgb(img, std)
+        th = np.deg2rad(deg)
+        n = int(round(H * frac))
+        i, q = sig.i.copy(), sig.q.copy()
+        if n > 0:
+            c, s = np.cos(th), np.sin(th)
+            i[:n], q[:n] = (i[:n] * c - q[:n] * s), (i[:n] * s + q[:n] * c)
+        return np.clip(SignalFrame(sig.y, i, q).to_rgb(), 0, 1)
+
+    base = fingerprint(img)["hue_spread"]
+    small_rot = fingerprint(rotate(0.1, 30.0))["hue_spread"]
+    big_rot = fingerprint(rotate(0.1, 90.0))["hue_spread"]
+    all_rows = fingerprint(rotate(1.0, 90.0))["hue_spread"]
+
+    record("hue-spread metric responds to rotation",
+           "a large rotation of some rows must widen the distribution",
+           "base %.4f -> %.4f at 10%%/90deg (+%.4f)"
+           % (base, big_rot, big_rot - base), big_rot > base + 0.1)
+
+    # The asymmetry is the property that makes the metric usable: rotating *some* rows
+    # widens the spread, rotating *all* rows does not. Without it the metric could not
+    # tell a per-line chroma fault from a global colour shift, and the hue-spread
+    # comparison against real material depends on exactly that distinction.
+    #
+    # Asserted as "does not widen" rather than "stays the same": measured, a uniform
+    # rotation *reduces* the spread (0.8416 -> 0.5057), because the base pattern's hue
+    # varies spatially as well as the rotation adding to it. Demanding it stay near the
+    # base failed for a reason that says nothing about the metric.
+    record("a uniform rotation does not widen the spread",
+           "some rows rotated widens it; all rows rotated does not",
+           "base %.4f, 10%% of rows %.4f, all rows %.4f"
+           % (base, big_rot, all_rows),
+           big_rot > base + 0.05 and all_rows < base + 0.05,
+           "this asymmetry is what separates a per-line chroma fault from a "
+           "global colour shift")
+
+    record("a small rotation is nearly invisible",
+           "its resolution sets what a sweep can conclude",
+           "10%%/30deg moves it by %+.4f" % (small_rot - base),
+           abs(small_rot - base) < 0.05,
+           "a sweep reporting 'no effect' may be looking at too small a change")
 if __name__ == "__main__":
     raise SystemExit(main())
