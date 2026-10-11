@@ -183,6 +183,13 @@ class App:
             "params": self.current.resolved_params(),
             "source_info": info,
             "standard": self.current.standard,
+            # The per-frame state, so the interface can show what is set.  `unit_report` is included
+            # because the point of an individual machine is that its deviations can be named -- a
+            # realism claim about one unit is only checkable if its numbers can be read out.
+            "environment": dict(self.current.environment or {}),
+            "keyframes": list(self.current.keyframes or []),
+            "unit_identities": dict(self.current.unit_identities or {}),
+            "unit_report": self.current.unit_report(),
         }
 
     def set_project(self, payload: dict) -> dict:
@@ -194,6 +201,13 @@ class App:
                 p.seed = int(payload["seed"])
             if "standard" in payload:
                 p.standard = str(payload["standard"])
+            if "environment" in payload and isinstance(payload["environment"], dict):
+                p.environment = dict(payload["environment"])
+            if "keyframes" in payload and isinstance(payload["keyframes"], list):
+                p.keyframes = list(payload["keyframes"])
+            if "unit_identities" in payload and isinstance(payload["unit_identities"], dict):
+                # an empty string means the nominal model, and the key is the device class
+                p.unit_identities = {str(k): str(v) for k, v in payload["unit_identities"].items()}
             if "name" in payload:
                 p.name = str(payload["name"])
             if "source" in payload:

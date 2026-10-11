@@ -72,6 +72,9 @@ function applyProject(d) {
   $("badge").textContent = d.project.source
     ? `${(info.width||"?")}×${(info.height||"?")} · ${(info.fps||0).toFixed(3)} fps · ${info.frame_count||"?"} 帧`
     : "内置测试图（未导入素材）";
+  // 维度面板：环境 / 设备个体 / 关键帧时间线。放在最后，
+  // 所以面板反映的是服务端刚刚返回的状态——只有一份真相。
+  if (window.SessionUI) SessionUI.syncFromProject(d);
 }
 
 /* --------------------------------------------------------------- chrome */

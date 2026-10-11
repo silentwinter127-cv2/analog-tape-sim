@@ -1092,6 +1092,64 @@ FACTORY_PRESETS = {
         "layers": {"tape": {"shuttle_speed": 5.0, "shuttle_stale": 0.19,
                             "shuttle_span": 8.0, "shuttle_wave": 14.0,
                             "shuttle_mode": 1.0}}},
+
+    # --- demonstrations of the dimensions added later -------------------------
+    # Every one of these defaults to off -- an unrequested dimension must not move an existing preset --
+    # so without a preset that switches them on, nobody would find them.
+    "cold_start_handheld": {
+        "label": "冷机开机 · 手持（新维度演示）",
+        "note": "一台冷机在手里拍的：三个自动环还在收敛、手在抖、录像机电容已经老化。"
+                "注意画面亮度在前两秒里还在变——那是 AE 在追目标，不是曝光参数在动。",
+        "kind": "composite",
+        "layers": {
+            "camera": {
+                # the loops, all settling from switch-on
+                "ae_enabled": 1.0, "ae_tau_s": 0.9, "ae_target": 0.44,
+                "awb_enabled": 1.0, "awb_tau_s": 1.6,
+                "af_enabled": 1.0, "af_tau_s": 0.5,
+                # the hand
+                "shake_intensity": 0.85, "bump_rate_hz": 0.5, "bump_amount": 0.7,
+                # a consumer CCD, as these machines were
+                "sensor_type": 0.0, "sensor_noise": 0.075, "fixed_pattern": 0.05,
+                "sharpness": 0.8, "chroma_aberration": 0.06, "ccd_smear": 0.4,
+                "halation": 0.5, "dynamic_range": 7.2, "lens_wear": 0.12,
+            },
+            # head wear is the machine's, not the medium's: it is on the player layer, which is also
+            # where its per-unit spread lives
+            "tape": {"dropout_rate": 0.9, "tracking_error": 0.16},
+            "player": {"head_wear": 0.34, "burst_phase_error": 1.4, "frequency_response": 0.85},
+            "display": {"bloom": 0.4, "scanlines": 0.35, "brightness": 0.46, "contrast": 1.05},
+        },
+        # the machine's condition and the timeline that moves it, together
+        "environment": {"warmth": 0.0, "age": 0.65, "humidity": 0.2},
+        "timeline": [
+            {"layer": "environment", "key": "warmth", "absolute": True,
+             "points": [{"t": 0.0, "value": 0.0, "curve": "exp"},
+                        {"t": 6.0, "value": 1.0, "curve": "hold"}]},
+        ],
+    },
+    "warm_archival": {
+        "label": "已预热的存档带（对照组）",
+        "note": "同一台机器、同一盘带，但机器已经热了、手是稳的、自动环已经收敛。"
+                "和上面那条对照着看，能分出哪些是机器的状态、哪些是介质本身的缺陷。",
+        "kind": "composite",
+        "layers": {
+            "camera": {
+                "ae_enabled": 1.0, "ae_tau_s": 0.9, "ae_target": 0.44,
+                "awb_enabled": 1.0, "awb_tau_s": 1.6,
+                "sensor_type": 0.0, "sensor_noise": 0.075, "sharpness": 0.8,
+                "chroma_aberration": 0.06, "ccd_smear": 0.4, "halation": 0.5,
+                "dynamic_range": 7.2, "lens_wear": 0.12,
+            },
+            # head wear is the machine's, not the medium's: it is on the player layer, which is also
+            # where its per-unit spread lives
+            "tape": {"dropout_rate": 0.9, "tracking_error": 0.16},
+            "player": {"head_wear": 0.34, "burst_phase_error": 1.4, "frequency_response": 0.85},
+            "display": {"bloom": 0.4, "scanlines": 0.35, "brightness": 0.46, "contrast": 1.05},
+        },
+        "environment": {"warmth": 1.0, "age": 0.65, "humidity": 0.2},
+        "timeline": [],
+    },
 }
 
 

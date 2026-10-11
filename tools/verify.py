@@ -2436,5 +2436,104 @@ def check_operator() -> None:
            "sharpness varies by %.1f%% of its maximum over the clip" % (100 * spread),
            spread > 0.02,
            "`CameraStage` had no defocus path, so the loop's motor position was written and never read")
+def check_session_ui() -> None:
+    """
+    The panels must be shipped, referenced, and wired to the API, and the API must round-trip.
+
+    A UI is easy to get wrong in ways no compiler catches: a file that exists but is not referenced, a
+    script tag that loads before the thing it extends, a panel whose data never arrives from the server, a
+    control that saves to the project but that the renderer never receives. Two of those are static and are
+    checked by reading the shipped bytes; the last is behavioural and is checked by driving the real `App`
+    and confirming the picture changes.
+
+    The behavioural check is the one that matters most here. `App.renderer_for` built renderers from
+    `resolved_params()` alone, so the environment and the keyframes never reached the renderer -- editing a
+    timeline in the interface would have changed nothing on screen while every file and field looked right.
+    """
+    import os as _os
+
+    root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    static = _os.path.join(root, "atsim", "web", "static")
+
+    # --- the files are shipped
+    need = ["session_ui.js", "session_panels.html"]
+    missing = [f for f in need if not _os.path.exists(_os.path.join(static, f))]
+    record("the dimension panels are shipped",
+           "a panel that is not in the static directory cannot be loaded",
+           "present: %s" % ", ".join(f for f in need if f not in missing),
+           not missing, "missing: %s" % missing if missing else "")
+
+    # --- and referenced by the page, after the script they extend
+    html = open(_os.path.join(static, "index.html"), encoding="utf-8").read()
+    has_ui = "/static/session_ui.js" in html
+    after = html.find("/static/session_ui.js") > html.find("/static/app.js")
+    record("the page loads the panels, after app.js",
+           "a script that extends another must load after it",
+           "session_ui.js referenced: %s; loaded after app.js: %s" % (has_ui, after),
+           has_ui and after)
+
+    # --- the panels are mounted from applyProject, which is what syncs state
+    app_js = open(_os.path.join(static, "app.js"), encoding="utf-8").read()
+    lines = app_js.split("\n")
+    calls = [i for i, l in enumerate(lines) if "SessionUI.syncFromProject" in l]
+    owner = None
+    if len(calls) == 1:
+        import re as _re
+        for i in range(calls[0], -1, -1):
+            m = _re.match(r"\s*(?:async\s+)?function\s+(\w+)", lines[i])
+            if m:
+                owner = m.group(1)
+                break
+    record("the panels sync from applyProject, exactly once",
+           "the panels must reflect the state the server just returned, or they show stale values",
+           "call sites: %d, enclosing function: %s" % (len(calls), owner),
+           len(calls) == 1 and owner == "applyProject",
+           "an edit placed by matching text landed in the wrong function four times in this session")
+
+    # --- behaviour: the API round-trips AND the renderer receives it
+    import numpy as np
+
+    from atsim.web.server import App
+
+    app = App(data_dir=_os.path.join(root, "runs"))
+    p = app.current
+    saved = (dict(p.environment or {}), list(p.keyframes or []), dict(p.unit_identities or {}))
+    try:
+        app.set_project({"keyframes": [{
+            "layer": "camera", "key": "exposure", "absolute": True,
+            "points": [{"t": 0.0, "value": -1.6, "curve": "linear"},
+                       {"t": 1.2, "value": 1.6, "curve": "hold"}]}]})
+        app.set_project({"unit_identities": {"camcorder": "Panasonic NV-GS78 A39482"}})
+        d = app.project_dict()
+        round_trips = (len(d.get("keyframes") or []) == 1
+                       and len(d.get("unit_report") or []) > 10
+                       and d.get("unit_identities"))
+        r, _s = app.store.renderer_for(p, preview=True, scale=0.25)
+        reaches = getattr(r, "_keyframes", None) is not None
+        means = [float(np.clip(r.render_frame(i), 0, 1).mean()) for i in (0, 6, 12, 18, 24)]
+        span = max(means) - min(means)
+        record("a keyframe edited through the API moves the rendered picture",
+               "the whole point of the editor is that what is drawn takes effect",
+               "round-trip: %s; renderer holds the timeline: %s; frame mean spans %.4f"
+               % (round_trips, reaches, span),
+               round_trips and reaches and span > 0.01,
+               "renderer_for built from resolved_params() alone, so a timeline edited in the "
+               "interface would have changed nothing on screen")
+
+        # a serial must select a machine, on the *reported* path and not only the rendered one
+        app.set_project({"unit_identities": {"camcorder": "AAAA"}})
+        a = sorted((x["key"], round(x["value"], 6)) for x in app.project_dict()["unit_report"])
+        app.set_project({"unit_identities": {"camcorder": "BBBB"}})
+        b = sorted((x["key"], round(x["value"], 6)) for x in app.project_dict()["unit_report"])
+        record("the device report follows the serial number",
+               "a report that ignores the serial makes every unit's claim unverifiable",
+               "%d rows differ between two serials" % sum(1 for (k, x), (_, y) in zip(a, b)
+                                                          if abs(x - y) > 1e-9),
+               a != b,
+               "unit_report built its own DeviceUnit(identity=\"probe\") -- a hardcoded string -- "
+               "so every serial gave the same table while the renderer used the real one")
+    finally:
+        app.set_project({"environment": saved[0], "keyframes": saved[1],
+                         "unit_identities": saved[2]})
 if __name__ == "__main__":
     raise SystemExit(main())

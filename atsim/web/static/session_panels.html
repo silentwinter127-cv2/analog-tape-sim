@@ -1,0 +1,37 @@
+<div id="envPanel" class="ssPanel hidden">
+  <div class="palGroup">环境状态 <span class="ssHint">决定这台机器此刻处于什么条件</span></div>
+  <p class="ssNote">
+    这三个量是<b>整台机器在某一刻的状态</b>，不是某个器件参数。温度影响晶振、CCD 暗电流、
+    伺服增益；电源老化影响轨电压、增益余量、钳位基准。它们的效应<b>方向由物理决定</b>——
+    所以时间线只驱动一个数（暖度），至于暖度会动哪些参数，由模型决定。
+  </p>
+  <div class="ssRows" id="envRows"></div>
+  <div class="ssReadout" id="envReadout"></div>
+</div>
+
+<div id="devicePanel" class="ssPanel hidden">
+  <div class="palGroup">设备个体 <span class="ssHint">同型号的不同机器</span></div>
+  <p class="ssNote">
+    同一型号的两台机器不一样：CCD 有暗电流容差、镜头装配有偏心、伺服板有增益差异、磁头磨损取决于用过多久。
+    填一个<b>序列号</b>，这台机器就固定下来——同一个串号永远给出同一台机器，所以故障可复现、磁带可复查。
+    <b>留空就是名义模型</b>，与加入这个维度之前的渲染逐位相同。
+  </p>
+  <div class="ssRows" id="deviceRows"></div>
+  <div class="ssReadout" id="deviceReadout"></div>
+</div>
+
+<div id="tlPanel" class="ssPanel hidden">
+  <div class="palGroup">关键帧时间线 <span class="ssHint">一段录像的生命周期</span></div>
+  <p class="ssNote">
+    一段录像不是一组常数，而是<b>一台机器历史上的一段</b>：开头是冷的、二十分钟后热了、中途被搬进潮的地方、断电重启过。
+    每个轨道是一个参数随时间的取值。曲线属于<b>开始该段</b>的那个点，因为它描述的是「怎么从这里走到下一个点」：
+    <code>linear</code> 恒定速率、<code>exp</code> 逼近平衡（温度、伺服稳定）、<code>hold</code> 离散状态不变、<code>smooth</code> 仅在无物理速率可依据时使用。
+  </p>
+  <div class="ssRow">
+    <button id="tlAddTrack" class="ghost">+ 新建轨道</button>
+    <button id="tlAddSession" class="ghost">插入一次「录像场次」</button>
+    <button id="tlClear" class="ghost">清空时间线</button>
+  </div>
+  <div class="tlTracks" id="tlTracks"></div>
+  <div class="ssReadout" id="tlReadout"></div>
+</div>

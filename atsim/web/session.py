@@ -93,6 +93,12 @@ class Project:
     # identities are part of the project because a unit that is not saved is a unit that changes
     # when the project is reloaded, which would break reproducibility.
     unit_identities: dict = field(default_factory=dict)
+    # The machine's condition -- warmth, ageing, damp -- and the keyframe tracks that drive it and
+    # anything else.  Both vary per frame, so unlike `params` they cannot be folded into
+    # `resolved_params()`; the renderer is given them instead.  A project saved before these existed
+    # loads with none of them, which is what keeps it rendering identically.
+    environment: dict = field(default_factory=dict)
+    keyframes: list = field(default_factory=list)
     created: float = field(default_factory=time.time)
     modified: float = field(default_factory=time.time)
 
@@ -114,23 +120,35 @@ class Project:
         keeps every preset and capture from before this dimension rendering identically.
         """
         params = SCHEMA.resolve_all(self.params or {})
-        ids = self.unit_identities or {}
-        if not ids:
+        unit = self._unit()
+        if unit is None:
             return params
-        from ..core.units import DeviceUnit, apply_unit, bind_ranges, spreads_from_schema
+        from ..core.units import apply_unit, bind_ranges, spreads_from_schema
         bind_ranges(SCHEMA)
         spreads = spreads_from_schema(SCHEMA)
-        # one machine per device class, so a camcorder and a deck are drawn independently
-        merged: dict[str, float] = {}
-        for _kind, identity in sorted(ids.items()):
-            unit = DeviceUnit(identity=str(identity)).draw(spreads)
-            merged.update(unit.deviations)
-        if not merged:
-            return params
-        unit = DeviceUnit(identity="+".join(sorted(str(v) for v in ids.values())))
-        unit.deviations = merged
         params, _record = apply_unit(params, unit, spreads.get)
         return params
+
+    def environment_from(self):
+        """This project's machine condition, as an `Environment`, or None if it is at nominal."""
+        from ..core.environment import Environment
+        d = self.environment or {}
+        if not d:
+            return None
+        return Environment(
+            warmth=float(d.get("warmth", 1.0)),
+            age=float(d.get("age", 0.0)),
+            humidity=float(d.get("humidity", 0.0)),
+            cold_sensitivity=float(d.get("cold_sensitivity", 1.0)),
+            age_sensitivity=float(d.get("age_sensitivity", 1.0)))
+
+    def keyframe_set(self):
+        """This project's timeline, as a `KeyframeSet`, or None if there are no tracks."""
+        from ..core.keyframes import KeyframeSet, Track
+        tracks = self.keyframes or []
+        if not tracks:
+            return None
+        return KeyframeSet(tracks=[Track.from_dict(t) for t in tracks])
 
     def unit_report(self) -> list[dict]:
         """
@@ -140,15 +158,40 @@ class Project:
         deviations can be named -- and because a realism claim about a specific unit is only
         checkable if the unit's numbers can be read out.
         """
-        ids = self.unit_identities or {}
-        if not ids:
+        unit = self._unit()
+        if unit is None:
             return []
-        from ..core.units import DeviceUnit, apply_unit, bind_ranges, spreads_from_schema
+        from ..core.units import apply_unit, bind_ranges, spreads_from_schema
         bind_ranges(SCHEMA)
         spreads = spreads_from_schema(SCHEMA)
         base = SCHEMA.resolve_all(self.params or {})
-        _p, record = apply_unit(base, DeviceUnit(identity="probe").draw(spreads), spreads.get)
+        # The report is computed by the same `apply_unit` call that `resolved_params` makes, from the
+        # same merged unit, so the table cannot disagree with what was rendered.  An earlier version
+        # built its own `DeviceUnit(identity="probe")` here -- a hardcoded string -- and reported the
+        # same machine for every serial number while the render used the real one.
+        _p, record = apply_unit(base, unit, spreads.get)
         return record
+
+    def _unit(self):
+        """
+        This project's machine, with one identity per device class merged into one deviation set.
+
+        Shared by `resolved_params` and `unit_report` so that what is reported is what is rendered.
+        """
+        ids = self.unit_identities or {}
+        if not ids:
+            return None
+        from ..core.units import DeviceUnit, bind_ranges, spreads_from_schema
+        bind_ranges(SCHEMA)
+        spreads = spreads_from_schema(SCHEMA)
+        merged: dict[str, float] = {}
+        for _kind, identity in sorted(ids.items()):
+            merged.update(DeviceUnit(identity=str(identity)).draw(spreads).deviations)
+        if not merged:
+            return None
+        unit = DeviceUnit(identity="+".join(sorted(str(v) for v in ids.values())))
+        unit.deviations = merged
+        return unit
 
 
 class SessionStore:
@@ -264,6 +307,13 @@ class SessionStore:
             self._renderers[key] = r
         else:
             r.invalidate(params)
+        # The environment and the timeline are per-frame, so they are given to the renderer rather than
+        # folded into `params` -- and both paths need it: a cached renderer invalidated with new
+        # parameters still holds the old timeline.  Without this, editing a keyframe in the interface
+        # changes nothing on screen.
+        env, kf = project.environment_from(), project.keyframe_set()
+        if getattr(r, "_keyframes", None) is not kf or getattr(r, "_environment", None) is not env:
+            r.set_time_varying(kf, env)
         return r, src
 
     def drop(self, project_id: str) -> None:
@@ -281,6 +331,23 @@ class SessionStore:
                 return group[key]["layers"]
         return {}
 
+    def _preset_spec(self, key: str) -> dict:
+        """
+        The preset's own dict, whatever it declares.
+
+        Kept separate from `preset_layers` so that a preset can carry fields beyond `layers` without
+        `preset_layers` having to know about them.
+        """
+        spec = FACTORY_PRESETS.get(key) or {}
+        if not spec:
+            # device profiles and the like are resolved through the same path
+            try:
+                from ..core.profiles import resolve_preset
+                spec = resolve_preset(key) or {}
+            except Exception:
+                spec = {}
+        return spec if isinstance(spec, dict) else {}
+
     def apply_preset(self, project: Project, key: str) -> Project:
         """
         Apply a preset as a complete state, not as an adjustment to the screen.
@@ -297,6 +364,13 @@ class SessionStore:
         if layers:
             project.params = merge_values(_preset_baseline(), layers)
             project.preset = key
+            # A preset may also name the machine's condition and its timeline.  Both are *cleared* when
+            # the preset does not mention them, because a preset is a complete state: inheriting the
+            # previous one would make the picture depend on the order the presets were clicked, which is
+            # the fault the docstring above describes.
+            spec = self._preset_spec(key)
+            project.environment = dict(spec.get("environment") or {})
+            project.keyframes = list(spec.get("timeline") or [])
         return project
 
     def catalog(self) -> dict:

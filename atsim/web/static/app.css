@@ -211,3 +211,66 @@ button.wide{width:100%;margin-top:8px}
 .mxcell figcaption{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);
   line-height:1.35;display:flex;flex-direction:column}
 .mxcell .mxmean{color:#6b6157;font-size:10px}
+
+
+/* ==========================================================================
+   维度面板：环境状态 / 设备个体 / 关键帧时间线
+   追加在末尾，不改动上面任何已有规则。
+   ========================================================================== */
+.ssPanel { border-top: 1px solid #1d2430; padding: 10px 10px 14px; }
+.ssPanel.hidden { display: none; }
+.ssHint { color: #5c6a7e; font-weight: 400; font-size: 11px; margin-left: 6px; }
+.ssNote {
+  color: #8b98a8; font-size: 11.5px; line-height: 1.62; margin: 6px 0 10px;
+  border-left: 2px solid #2a3442; padding-left: 8px;
+}
+.ssNote b { color: #c7d3e2; }
+.ssNote code {
+  background: #171d25; padding: 0 4px; border-radius: 3px;
+  font-family: ui-monospace, monospace; color: #8fe3c4;
+}
+.ssRows { display: flex; flex-direction: column; gap: 3px; }
+.ssRow { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.ssLab { flex: 0 0 82px; color: #9fb0c4; font-size: 12px; }
+.ssLabMini { color: #6f7d90; font-size: 10.5px; display: flex; align-items: center; gap: 4px; }
+.ssLabMini input { width: 62px; }
+.ssVal { flex: 0 0 46px; text-align: right; color: #7fe0bd; font-size: 11.5px; }
+.ssRow input[type=range] { flex: 1 1 auto; min-width: 60px; }
+.ssText {
+  flex: 1 1 auto; background: #0f1319; border: 1px solid #232c38; color: #c7d3e2;
+  border-radius: 4px; padding: 4px 6px; font-size: 12px; font-family: ui-monospace, monospace;
+}
+.ssText::placeholder { color: #4a5666; }
+.ssHelp { color: #566374; font-size: 10.5px; line-height: 1.5; margin: 0 0 6px 90px; }
+.ssReadout {
+  margin-top: 9px; color: #8b98a8; font-size: 11.5px; line-height: 1.65;
+  border-top: 1px dashed #232c38; padding-top: 7px;
+}
+.ssReadout b { color: #ffd166; }
+.ssDim { color: #5c6a7e; }
+.ssDevList { margin-top: 5px; display: flex; flex-direction: column; gap: 1px; }
+.ssDev { font-size: 11px; color: #8b98a8; display: flex; gap: 6px; align-items: baseline; }
+.ssDev .ssNm { color: #6f7d90; }
+.ssDev .ssNv { color: #7fe0bd; }
+.ssDev .ssPct { color: #ffd166; min-width: 48px; text-align: right; }
+.ssTiny { font-size: 11px; padding: 2px 7px; }
+.ssSel, .ssSelMini {
+  background: #0f1319; border: 1px solid #232c38; color: #c7d3e2;
+  border-radius: 4px; font-size: 11.5px; padding: 3px 4px;
+}
+.ssSel { flex: 1 1 auto; max-width: 250px; }
+
+/* 时间线 */
+.tlTracks { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.tlCard {
+  background: #0e1218; border: 1px solid #1d2430; border-radius: 6px; padding: 7px;
+}
+.tlHead { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; flex-wrap: wrap; }
+.tlCanvas {
+  width: 100%; height: 130px; display: block; border-radius: 4px;
+  border: 1px solid #1a212b; cursor: crosshair; touch-action: none;
+}
+.tlPts { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.tlPt { display: flex; align-items: center; gap: 7px; }
+.tlPt input { width: 58px; background: #0f1319; border: 1px solid #232c38; color: #c7d3e2;
+  border-radius: 3px; font-size: 11px; padding: 2px 4px; font-family: ui-monospace, monospace; }
