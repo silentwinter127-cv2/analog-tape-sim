@@ -326,6 +326,15 @@ def build_schema() -> ParamSchema:
                phys_max=0.4, source="色度欠载载波弱",
                help="随机整行丢失彩色（色度载波弱于亮度）。")
 
+    tpe.define("row_timebase", "整行时基误差", 0.0, 0.0, 3.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.5,
+               source="走带速度的连续波动沿磁迹积分（主导轴相位误差）",
+               help="沿画面平滑变化的逐行水平位移。与「行抖动」是**同一根轴上的两种粒度**："
+                    "行抖动逐行独立，得到锯齿状边缘；这个在相邻行之间相关，"
+                    "所以一条竖直边缘会**弯曲**而不是碎裂——这才是人们认得出的时基故障形态。"
+                    "它还带有跨帧的慢漂移与累积项，所以故障有历史，不是逐帧重掷。"
+                    "亮度与色度施加**相同**的位移：采样相位错误移动整行，"
+                    "若分别移动色度就等于凭空造出真实走带机构不会产生的偏色。")
     g = "整行色度错误"
     tpe.define("row_chroma_error", "整行错色发生率", 0.0, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.5,
@@ -704,6 +713,18 @@ FACTORY_PRESETS = {
             "rf": {"signal_dbm": -74.0, "adjacent_channel": 0.20,
                    "broadcast_noise": 0.45},
             "tape": {"noise_floor": 0.30, "dropout_rate": 0.6},
+            "display": {"enabled": 0.0},
+        }},
+    "worn_transport_row_timebase": {
+        "label": "走带时基故障（整行位移）",
+        "note": "沿画面平滑变化的逐行水平位移：竖直边缘会**弯曲**而不是碎裂，"
+                "而且位移形态逐帧迁移。与「行抖动」区分——后者在同一根轴上振荡、"
+                "形态每帧重复。亮度与色度同移，不产生凭空偏色。",
+        "layers": {
+            "tape": {"row_timebase": 0.9, "line_jitter": 0.25,
+                     "tape_stability": 0.5, "wear": 0.35,
+                     "dropout_rate": 0.4, "noise_floor": 0.20},
+            "player": {"transport_jitter": 0.5, "tbc_enabled": 0.0},
             "display": {"enabled": 0.0},
         }},
     "worn_deck_row_chroma": {

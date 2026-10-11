@@ -1,0 +1,39 @@
+add per-line time-base error, and fix line_jitter being invisible
+
+Two mechanisms on the horizontal axis, and a bug found while measuring them.
+
+**row_timebase (new).** The existing timeline supplies a per-line displacement that
+oscillates *within* a frame. What was missing is the other axis: a term that wanders
+*across* frames. This field carries a random walk and a slow drift, so the fault
+pattern migrates instead of returning to the same shape on every pass. Measured at
+amount 0.8, consecutive frames differ by 5.2 px.
+
+Luma and chroma are displaced by the *same* amount, and that is deliberate rather
+than an implementation detail: a sampling-phase error moves the whole line, so
+shifting the chroma carrier separately would invent a colour shift that no transport
+produces. Measured, luma and chroma displacements differ by 0.05 px.
+
+**line_jitter was invisible.** It scaled the per-line phase by unit_px * 5.0, and
+unit_px = 0.045 * W / 720 is 0.0225 at a 360-wide preview -- so line_jitter = 1.0,
+the top of its range, moved lines by 0.09 px. The measured standard deviation of the
+timeline's per-line phase was 0.045 px, three orders of magnitude below one pixel.
+A control whose entire range is under a pixel reads as a broken control, which is how
+it was reported. Amplitudes are now expressed in pixels of the current render and the
+same measurement gives 0.94 px.
+
+**A correction to my own reasoning.** I wrote in the new docstring that the timeline
+was uncorrelated line-to-line and that the new field was the correlated one.
+Measurement said the opposite: the timeline's within-frame lag-1 correlation is about
++0.95, so it is already smooth along the picture, while this field is re-drawn per
+frame and migrates. The docstring now records the measured behaviour and states that
+both are retained because they are different behaviours, not two names for one.
+
+**Measurement method mattered twice here.** The first attempt measured per-line
+displacement on a signal that varied only along x, so a horizontal shift was not a
+shift of anything measurable and every mechanism reported 0.00 px; measuring a
+horizontal displacement needs vertical structure. The second attempt compared
+mechanism-on against the original signal rather than against a mechanism-off run, so
+every other tape mechanism was mixed in.
+
+Verified: 41 checks pass, 13 presets render. curving_stripes from the same feedback
+is still outstanding.

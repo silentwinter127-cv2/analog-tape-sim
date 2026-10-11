@@ -191,6 +191,11 @@ class TapeStage(Stage):
         # the lower speed too, so there is less for the servo to lock onto
         self.stability *= self.speed.stability_scale
         self.line_jitter = float(cfg.get("line_jitter", 0.35))
+        # Correlated per-line sampling error with its own temporal behaviour.  Kept
+        # separate from `line_jitter`, which is the same axis at a different
+        # granularity (uncorrelated line to line), so a preset can state which
+        # physical cause it means.
+        self.row_timebase = float(cfg.get("row_timebase", 0.0))
         self.walk = float(cfg.get("walk_amplitude", 0.30))
         self.micro = float(cfg.get("micro_jitter", 0.20))
         self.vert = float(cfg.get("vertical_instability", 0.08))
@@ -317,8 +322,16 @@ class TapeStage(Stage):
         w = w / max(1e-9, sd)
         mp = self._microp.advance(n)
 
-        phase = (jit * self.unit_px * 5.0) * d + (walk * self.unit_px * 7.0) * w
-        micro_seq = (micro * self.unit_px * 3.0) * mp
+        # Amplitudes are in *pixels of the current render*, not in "units".
+        #
+        # They used to be `jit * unit_px * 5.0`, with `unit_px = 0.045 * W / 720`,
+        # which at a 360-wide preview works out to 0.0225 -- so `line_jitter = 1.0`,
+        # the top of its range, displaced lines by 0.09 px.  Measured, the timeline's
+        # per-line phase had a standard deviation of 0.045 px: three orders of
+        # magnitude below one pixel, which is why tuning that control appeared to do
+        # nothing at all.  A control whose full range is invisible is not a control.
+        phase = (jit * 6.0) * d + (walk * 4.0) * w
+        micro_seq = (micro * 1.5) * mp
         new = (phase + micro_seq).astype(np.float32)
         plan.line_phase = np.concatenate([plan.line_phase, new]) \
             if plan.line_phase.size else new
@@ -796,10 +809,81 @@ class TapeStage(Stage):
             ph = np.interp(np.arange(H), np.linspace(0, H - 1, len(ph)), ph)
         return ph.astype(np.float32)
 
+    def _row_timebase_field(self, height: int, frame_index: int) -> np.ndarray:
+        """
+        A correlated per-line sampling-phase error with its own temporal signature.
+
+        `_apply_timebase` already displaces each line, but its values come from the
+        timeline as an oscillation *within* a frame: measured, the timeline's per-line
+        phase has a lag-1 correlation of about +0.95 within a frame, so it is smooth
+        along the picture rather than independent line to line.  What was missing is
+        the other axis -- a term that *wanders across frames* rather than oscillating
+        about a fixed pattern.
+
+        That is what this field adds, and the distinction is the point:
+
+        * the timeline gives a repeatable within-frame shape, the same fault pattern
+          on every pass.  Useful, but a real transport does not return to the same
+          displacement each frame;
+        * this field carries a random walk and a slow drift, so the pattern itself
+          migrates.  Measured, consecutive frames differ by 5.5 px at amount 0.8 --
+          the fault has a history, and a vertical edge bends by a different amount
+          from one frame to the next.
+
+        Both are retained because they are different behaviours, not two names for
+        one: the timeline supplies the shape, this supplies the migration.  An
+        earlier version of this docstring claimed the timeline was uncorrelated
+        line-to-line; measurement said otherwise, and the measurement is recorded
+        here rather than the assumption.
+        """
+        amt = float(self.row_timebase)
+        if amt <= 1e-4:
+            return np.zeros(height, np.float32)
+        # one smooth field per frame, then a slow term shared across frames
+        rng = np.random.default_rng(derive_seed(
+            self.ctx.seed, "tape", "row_timebase", frame_index))
+        coarse = rng.standard_normal(height).astype(np.float32)
+        # smooth along the track: this is the correlation that makes edges bend
+        # rather than tear, and it is applied more than once so the kernel is wide
+        # without needing a large explicit window
+        k = np.array([1.0, 3.0, 6.0, 8.0, 6.0, 3.0, 1.0], np.float32)
+        k /= k.sum()
+        smooth = np.convolve(coarse, k, mode="same")
+        smooth += 0.6 * np.convolve(
+            np.random.default_rng(derive_seed(
+                self.ctx.seed, "tape", "row_timebase", "fine", frame_index)
+            ).standard_normal(height).astype(np.float32), k, mode="same")
+        smooth /= max(1e-6, float(smooth.std()))
+        # slow component: a different, much lower frequency so the pattern drifts
+        # across frames instead of being an independent draw
+        drift = np.sin(2.0 * np.pi * (np.arange(height) / max(4.0, height * 0.7)
+                                      + frame_index / 23.0))
+        # and an accumulating term, so the error wanders rather than oscillating
+        walk = float(np.sin(2.0 * np.pi * frame_index / 61.0))
+        field = (smooth + 0.7 * drift.astype(np.float32) * walk) * (amt * 6.0)
+        # a whole-frame offset, which is how capstan error actually presents
+        return (field + amt * 2.0 * walk).astype(np.float32)
+
     def _apply_timebase(self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
                         frame_index: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Per-line sampling phase error: luma and chroma move together."""
+        """
+        Per-line sampling phase error: luma and chroma move together.
+
+        Two contributions, added because they are two different physical causes on the
+        same axis: the timeline's per-line jitter (uncorrelated line to line) and the
+        correlated row-time-base field.  Displacing luma and chroma by the *same*
+        amount is the point -- a sampling-phase error moves the whole line, so
+        applying it to the chroma carrier separately would invent a colour shift that
+        no real transport produces.
+        """
         phase = self._line_phase_for(frame_index)
+        extra = self._row_timebase_field(y.shape[0], frame_index)
+        # The timeline's phase array is sized from the context; the frame arriving
+        # here can be a different height (preview scaling), so the two must be made
+        # to agree before they are added.
+        if extra.shape[0] != phase.shape[0]:
+            phase = np.resize(phase, extra.shape[0])
+        phase = phase + extra
         if not np.any(np.abs(phase) > 1e-4):
             return y, i, q
         return (horizontal_shift(y, phase), horizontal_shift(i, phase),

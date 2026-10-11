@@ -738,6 +738,99 @@ def check_row_chroma() -> None:
                "%.2f of each affected row changed (1.0 = full width)" % within,
                within > 0.95)
 
+
+def check_row_timebase() -> None:
+    """
+    Two per-line horizontal mechanisms, both of which must be *visible*.
+
+    The first assertion is not about the new mechanism at all.  `line_jitter` was
+    scaled by `unit_px * 5.0`, which at a 360-wide preview is 0.0225, so its full
+    range displaced lines by 0.09 px -- measured standard deviation of the timeline's
+    per-line phase was 0.045 px, three orders of magnitude below one pixel.  A
+    control whose entire range is invisible reads as a broken control, and that is
+    how it was reported.  Both mechanisms are therefore measured in pixels of the
+    rendered frame, not by reading the code.
+
+    The second assertion is the distinction between them: the row-time-base field
+    must migrate across frames, and luma and chroma must move by the same amount --
+    a sampling-phase error moves the whole line, so a colour shift would be an
+    invention.
+    """
+    from atsim.core.pipeline import FrameBuffer, RenderContext
+    from atsim.core.signal import composite_encode
+    from atsim.core.standards import NTSC_525_60 as std
+    from atsim.stages.tape import TapeStage
+
+    H, W = 240, 360
+    # vertical structure, so a horizontal shift is measurable at all.  Measuring a
+    # horizontal displacement on a pattern that varies only along x yields zero for
+    # every mechanism, which is what an earlier attempt reported.
+    x = np.arange(W)
+    base = 0.30 + 0.45 * np.maximum.reduce(
+        [(np.abs(x - c) < 1.5).astype(np.float32) for c in (40, 95, 150, 205)])
+    y_plane = np.tile(base[None, :], (H, 1))
+    yy = np.mgrid[0:H, 0:W][0].astype(np.float32)
+    comp = composite_encode(y_plane, 0.16 * np.cos(yy / 13.0),
+                            0.16 * np.sin(yy / 13.0), std, chroma_gain=0.63)
+
+    def stage_for(over: dict) -> TapeStage:
+        params = _neutral({"tape": over})
+        ctx = RenderContext(std=std, params=params, seed=20240101, frame_count=60,
+                            fps=25.0, width=W, height=H)
+        st = TapeStage(ctx)
+        st.prepare()
+        return st
+
+    def planes(st: TapeStage, frame: int):
+        buf = FrameBuffer(np.zeros((H, W, 3), np.float32), comp, frame,
+                          frame / 25.0, std, {"field": frame % 2})
+        out = st.apply(buf)
+        return st._decompose(out.composite)
+
+    print_specs = []
+    for label, over in (("line_jitter", {"line_jitter": 1.0, "row_timebase": 0.0}),
+                        ("row_timebase", {"line_jitter": 0.0, "row_timebase": 0.5})):
+        st = stage_for(over)
+        print_specs.append((label, float(
+            np.abs(st._line_phase_for(12)).std()
+            if label == "line_jitter" else
+            st._row_timebase_field(H, 12).std())))
+
+    worst = min(v for _l, v in print_specs)
+    record("per-line displacement is visible", "a full-range control is not sub-pixel",
+           ", ".join("%s std %.2f px" % (l, v) for l, v in print_specs),
+           worst > 0.5,
+           "a control whose whole range is under a pixel reads as broken")
+
+    st = stage_for({"line_jitter": 0.0, "row_timebase": 0.8})
+    fields = np.stack([st._row_timebase_field(H, f) for f in range(6)])
+    consec = float(np.abs(np.diff(fields, axis=0)).mean())
+    record("row time-base migrates across frames",
+           "the fault pattern moves rather than repeating",
+           "consecutive-frame change %.2f px" % consec, consec > 0.5)
+
+    st_off = stage_for({"line_jitter": 0.0, "row_timebase": 0.0})
+    by0, bi0, _ = planes(st_off, 12)
+    by1, bi1, _ = planes(stage_for({"line_jitter": 0.0, "row_timebase": 0.6}), 12)
+
+    def row_shift(a: np.ndarray, b: np.ndarray, rng: int = 10) -> float:
+        lags = np.arange(-rng, rng + 1)
+        scores = np.array([float(np.dot(a, np.roll(b, int(s)))) for s in lags])
+        k = int(np.argmax(scores))
+        if 0 < k < len(lags) - 1:
+            y0, y1, y2 = scores[k - 1], scores[k], scores[k + 1]
+            den = y0 - 2 * y1 + y2
+            if abs(den) > 1e-9:
+                return float(lags[k] - 0.5 * (y2 - y0) / den)
+        return float(lags[k])
+
+    sy = np.array([row_shift(by0[r], by1[r]) for r in range(H)], np.float32)
+    si = np.array([row_shift(bi0[r], bi1[r]) for r in range(H)], np.float32)
+    diff = float(np.abs(sy - si).mean())
+    record("luma and chroma move together", "a sampling-phase error moves the whole line",
+           "luma std %.2f px, luma-vs-chroma difference %.2f px" % (sy.std(), diff),
+           sy.std() > 0.5 and diff < 0.6)
+
 # ---------------------------------------------------------------------------
 def contact_sheet() -> str:
     """One image showing every headline effect, for eyeballing."""
@@ -796,6 +889,7 @@ def main(argv: list[str] | None = None) -> int:
         check_preset_independence()
         check_server_control()
         check_row_chroma()
+        check_row_timebase()
         check_broadcast_noise()
         check_head_switch()
 
