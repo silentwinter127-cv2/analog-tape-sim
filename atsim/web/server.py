@@ -629,6 +629,11 @@ def make_handler(app: App):
             try:
                 if path in ("/", "/index.html"):
                     return self._static("index.html")
+                # The connector test bench: every interface degraded side by side against a
+                # clean baseline, so the differences between them can be read directly
+                # instead of inferred from one picture at a time.
+                if path in ("/connectors", "/connectors.html"):
+                    return self._static("connectors.html")
                 if path.startswith("/static/"):
                     return self._static(path[len("/static/"):])
                 if path == "/api/catalog":

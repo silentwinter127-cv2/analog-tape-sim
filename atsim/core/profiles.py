@@ -389,6 +389,7 @@ def build_schema() -> ParamSchema:
                phys_min=0.0, phys_max=0.8,
                help="条纹沿画面方向的弯曲量。由相位差随位置变化的快慢决定；"
                     "取 0 得到一组平行的直条纹，与「整行位移」外观不同。")
+
     g = "磁带仓受潮（粘带）"
     tpe.define("stiction_rate", "粘带发生率", 0.0, 0.0, 4.0, unit="次/秒", group=g,
                phys_min=0.0, phys_max=1.2,
@@ -649,6 +650,23 @@ def build_schema() -> ParamSchema:
     dsp.define("reflection", "屏幕反射", 0.10, 0.0, 1.0, unit="0-1", group=g)
     dsp.define("color_temp", "色温", 0.5, 0.0, 1.0, unit="0-1", group=g,
                source="冷/暖白平衡")
+
+    g = "CRT 接口受潮"
+    dsp.define("crt_moisture", "显像管受潮", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.5, source="尾部接口与视放电路受潮",
+               help="CRT 的信号通路极短且全模拟：接头 → 视放 → 阴极，偏转由轭驱动。"
+                    "受潮影响的是**视放电路**，不是到达它的信号，"
+                    "所以产生的故障和磁带损伤完全不同。")
+    dsp.define("crt_corrosion", "CRT 接口氧化", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.5,
+               help="接触电阻升高并向地漏电，改变视放偏置，**黑电平整体移动**——"
+                    "画面变亮或变暗，而不是变脏。所以受潮的机器看起来是**发白**，"
+                    "不是发噪。")
+    dsp.define("crt_age", "显像管老化", 0.3, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.8,
+               help="三个阴极各有独立视放、各自老化，所以旧机器受潮时出现**偏向某色**"
+                    "而不只是变暗。同一个潮湿房间里，新机器看起来发白、旧机器发绿，"
+                    "差别就在这里——这是**显示器**的属性，不是录制里的偏色。")
 
     return s
 

@@ -86,6 +86,19 @@ async function loadGraph() {
 
 function applyGraphState(j) {
   const first = !G.state;
+  // Nodes the user has dragged carry pixel coordinates and must keep them.  The server
+  // stores the `px` flag too, but a payload can arrive from a route that did not preserve
+  // it -- `/api/graph/move` returns only `{ok:true}`, for instance, so nothing refreshes
+  // the flag and the next full describe may or may not carry it.  Rather than depend on
+  // every route round-tripping the flag, remember locally which nodes were dragged and
+  // re-assert it.  The alternative was to make the heuristic smarter, but no heuristic can
+  // separate a grid position of (8, 0) from a pixel position of (8, 0) -- the units have to
+  // be carried, not inferred.
+  if (G.state && G.state.describe && j && j.describe) {
+    const dragged = new Set();
+    for (const n of G.state.describe.nodes) if (n.px) dragged.add(n.name);
+    for (const n of j.describe.nodes) if (dragged.has(n.name)) n.px = true;
+  }
   G.state = j;
   renderPalette();
   renderGraphPresets();
@@ -270,8 +283,11 @@ function renderCanvas() {
       G.moving = { name: n.name,
                    dx: ev.clientX / G.scale - x - G.pan[0] / G.scale,
                    dy: ev.clientY / G.scale - y - G.pan[1] / G.scale };
-      // mark that this position is already in pixels, so a save keeps it there
-      n._px = true;
+      // Mark that this position is already in pixels.  The name matters: this used to
+      // set `_px` while `px()` and the mouseup handler both read `px`, so the mark made on
+      // grab was never seen by either and a dragged coordinate could be put through the
+      // grid-to-pixel conversion again -- which is what threw nodes across the canvas.
+      n.px = true;
       renderCanvas();
       renderNodeInspector();
     };

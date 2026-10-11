@@ -52,6 +52,13 @@ class DisplayStage(Stage):
     def __init__(self, ctx: RenderContext):
         super().__init__(ctx)
         d = self.cfg_of("display")
+        # CRT interface moisture.  Read here, after super().__init__, because `cfg_of` reads
+        # `self.cfg` and that is what super() establishes.  The first insertion put these
+        # lines *above* the super call, so the stage could not be constructed at all --
+        # `AttributeError: 'DisplayStage' object has no attribute 'cfg'`.
+        self.crt_moisture = float(d.get("crt_moisture", 0.0))
+        self.crt_corrosion = float(d.get("crt_corrosion", 0.0))
+        self.crt_age = float(d.get("crt_age", 0.3))
         self.enabled = float(d.get("enabled", 1.0)) > 0.5
         self.scanlines = float(d.get("scanlines", 0.35))
         self.interlace = float(d.get("interlace_flicker", 0.25))
@@ -145,6 +152,43 @@ class DisplayStage(Stage):
         return (top * (1.0 - fy) + bot * fy).astype(np.float32)
 
     # ------------------------------------------------------------------
+    def _apply_crt_moisture(self, rgb: np.ndarray, frame_index: int
+                            ) -> tuple[np.ndarray, dict]:
+        """
+        The damp video amplifier, at the very end of the chain.
+
+        Three effects with three separate causes, applied in the order the signal meets them:
+        the amplifier's bias shifts the level, the three channels' independent wear produce a
+        cast, and the sagging supply shrinks and breathes the raster.
+
+        The geometry is the one that matters diagnostically: it is the *only* fault in the
+        model that moves the edges of the raster itself. No upstream fault can do that -- a
+        tape cannot bend the picture -- so if the frame edges are moving, the fault is here
+        and nowhere else.
+        """
+        if self.crt_moisture <= 1e-4 and self.crt_corrosion <= 1e-4:
+            return rgb, {}
+        from ..codecs.crt import apply_deflection, moisture_effects
+        eff = moisture_effects(self.crt_moisture, self.crt_corrosion, self.crt_age)
+        out = np.array(rgb, np.float32, copy=True)
+
+        # the level: a bias shift moves black across the whole picture, so a damp set looks
+        # washed out rather than grainy
+        out = out + eff.bias_drift
+
+        # the cast: separate amplifiers per cathode, so the channels gain differently.  The
+        # spread grows with the set's age, which is why a damp room washes out a new set and
+        # tints an old one.
+        out = out * np.array(eff.cast, np.float32)[None, None, :]
+
+        info = {"bias_drift": round(eff.bias_drift, 4),
+                "cast": [round(g, 4) for g in eff.cast]}
+
+        # the geometry last, because it resamples the picture the first two produced
+        out, geo = apply_deflection(out, eff.deflection, frame_index, self.ctx.seed)
+        info.update(geo)
+        return np.clip(out, 0.0, 1.0), info
+
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
         sig: SignalFrame | None = buf.meta.get("signal")
         # Even with the display stage disabled, the frame that leaves the chain
@@ -233,6 +277,13 @@ class DisplayStage(Stage):
             x0 = (big_w - w) // 2
             rgb = enlarged[y0:y0 + h, x0:x0 + w]
 
+        # CRT interface moisture: the last junction in the chain, and the only fault
+        # that can move the edges of the raster.
+        if self.crt_moisture > 1e-4 or self.crt_corrosion > 1e-4:
+            rgb, crt_info = self._apply_crt_moisture(rgb, buf.index)
+            meta = dict(buf.meta)
+            meta["crt"] = crt_info
+            buf = FrameBuffer(rgb, buf.composite, buf.index, buf.time, buf.std, meta)
         rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32)
         out = FrameBuffer(rgb, buf.composite, buf.index, buf.time, buf.std, dict(buf.meta))
         out.meta["signal"] = sig

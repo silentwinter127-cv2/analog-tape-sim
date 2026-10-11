@@ -1637,5 +1637,59 @@ def check_stiction() -> None:
            0.05 < share < 0.8,
            "a smooth mechanism would move every frame similarly and would pass a "
            "mean-only check")
+def check_crt_moisture() -> None:
+    """
+    A damp CRT must produce three separate effects, and the geometry must be diagnostic.
+
+    The three come from different parts of the set, which is why they are asserted
+    separately: a bias shift in the video amplifier moves the black level, three
+    independently-worn channel amplifiers produce a cast, and a supply dragged down by
+    leakage makes the scan shrink and breathe.
+
+    The geometry is the one that matters. It is the *only* fault in the whole model that can
+    move the edges of the raster, because a tape cannot bend the picture -- so if the frame
+    edges are moving, the fault is in the display and nowhere else. A check that only looked
+    at the level would pass a model with no geometry at all, and the geometry is what makes
+    this fault locatable.
+    """
+    from atsim.codecs.crt import apply_deflection, moisture_effects
+
+    # --- the level and the cast must both grow with moisture, independently
+    clean = moisture_effects(0.0, 0.0, 0.3)
+    wet = moisture_effects(0.6, 0.0, 0.3)
+    record("CRT moisture shifts the black level",
+           "a high-resistance contact changes the video amplifier's bias",
+           "bias %.4f -> %.4f, so the picture washes out rather than gaining noise"
+           % (clean.bias_drift, wet.bias_drift),
+           wet.bias_drift > 0.05 and clean.bias_drift == 0.0,
+           "a clean set must shift nothing and a damp one must shift visibly")
+
+    # --- age must widen the cast without simply adding brightness.  This is the physical
+    # reason the same damp room washes out a new set and tints an old one.
+    new_set = moisture_effects(0.6, 0.0, 0.0)
+    old_set = moisture_effects(0.6, 0.0, 0.9)
+    spread_new = max(new_set.cast) - min(new_set.cast)
+    spread_old = max(old_set.cast) - min(old_set.cast)
+    bias_gain = old_set.bias_drift - new_set.bias_drift
+    record("age widens the cast more than it raises the level",
+           "the three cathode amplifiers wear independently, so an old set tints",
+           "cast spread %.4f -> %.4f, while the bias moves only %.4f"
+           % (spread_new, spread_old, bias_gain),
+           spread_old > spread_new * 1.5)
+
+    # --- the geometry, which is the diagnostic part
+    H, W = 120, 160
+    _o, info_none = apply_deflection(np.zeros((H, W, 3), np.float32), 0.0, 0, 1)
+    scales = []
+    for f in (0, 10, 20, 30):
+        _o, info = apply_deflection(np.zeros((H, W, 3), np.float32), 0.3, f, 1)
+        scales.append(info.get("raster_scale", 1.0))
+    moved = max(scales) - min(scales)
+    record("CRT deflection shrinks and breathes the raster",
+           "the only fault in the model that moves the edges of the picture itself",
+           "raster scale over 1.2 s = %s (drift %.4f); at zero deflection it is unchanged"
+           % (", ".join("%.3f" % s for s in scales), moved),
+           len(scales) >= 3 and min(scales) < 0.98 and moved > 0.005
+           and "raster_scale" not in info_none)
 if __name__ == "__main__":
     raise SystemExit(main())

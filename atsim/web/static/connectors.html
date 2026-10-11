@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>接口故障测试台 · analog-tape-sim</title>
+<style>
+  :root {
+    --bg: #14110f; --panel: #1e1a17; --line: #322b26; --ink: #e8e0d6;
+    --dim: #948a7f; --accent: #d9a441; --bad: #c9704f; --good: #7fa86a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10; background: #1a1614;
+    border-bottom: 1px solid var(--line); padding: 10px 16px;
+    display: flex; gap: 18px; align-items: center; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  h1 small { color: var(--dim); font-weight: 400; margin-left: 8px; }
+  .ctl { display: flex; align-items: center; gap: 7px; }
+  .ctl label { color: var(--dim); font-size: 12px; }
+  input[type=range] { width: 130px; accent-color: var(--accent); }
+  .val {
+    color: var(--accent); font-family: ui-monospace, monospace; font-size: 12px;
+    min-width: 34px; text-align: right;
+  }
+  button {
+    background: #2a2420; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 11px; cursor: pointer; font-size: 12px;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); color: #1a1614; border-color: var(--accent);
+                   font-weight: 600; }
+  main { padding: 16px; }
+  h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--dim); margin: 22px 0 10px; font-weight: 600;
+    border-bottom: 1px solid var(--line); padding-bottom: 6px;
+  }
+  h2:first-child { margin-top: 0; }
+  h2 span { text-transform: none; letter-spacing: 0; color: #6d6459;
+            font-weight: 400; margin-left: 8px; font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+          gap: 12px; }
+  .tile {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .tile img { width: 100%; display: block; background: #0d0b0a; aspect-ratio: 4/3;
+              object-fit: contain; }
+  .tile .cap { padding: 7px 9px; border-top: 1px solid var(--line); }
+  .tile .name { font-weight: 600; font-size: 12.5px; }
+  .tile .why { color: var(--dim); font-size: 11.5px; margin-top: 3px; min-height: 30px; }
+  .tile .row { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+  .tile input[type=range] { flex: 1; width: auto; }
+  .tile .ms { color: #6d6459; font-family: ui-monospace, monospace; font-size: 10.5px;
+              margin-left: auto; }
+  .tile.clean { border-color: #3d4a35; }
+  .tile.clean .name { color: var(--good); }
+  .note {
+    background: #1a1614; border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 4px; padding: 10px 13px; margin: 12px 0; color: #c8beb2;
+    font-size: 12.5px; line-height: 1.6;
+  }
+  .note b { color: var(--ink); }
+  .status { color: var(--dim); font-size: 11.5px; margin-left: auto;
+            font-family: ui-monospace, monospace; }
+  .busy { opacity: .55; }
+</style>
+</head>
+<body>
+<header>
+  <h1>接口故障测试台<small>一个界面看完所有接口的物理退化</small></h1>
+  <div class="ctl">
+    <label>统一受潮</label>
+    <input type="range" id="allMoist" min="0" max="1" step="0.02" value="0.5">
+    <span class="val" id="allMoistV">0.50</span>
+  </div>
+  <div class="ctl">
+    <label>统一氧化</label>
+    <input type="range" id="allCorr" min="0" max="1" step="0.02" value="0.25">
+    <span class="val" id="allCorrV">0.25</span>
+  </div>
+  <button id="btnRefresh" class="primary">全部渲染</button>
+  <button id="btnClean">只显示干净基线</button>
+  <span class="status" id="status">就绪</span>
+</header>
+
+<main>
+  <div class="note">
+    <b>这个界面是干什么的。</b> 同一份画面依次通过每一个接口，每个格子只改<b>那一个接口</b>的受潮/氧化，
+    其它保持干净。所以格子之间的差别就是<b>那个接口</b>造成的——这是这套模型的核心主张：
+    <b>同一个物理损坏在不同接口上产生完全不同的伪影</b>，因为信号域不同。
+    格子下方的小字是<b>物理机制</b>，不是效果名。
+    <br><br>
+    最上面一行是干净基线，每张图都对着它比。渲染由服务端出图，改滑杆后按「全部渲染」。
+  </div>
+
+  <h2>干净基线 <span>没有接口退化：一切从这里的差别读出来</span></h2>
+  <div class="grid" id="baseGrid"></div>
+
+  <h2>链路中的接口 <span>每个格子只退化这一处；机制写在下面</span></h2>
+  <div class="grid" id="connGrid"></div>
+
+  <h2>磁带与显示 <span>介质老化、磁带仓受潮、CRT 接口受潮</span></h2>
+  <div class="grid" id="tapeGrid"></div>
+</main>
+
+<script>
+/* ------------------------------------------------------------------ config */
+const LAYERS = ["camera", "format", "codec", "connector", "rf", "tape", "player", "display"];
+const T = 0.4, SCALE = 0.45;
+
+/* Every tile is a whole parameter set plus a caption.  The baseline is the same project the
+   main UI uses, so what is shown here is the chain that will actually be used, not a
+   stripped-down test harness. */
+const BASE_PARAMS = null;   /* filled from /api/project on load */
+
+/* Every parameter the connector and display layers can move must be named here.
+   `/api/project` MERGES a patch into the current parameters rather than replacing them --
+   measured: setting only `rf_present` left `hdmi_present` at 1.0 from an earlier request. So
+   a tile that posts only its own interface would render every interface set by the tile
+   before it as well, and its picture would not match its caption. Naming all of them is what
+   makes each tile independent, and a missed one stays live from the previous tile. */
+function cleanConnector() {
+  return {
+    hdmi_present: 0, hdmi_moisture: 0, hdmi_corrosion: 0,
+    av_present: 0, av_moisture: 0, av_corrosion: 0, av_ground_loop: 0,
+    svideo_present: 0, svideo_moisture: 0, svideo_corrosion: 0, svideo_leakage: 0,
+    rf_present: 0, rf_moisture: 0, rf_corrosion: 0, rf_shielding: 0,
+  };
+}
+function cleanTape() {
+  return { stiction_rate: 0, stiction_amount: 0, stiction_stretch: 0 };
+}
+function cleanDisplay() {
+  /* crt_age was missing from the first version of this, and because the endpoint merges,
+     an aged CRT from the previous tile stayed live for every tile after it. */
+  return { crt_moisture: 0, crt_corrosion: 0, crt_age: 0.3 };
+}
+
+/* kind: which connector type the tile drives, so the shared slider knows what to set */
+const TILES = [
+  /* --- the clean baseline --- */
+  { group: "base", name: "干净基线", clean: true,
+    why: "没有任何接口退化。所有其它格子都对着它读差别。", params: {} },
+
+  /* --- HDMI --- */
+  { group: "conn", name: "HDMI 受潮 0.5", kind: "hdmi", moist: 0.5,
+    why: "高速差分数字。眼图闭合 → 位错。数字没有「轻微雪花」这个状态：位要么对要么错，" +
+         "所以看到的是宏块错误、闪黑，再差就是握手失败直接「无信号」。",
+    params: { connector: { hdmi_present: 1, hdmi_moisture: 0.5 } } },
+  { group: "conn", name: "HDMI 氧化 0.8", kind: "hdmi", corr: 0.8,
+    why: "氧化层是差导体，接触电阻升高，结点更像开路而不是匹配负载。数字链路会直接掉。",
+    params: { connector: { hdmi_present: 1, hdmi_corrosion: 0.8 } } },
+
+  /* --- AV --- */
+  { group: "conn", name: "AV 地环路 0.6", kind: "av", ground: 0.6,
+    why: "RCA 的外壳就是地。外壳接触电阻大 → 线缆参考电位与信号源不同 → " +
+         "差值就是市电交流声，表现为一条<b>缓慢滚动</b>的亮暗条。滚动是这类故障的全部特征。",
+    params: { connector: { av_present: 1, av_ground_loop: 0.6 } } },
+  { group: "conn", name: "AV 受潮 0.6", kind: "av", moist: 0.6,
+    why: "中心针阻抗升高 → 反射 → 反射波是画面的延迟副本，叠在自身上。" +
+         "落在每条边的右侧一小段，所以是<b>重影</b>而不是模糊。",
+    params: { connector: { av_present: 1, av_moisture: 0.6 } } },
+
+  /* --- S-Video --- */
+  { group: "conn", name: "S-Video 串扰 0.5", kind: "svideo", leak: 0.5,
+    why: "Y 与 C 在相隔几毫米的两个针脚上，受潮形成漏电通路。结果是" +
+         "<b>边缘上的彩色镶边</b>而不是整体偏色——亮度的陡变出现在色度通道里，反之亦然，" +
+         "所以镶边正好落在边缘上。这是最像「坏磁带」的一个，而源头是湿了的接口。",
+    params: { connector: { svideo_present: 1, svideo_leakage: 0.5 } } },
+
+  /* --- RF --- */
+  { group: "conn", name: "RF 受潮 0.6", kind: "rf", moist: 0.6,
+    why: "水把介电常数从空气的 1 拉到约 80 → 阻抗偏离 75Ω → 能量被反射。" +
+         "反射波与前进波干涉，相加还是相消取决于<b>电长度</b>，" +
+         "所以损伤是<b>频率选择性</b>的——咬住某些频率而放过另一些，不是整体衰减。",
+    params: { connector: { rf_present: 1, rf_moisture: 0.6 } } },
+  { group: "conn", name: "RF 氧化 0.7", kind: "rf", corr: 0.7,
+    why: "氧化层加潮气像一个粗糙的二极管：一个方向比另一个方向更容易导通，正弦被削掉一边。" +
+         "削顶产生<b>谐波</b>，所以腐蚀的 RF 接点会干扰<b>别的频道</b>——" +
+         "干扰是在接点上产生的，不是从外面收进来的。",
+    params: { connector: { rf_present: 1, rf_corrosion: 0.7 } } },
+
+  /* --- tape --- */
+  { group: "tape", name: "磁头切换带（默认）", kind: null,
+    why: "两个视频磁头在场末交换，交界处两个磁头都没在读它该读的磁道。" +
+         "实测真实 VHS：带高占画面 5–27%，<b>带内噪声只有画面的 1.1–1.4 倍</b>——" +
+         "它不是噪声条带，定义它的是<b>水平跃变</b>。",
+    params: {} },
+  { group: "tape", name: "磁带仓受潮 · 粘带", kind: null, stiction: true,
+    why: "黏合剂吸水，在主导轴与压带轮之间形成水膜。粘住 → 张力升高 → 突然释放 → 猛跳。" +
+         "<b>间歇性</b>故障：事件之间磁带完全正常。注意这是<b>静帧</b>，" +
+         "而间歇性只有在运动里才看得出来——请用主界面的播放或 tools/stiction_demo.py。",
+    params: { tape: { stiction_rate: 2.0, stiction_amount: 0.9 } } },
+
+  /* --- display --- */
+  { group: "tape", name: "CRT 受潮 0.6（新机）", kind: null,
+    why: "视放偏置移动 → 黑电平整体抬升 → 画面<b>发白</b>而不是发噪。" +
+         "新机三个视放接近一致，所以只有亮度变化。",
+    params: { display: { crt_moisture: 0.6, crt_age: 0.0 } } },
+  { group: "tape", name: "CRT 受潮 0.6（旧机）", kind: null,
+    why: "同样的受潮，但三个阴极视放老化不一 → 出现<b>偏向某色</b>。同一个潮湿房间里，" +
+         "新机器发白、旧机器偏色，差别就在这里——这是<b>显示器</b>的属性，不是录制里的偏色。",
+    params: { display: { crt_moisture: 0.6, crt_age: 0.9 } } },
+  { group: "tape", name: "CRT 几何呼吸（偏转不稳）", kind: null,
+    why: "偏转轭是整机电流最大的部分。电源被漏电拖低 → 扫描缩小并随时间<b>呼吸</b>。" +
+         "这是整个模型里<b>唯一能让画面边缘本身移动</b>的故障——磁带弯不了光栅，" +
+         "所以边缘在动就说明故障在这里，不在别处。",
+    params: { display: { crt_moisture: 0.9, crt_age: 0.5 } } },
+];
+
+/* ------------------------------------------------------------------ helpers */
+const $ = (id) => document.getElementById(id);
+let BASE = null;
+let busy = false;
+
+function deepMerge(a, b) {
+  const out = JSON.parse(JSON.stringify(a));
+  for (const [k, v] of Object.entries(b)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = deepMerge(out[k] || {}, v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function tileParams(tile) {
+  return deepMerge(BASE, tile.params || {});
+}
+
+/* Apply a shared slider value to every tile that responds to that parameter. */
+function applyShared() {
+  const m = parseFloat($("allMoist").value);
+  const c = parseFloat($("allCorr").value);
+  for (const tile of TILES) {
+    if (tile.clean) continue;
+    const p = tile.params || (tile.params = {});
+    if (tile.kind === "hdmi" || tile.kind === "av" || tile.kind === "rf") {
+      p.connector = p.connector || {};
+      p.connector[tile.kind + "_present"] = 1;
+      p.connector[tile.kind + "_moisture"] = +(m * (tile.moist != null ? 1 : 0)).toFixed(3);
+      p.connector[tile.kind + "_corrosion"] = +(c * (tile.corr != null ? 1 : 0)).toFixed(3);
+      if (tile.kind === "av" && tile.ground != null) p.connector.av_ground_loop = tile.ground;
+    } else if (tile.kind === "svideo") {
+      p.connector = p.connector || {};
+      p.connector.svideo_present = 1;
+      p.connector.svideo_leakage = tile.leak != null ? tile.leak : m;
+    } else if (tile.params.display && p.display &&
+               (p.display.crt_moisture != null)) {
+      p.display.crt_moisture = m;
+    }
+  }
+}
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
+/* Render one tile: set the whole parameter set, then fetch the frame.  Setting the project
+   per tile rather than per slider-move keeps each image self-consistent: the server renders
+   whatever the project says at the moment the frame is requested. */
+async function renderTile(tile, imgEl, msEl) {
+  const t0 = performance.now();
+  const res = await post("/api/project", { params: tileParams(tile) });
+  if (res && res.error) { msEl.textContent = "错误"; return; }
+  const blob = await fetch(`/api/frame?t=${T}&scale=${SCALE}&q=88&_=${t0}`)
+    .then((r) => r.blob());
+  imgEl.src = URL.createObjectURL(blob);
+  msEl.textContent = (performance.now() - t0).toFixed(0) + " ms";
+}
+
+function buildTile(tile, grid) {
+  const el = document.createElement("div");
+  el.className = "tile" + (tile.clean ? " clean" : "");
+  el.innerHTML =
+    `<img alt="${tile.name}"><div class="cap">
+       <div class="name"></div><div class="why"></div>
+       <div class="row"><span class="ms">—</span></div>
+     </div>`;
+  el.querySelector(".name").textContent = tile.name;
+  el.querySelector(".why").innerHTML = tile.why;
+  grid.appendChild(el);
+  tile._img = el.querySelector("img");
+  tile._ms = el.querySelector(".ms");
+  return el;
+}
+
+async function renderAll() {
+  if (busy) return;
+  busy = true;
+  document.body.classList.add("busy");
+  applyShared();
+  let n = 0;
+  for (const tile of TILES) {
+    $("status").textContent = `渲染中 ${++n}/${TILES.length} · ${tile.name}`;
+    try { await renderTile(tile, tile._img, tile._ms); }
+    catch (e) { tile._ms.textContent = "失败"; }
+  }
+  $("status").textContent = `完成 · ${TILES.length} 张`;
+  document.body.classList.remove("busy");
+  busy = false;
+}
+
+async function loadBase() {
+  const p = await fetch("/api/project").then((r) => r.json());
+  /* Neutralise everything this page is not testing, so a tile's difference is the interface
+     and not whatever the main UI was left on. */
+  BASE = deepMerge(p.params, { connector: cleanConnector(), tape: cleanTape(),
+                               display: cleanDisplay() });
+  for (const tile of TILES) {
+    const grid = tile.group === "base" ? $("baseGrid")
+      : tile.group === "conn" ? $("connGrid") : $("tapeGrid");
+    buildTile(tile, grid);
+  }
+  await renderAll();
+}
+
+/* ------------------------------------------------------------------ wiring */
+$("allMoist").oninput = (e) => {
+  $("allMoistV").textContent = (+e.target.value).toFixed(2);
+};
+$("allCorr").oninput = (e) => {
+  $("allCorrV").textContent = (+e.target.value).toFixed(2);
+};
+$("btnRefresh").onclick = renderAll;
+$("btnClean").onclick = async () => {
+  $("allMoist").value = 0; $("allMoistV").textContent = "0.00";
+  $("allCorr").value = 0; $("allCorrV").textContent = "0.00";
+  for (const tile of TILES) if (!tile.clean) tile.params = {};
+  await renderAll();
+};
+loadBase().catch((e) => { $("status").textContent = "加载失败: " + e.message; });
+</script>
+</body>
+</html>
