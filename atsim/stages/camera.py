@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..codecs.autocontrol import (ExposureLoop, FocusLoop, WhiteBalanceLoop,
+                                  centre_weights)
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 from ..core.rng import ValueNoise3D, bandlimited_noise, rng_for
 from ..core.signal import gaussian_kernel, lowpass
@@ -26,6 +28,16 @@ class CameraStage(Stage):
     def __init__(self, ctx: RenderContext):
         super().__init__(ctx)
         self._read_params()
+        # the loops themselves, created once and kept: their whole purpose is to take time, so
+        # re-creating them on a parameter change would defeat the time constant they express
+        self._ae = ExposureLoop(target=self.ae_target, tau_s=self.ae_tau_s,
+                                limit_stops=self.ae_limit_stops,
+                                presettle_s=self.autopresettle_s)
+        self._awb = WhiteBalanceLoop(tau_s=self.awb_tau_s, limit=self.awb_limit,
+                                     presettle_s=self.autopresettle_s)
+        self._af = FocusLoop(tau_s=self.af_tau_s)
+        self._weights = None
+        self._af_offset = 0.0
         # state that must survive a parameter change: the auto-control loops take time to
         # settle, so re-creating them on every edit would defeat the time constant they exist
         # to express
@@ -43,6 +55,21 @@ class CameraStage(Stage):
         self.fixed_pattern = float(cfg.get("fixed_pattern", 0.0))
         self.dynamic_range = float(cfg.get("dynamic_range", 8.0))
         self.exposure = float(cfg.get("exposure", 0.0))
+        # --- automatic control loops -------------------------------------------
+        # A handycam has no operator setting exposure; it has a loop that measures the
+        # picture and moves a control, with a time constant, and gets it slightly wrong.
+        # These are the only mechanisms in the model that carry state forward, because they
+        # read the picture -- see the module docstring in codecs/autocontrol.py.
+        self.ae_enabled = float(cfg.get("ae_enabled", 0.0)) > 0.5
+        self.ae_target = float(cfg.get("ae_target", 0.46))
+        self.ae_tau_s = float(cfg.get("ae_tau_s", 1.1))
+        self.ae_limit_stops = float(cfg.get("ae_limit_stops", 2.0))
+        self.awb_enabled = float(cfg.get("awb_enabled", 0.0)) > 0.5
+        self.awb_tau_s = float(cfg.get("awb_tau_s", 1.6))
+        self.awb_limit = float(cfg.get("awb_limit", 0.42))
+        self.af_enabled = float(cfg.get("af_enabled", 0.0)) > 0.5
+        self.af_tau_s = float(cfg.get("af_tau_s", 0.9))
+        self.autopresettle_s = float(cfg.get("autopresettle_s", 0.0))
         self.wb_temp = float(cfg.get("white_balance_temp", 0.0))
         self.sharpness = float(cfg.get("sharpness", 1.0))
         self.aberration = float(cfg.get("chroma_aberration", 0.0))
@@ -101,10 +128,23 @@ class CameraStage(Stage):
         return self._fpn
 
     def _white_balance(self, rgb: np.ndarray) -> np.ndarray:
-        if abs(self.wb_temp) < 1e-4:
+        """
+        The static colour cast, and the automatic loop's gains when it is running.
+
+        The two multiply rather than replace each other: the static value is the camera's *null*
+        error, which is there whether or not the loop is engaged, and the loop adds its own
+        correction on top. With the loop off this is exactly the old behaviour.
+        """
+        gains = np.ones(3, np.float32)
+        if abs(self.wb_temp) > 1e-4:
+            t = float(self.wb_temp)
+            gains = gains * np.array([1.0 + 0.18 * t, 1.0 + 0.02 * t, 1.0 - 0.20 * t],
+                                     dtype=np.float32)
+        loop_gains = getattr(self, "_awb_gains", None)
+        if self.awb_enabled and loop_gains is not None:
+            gains = gains * np.asarray(loop_gains, np.float32)
+        if np.allclose(gains, 1.0):
             return rgb
-        t = float(self.wb_temp)
-        gains = np.array([1.0 + 0.18 * t, 1.0 + 0.02 * t, 1.0 - 0.20 * t], dtype=np.float32)
         return rgb * gains[None, None, :]
 
     def _expose(self, rgb: np.ndarray) -> np.ndarray:
@@ -362,6 +402,36 @@ class CameraStage(Stage):
     # ------------------------------------------------------------------
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
         rgb = buf.rgb.astype(np.float32, copy=False)
+        dt = 1.0 / max(1e-6, self.ctx.fps)
+
+        # --- automatic control, in the order the camera makes its decisions ----
+        # focus first: it is the lens, before anything else in the chain
+        if self.af_enabled:
+            pos = self._af.update(rgb, dt)
+            # Kept separately from `self.defocus`, which `_read_params` re-reads whenever a keyframe
+            # or the environment fires -- so writing the loop's result there would let the static
+            # parameter overwrite it on those frames and the loop would stutter.
+            # The loop reports a motor position; how much blur that is, is the lens's business.
+            self._af_offset = 0.55 * pos
+
+        # then the loops that move analogue gain, so that a loop which opens up also brings up
+        # the sensor's noise rather than cleaning the picture afterwards
+        if self.ae_enabled:
+            if self._weights is None or self._weights.shape != rgb.shape[:2]:
+                self._weights = centre_weights(rgb.shape[0], rgb.shape[1])
+            # The loop's return value *is* the correction, so this assigns it -- and it takes it
+            # from `update`, not from `state`, because the step and the read have to be one
+            # expression.  Both other forms are wrong in ways that look right:
+            #   `self.exposure += update(...)` uses the return but adds it to the current value,
+            #     so the correction compounds: measured, +1.5 stops of need went 0.06, 0.85, 2.43
+            #     and then sat at the +3.0 limit;
+            #   `self.exposure = self._ae.state` reads the state from *before* the step, so the loop
+            #     runs correctly and its result is never used -- measured, exactly 0.0000 on a scene
+            #     needing +1.5 stops.
+            self.exposure = float(np.clip(self._ae.update(rgb, dt, self._weights), -3.0, 3.0))
+        if self.awb_enabled:
+            self._awb_gains = self._awb.update(rgb, dt)
+
         rgb = self._white_balance(rgb)
         rgb = self._expose(rgb)
 

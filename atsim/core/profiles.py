@@ -45,6 +45,58 @@ def build_schema() -> ParamSchema:
                phys_min=6.0, phys_max=12.0, source="1990 年代 CCD 约 8 档",
                help="高光滚降起点；越小越容易过曝成一片死白。")
     g = "曝光与白平衡"
+    # --- automatic control loops ---------------------------------------------
+    # A handycam has no operator setting exposure or white balance; it has loops that measure the
+    # picture, move a control, and take time doing it.  That is where a consumer camcorder's
+    # character comes from, and a static offset cannot express it: a static cast cannot drift.
+    #
+    # All three are off by default, so a camera with no automatic control renders exactly as before.
+    g = "自动控制"
+    cam.define("ae_enabled", "自动曝光 (AE)", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0,
+               help="**这是消费级摄像机味道的主要来源。** 手持机没有人在调曝光，"
+                    "它有一个环：测画面亮度、动一个控制、而且要花时间。"
+                    "于是「突然进暗处」的表现是**慢慢变亮**，而不是瞬间变亮。"
+                    "静止的偏移做不出这件事——静止的偏移不会漂移。")
+    cam.define("ae_target", "AE 目标亮度", 0.46, 0.2, 0.7, unit="0-1", group=g,
+               phys_min=0.35, phys_max=0.55,
+               help="环要维持的画面平均亮度（中央加权，因为真实测光不是均匀平均）。"
+                    "偏高会过曝，偏低会欠曝——这正是不同机器" +
+                    "对同一场景给出不同曝光的原因。")
+    cam.define("ae_tau_s", "AE 时间常数", 1.1, 0.05, 6.0, unit="s", group=g,
+               phys_min=0.3, phys_max=3.0,
+               help="环响应的时间常数。数值来自实测的渐进曲线：一个时间常数处走到约 63%。"
+                    "**注意这不是「收敛速度」而是「逼近平衡的速率」**——"
+                    "环在测量停止变化时停在目标上，而不是永远差 1/e。")
+    cam.define("ae_limit_stops", "AE 调节范围", 2.0, 0.5, 4.0, unit="stop", group=g,
+               phys_min=1.0, phys_max=3.0,
+               help="环能推多远。真实 AE 有范围限制，超出就放弃——"
+                    "这就是为什么极暗场景下画面仍然很暗，而不是被硬拉亮。")
+    cam.define("awb_enabled", "自动白平衡 (AWB)", 0.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               help="**色彩漂移的来源。** 环把画面的平均色度归零，所以灯泡下发黄、"
+                    "一两秒后变中性，镜头转向窗户又摆回去。"
+                    "静态色偏做不出这个——而这正是 90 年代家庭录像最典型的样子。")
+    cam.define("awb_tau_s", "AWB 时间常数", 1.6, 0.05, 8.0, unit="s", group=g,
+               phys_min=0.5, phys_max=4.0)
+    cam.define("awb_limit", "AWB 调节范围", 0.42, 0.05, 0.8, unit="0-1", group=g,
+               phys_min=0.2, phys_max=0.6,
+               help="每通道的校正范围。真实的 AWB 有上限，超出就**放弃并保留色偏**——"
+                    "这就是为什么在强色光下拍的素材仍然是那个颜色。")
+    cam.define("af_enabled", "自动对焦 (AF)", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0,
+               help="对比度检测 AF：**它测不了焦点，只能测对比度**，所以它迈一步、看对比度有没有变好、"
+                    "变差就反向。低对比度场景下它**找不到峰，会一直找**——"
+                    "「清晰 → 模糊 → 寻找焦点 → 清晰」就是从这里来的。")
+    cam.define("af_tau_s", "AF 步进间隔", 0.9, 0.05, 4.0, unit="s", group=g,
+               phys_min=0.2, phys_max=2.0,
+               help="每次试探之间的间隔。真实 AF 不会逐帧狂搜，它按一个节奏试。")
+    cam.define("autopresettle_s", "开机已适应时长", 0.0, 0.0, 60.0, unit="s", group=g,
+               phys_min=0.0, phys_max=30.0,
+               help="**这段录像开始之前，相机已经适应这个场景多久了。**"
+                    "0 = 录像从开机开始，此时相机最不稳定；"
+                    "设成 10 秒则三个环都已基本稳定，画面上看不出开场摆动。"
+                    "它按解析衰减计算，所以「已适应」不是代码里的特例，只是剩余暂态更短。")
     cam.define("exposure", "曝光", 0.0, -2.0, 2.0, unit="stops", group=g,
                phys_min=-1.0, phys_max=1.0, source="自动曝光残余误差")
     cam.define("white_balance_temp", "白平衡色温偏移", 0.0, -1.0, 1.0, unit="0-1", group=g,

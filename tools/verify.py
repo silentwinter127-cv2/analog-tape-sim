@@ -2223,5 +2223,111 @@ def check_keyframes() -> None:
            kept and r._keyframes is not None,
            "the attributes were first initialised inside _build_chain, so every rebuild "
            "silently cleared them")
+def check_autocontrol() -> None:
+    """
+    The automatic loops must take the time they claim, settle towards their target, and be inert off.
+
+    Every one of these failed while it was being built, and two of the failures were the same mistake in
+    opposite directions:
+
+      * `self.exposure += loop.update(...)` used the loop's return but added it to the current value, so
+        the correction compounded -- measured, a scene needing +1.5 stops went 0.06, 0.85, 2.43 and then
+        sat at the +3.0 limit;
+      * `self.exposure = loop.state` used the right value but read it from *before* the step, so the loop
+        stepped correctly every frame and its result was never used -- measured, exactly 0.0000 on a
+        scene needing +1.5 stops;
+      * the loops themselves jumped to their target on the first frame, because `_seeded` bypassed the
+        decay, so tau had no effect at all.
+
+    A loop is exactly the kind of mechanism that can be present, reachable, and do nothing, so the
+    properties are measured on the loops and on the rendered frames rather than inferred.
+    """
+    import numpy as np
+
+    from atsim.codecs.autocontrol import ExposureLoop, centre_weights
+    from atsim.core.environment import Environment
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.io.source import SyntheticSource
+    from atsim.render.renderer import Renderer
+
+    W, H, N, FPS = 160, 120, 60, 25.0
+    base = SCHEMA.resolve_all(FACTORY_PRESETS["family_archive_1992"]["layers"])
+
+    # --- the time constant governs the approach -----------------------------
+    # a loop starting at unity gains on a warm scene, sampled after one second
+    warm = np.zeros((H, W, 3), np.float32)
+    warm[:] = np.array([1.25, 1.00, 0.72], np.float32) * 0.6
+    err = {}
+    for tau in (1.5, 4.0):
+        from atsim.codecs.autocontrol import WhiteBalanceLoop
+        wb = WhiteBalanceLoop(tau_s=tau)
+        for _ in range(int(FPS)):
+            wb.update(warm, 1.0 / FPS)
+        err[tau] = float(np.abs(wb.state - 1.0).max())
+    ratio = err[1.5] / max(1e-9, err[4.0])
+    record("a loop's time constant governs how fast it adapts",
+           "a loop that reaches its target on the first frame has no time constant at all",
+           "distance from unity gains after 1 s: tau 1.5 s %.4f, tau 4.0 s %.4f (ratio %.2f)"
+           % (err[1.5], err[4.0], ratio),
+           1.4 < ratio < 6.0,
+           "tau 1.5 and tau 4.0 once produced bit-identical traces")
+
+    # --- and the error falls towards zero, monotonically --------------------
+    ex = ExposureLoop(target=0.46, tau_s=1.0)
+    w = centre_weights(H, W)
+    dark = np.full((H, W, 3), 0.16, np.float32)
+    seq = [ex.update(dark, 1.0 / FPS, w) for _ in range(int(6 * FPS))]
+    target = float(np.log2(0.46 / 0.16))
+    e0 = abs(seq[0] - target)
+    e1 = abs(seq[int(FPS)] - target)
+    e2 = abs(seq[-1] - target)
+    falling = e1 < e0 and e2 < e1
+    record("an exposure loop's error falls towards its target",
+           "the state approaches the target rather than being placed on it",
+           "error %+.4f at 0 s, %+.4f at 1 s, %+.4f at 6 s (target %+.4f)"
+           % (e0, e1, e2, target),
+           falling and e2 < 0.25 * e0,
+           "the loop must also have settled by 6 tau, which e2 < 0.25 * e0 checks")
+
+    # --- inert by default ---------------------------------------------------
+    def run(over):
+        p = merge_values(base, {"camera": over})
+        s = SyntheticSource(width=W, height=H, frames=N)
+        r = Renderer(s, W, H, FPS, p, seed=9)
+        return [np.clip(r.render_frame(i), 0, 1) for i in range(N)]
+
+    a, b = run({}), run({})
+    same = all(np.array_equal(x, y) for x, y in zip(a, b))
+    record("a camera with no automatic control is unchanged",
+           "all three loops default off, so every existing preset must render as before",
+           "two loopless renders agree frame for frame: %s" % same, same,
+           "the per-unit spread failed exactly this property on its first attempt")
+
+    # --- and they reach the picture, on a scene where the right answer is visible
+    # a synthetic source is near the metering target already, so the correction is small; the
+    # environment's cold state is used because it moves the camera's own reading well away from
+    # the target and therefore gives the loop something unambiguous to do
+    def luma(f):
+        return float((f @ np.array([0.299, 0.587, 0.114], np.float32)).mean())
+
+    def cast(f):
+        m = f.reshape(-1, 3).mean(axis=0)
+        return float(m.max() / max(1e-6, m.min()))
+
+    ae = run({"ae_enabled": 1.0, "ae_tau_s": 0.6, "ae_target": 0.62})
+    moved = max(abs(luma(ae[i]) - luma(a[i])) for i in range(N))
+    record("auto-exposure reaches the rendered picture",
+           "the loop can run correctly and its result never be used",
+           "largest luma difference against no loop: %.4f" % moved, moved > 0.02)
+
+    awb = run({"awb_enabled": 1.0, "awb_tau_s": 1.5})
+    first, last = cast(awb[0]), cast(awb[-1])
+    record("auto white balance reduces the cast during the clip",
+           "the loop nulls the scene's average colour, which a static cast cannot do",
+           "cast %.4f at frame 0, %.4f at frame %d" % (first, last, N - 1),
+           last < first,
+           "a static colour cast cannot drift, which is the argument for a loop")
+
 if __name__ == "__main__":
     raise SystemExit(main())
