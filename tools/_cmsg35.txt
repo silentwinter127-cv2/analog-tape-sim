@@ -1,0 +1,35 @@
+give the glyphs an outline, which is what a camcorder's OSD actually uses
+
+**The user's second observation named the fault precisely**: the text at the "after the frame is formed"
+position had a black box. That was mine -- I had defaulted `background` to on, and a camera's OSD does not black
+out a rectangle of the picture it is drawing over. On a real camcorder the operator is framing a scene and the
+OSD must not hide part of it.
+
+**But turning the box off restores the original problem**: white text on a bright frame is invisible. The two
+requirements are genuinely different and one switch cannot satisfy both -- which is what the box was trying to
+paper over.
+
+So the generator gains what the hardware actually has: a **one-cell dark border around every glyph**, on by
+default. It makes the text readable on any picture *without* obscuring any of it, and it is why a real OSD is
+readable over a white sky. A box remains available for anyone who wants one. Measured: with the outline the
+contrast against the effective backdrop is 0.9002 and the text is legible on a 0.95-luma frame.
+
+**Two wrong attempts on the way, both worth recording.**
+
+  * the legibility block I added last turn landed **inside the per-line drawing loop**, because I anchored it on
+    a line that sits there. So it ran once per line, before the box was composited, and reported `behind=None`
+    with a background set -- and a `legible=True` that could not be about the box because the box did not exist
+    yet. The check that belongs to it did not catch this: it asserted `legible === true` whenever a background
+    was set, which was true, from the wrong branch, for the wrong reason. **An assertion about a flag rather
+    than about a number is what let it through**;
+  * I then tried to make the box's default depend on the position using a sentinel value, and it failed for a
+    reason worth keeping: **the schema fills its default into the parameter map before the stage sees it**, so
+    the stage cannot distinguish "the user did not choose" from "the user chose the default". Inventing a signal
+    that is not there is the same mistake as the `params` layer. Two parameters is the honest answer, because
+    they are two decisions.
+
+**And the reassuring fallback is gone.** When the frame under the text was not measured, `behind` fell back to
+a mid grey, which reported a comfortable contrast for white text on a bright frame -- a judgement about a number
+it had never measured. It now reports `legible=None`, meaning unknown, and the panel says so.
+
+130 checks pass, selftest ALL CHECKS PASSED.

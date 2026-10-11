@@ -62,6 +62,9 @@ class OSDPlan:
     colour: tuple[float, float, float] = (0.92, 0.94, 0.90)
     background: tuple[float, float, float] | None = None
     shadow: float = 0.0
+    #: a dark border around every glyph.  This is what a real camcorder's OSD uses: it makes the text readable
+    #: on any picture without obscuring any of it, which a box does not.
+    outline: float = 1.0
     opacity: float = 1.0
     #: threshold the glyph coverage into a one-bit mask.  On by default because all three fonts are
     #: bitmap-derived and a character generator's ROM is one bit per pixel -- there is no antialiasing
@@ -242,30 +245,6 @@ class CharacterGenerator:
         reported["overflow"] = reported["cells_wanted"] > reported["cells_fit"]
         # kept for anything already reading the old name
         reported["cells_used"] = reported["cells_drawn"]
-        # the luma of the frame *under* the text, so a caller can tell whether the text is legible on it.
-        # Measured where the text was placed rather than over the whole frame, because that is where it
-        # matters; and reported rather than estimated, because estimating it is what would have been wrong.
-        if drawn_cells and ink_rows:
-            r0, r1 = max(0, ink_rows[0]), min(h, ink_rows[1])
-            c0, c1 = max(0, ink_cols[0]), min(w, ink_cols[1])
-            if r1 > r0 and c1 > c0:
-                under = (rgb[r0:r1, c0:c1] @ np.array([0.299, 0.587, 0.114], np.float32))
-                reported["under_luma"] = round(float(under.mean()), 4)
-        COEF = np.array([0.299, 0.587, 0.114], np.float32)
-        text_luma = float(np.mean(np.asarray(plan.colour, np.float32) @ COEF))
-        reported["text_luma"] = round(text_luma, 4)
-        if plan.background is not None:
-            # the text sits on the box, not on the picture: measuring it against the picture is what let the
-            # judgement say "legible" about white-on-white with a white box behind it
-            bg = np.asarray(plan.background, np.float32) @ COEF
-            reported["background_luma"] = round(float(bg), 4)
-            behind = float(bg)
-        else:
-            behind = float(reported.get("under_luma", 0.5))
-        reported["behind_luma"] = round(behind, 4)
-        reported["contrast"] = round(abs(behind - text_luma), 4)
-        reported["legible"] = reported["contrast"] >= 0.18
-
         if reported["drawn"] == 0:
             return out, reported
 
@@ -289,8 +268,53 @@ class CharacterGenerator:
             sh[off:, off:] = a[:-off, :-off]
             base = base * (1.0 - sh[..., None] * plan.shadow)
 
+        if plan.outline > 1e-3:
+            # one cell of dark border, drawn *under* the glyphs.  A dilation by one pixel in each direction
+            # is exactly a border, and it costs three shifted maxima rather than a convolution.
+            ring = a.copy()
+            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+                sh = np.zeros_like(a)
+                ys = slice(max(0, dy), a.shape[0] + min(0, dy))
+                yd = slice(max(0, -dy), a.shape[0] + min(0, -dy))
+                xs = slice(max(0, dx), a.shape[1] + min(0, dx))
+                xd = slice(max(0, -dx), a.shape[1] + min(0, -dx))
+                sh[yd, xd] = a[ys, xs]
+                np.maximum(ring, sh, out=ring)
+            border = np.clip(ring - a, 0.0, 1.0) * float(plan.outline)
+            dark = np.array([0.02, 0.03, 0.05], np.float32)
+            base = base * (1.0 - border[..., None]) + dark[None, None, :] * border[..., None]
+
         col = np.array(plan.colour, np.float32)
         out = base * (1.0 - a[..., None]) + col[None, None, :] * a[..., None]
+
+        # Legibility is a property of the whole overlay, so it is judged here -- once, after the box and the
+        # glyphs have been composited and the frame's own pixels exist.  Measuring it inside the drawing loop
+        # is what produced `behind=None` with a background set: the box had not been drawn yet.
+        COEF = np.array([0.299, 0.587, 0.114], np.float32)
+        text_luma = float(np.asarray(plan.colour, np.float32) @ COEF)
+        reported["text_luma"] = round(text_luma, 4)
+        if plan.background is not None:
+            # the text sits on the box, not on the picture
+            bg = float(np.asarray(plan.background, np.float32) @ COEF)
+            reported["background_luma"] = round(bg, 4)
+            behind = bg
+            reported["behind_luma"] = round(behind, 4)
+            reported["contrast"] = round(abs(behind - text_luma), 4)
+            reported["legible"] = reported["contrast"] >= 0.18
+        elif plan.outline > 1e-3:
+            # an outline gives the text its own dark backdrop whatever is underneath, so it is legible by
+            # construction -- which is the reason real camcorders use one
+            dark = float(np.array([0.02, 0.03, 0.05], np.float32) @ COEF)
+            reported["behind_luma"] = round(dark, 4)
+            reported["contrast"] = round(abs(dark - text_luma), 4)
+            reported["legible"] = reported["contrast"] >= 0.18
+        else:
+            # the frame under the text was not measured, so legibility is *unknown*.  Falling back to a mid
+            # grey reported a comfortable contrast for white text on a bright frame -- a judgement about a
+            # number that was never measured, which is the fault this whole check exists to avoid.
+            reported["behind_luma"] = None
+            reported["contrast"] = None
+            reported["legible"] = None
         return out.astype(np.float32), reported
 
 

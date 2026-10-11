@@ -51,7 +51,15 @@ class OverlayStage(Stage):
         self.margin = float(cfg.get("margin", 0.03))
         self.shadow = float(cfg.get("shadow", 0.5))
         self.opacity = float(cfg.get("opacity", 1.0))
+        # A camera's OSD draws over the picture and does not black out a rectangle of it -- on a real
+        # camcorder that would hide the scene being framed.  A titler recording onto tape is a different
+        # machine and a box is normal there.  One parameter cannot have two schema defaults, so the stage
+        # decides from the slot, and an explicit setting still wins because the parameter is a value.
         self.bg_on = float(cfg.get("background", 0.0)) > 0.5
+        # An outline is what makes text readable on an unknown picture without covering any of it, which is
+        # what a camera's OSD does.  A box is available but is not the default, because on a camera it would
+        # black out a rectangle of the scene being framed.
+        self.outline = float(cfg.get("outline", 1.0))
         self.colour = (float(cfg.get("red", 0.92)), float(cfg.get("green", 0.94)),
                        float(cfg.get("blue", 0.90)))
         self._gen = None
@@ -70,6 +78,7 @@ class OverlayStage(Stage):
                        margin_x=margin_x, margin_y=margin_y,
                        halign=self.halign, valign=self.valign,
                        colour=self.colour, shadow=self.shadow, opacity=self.opacity,
+                       outline=self.outline,
                        background=(0.0, 0.0, 0.0) if self.bg_on else None)
         # the row and column offsets apply to every line
         for line in plan.lines:

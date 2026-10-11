@@ -823,6 +823,9 @@
     if (rep && rep.missing && rep.missing.length) {
       e.warn.innerHTML = "引擎报告缺字：<b>" + rep.missing.join(" ") + "</b>"
         + "（字体 " + (rep.font || "?") + "）";
+    } else if (rep && rep.legible === null) {
+      e.warn.innerHTML = "字幕对比度<b>未知</b>——这一帧还没有量到文字背后的亮度，"
+        + "先渲染一次再看。";
     } else if (rep && rep.legible === false) {
       /* The engine measured the frame under the text and the text's own colour.  When they are too close the
          subtitle is drawn and invisible, which is exactly what happened: white text on a white corner of the
