@@ -298,3 +298,17 @@ button.wide{width:100%;margin-top:8px}
   vertical-align: middle;
   cursor: pointer;
 }
+
+/* the subtitle panel's action row, pinned so the apply button cannot fall below the fold */
+.osdSticky {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  gap: 8px;
+  padding: 6px 0 7px;
+  margin: -4px 0 6px;
+  background: linear-gradient(#141a22, #141a22 78%, rgba(20, 26, 34, 0));
+  border-bottom: 1px solid #1d2430;
+}
+
+.osdSticky .osdApply { margin-left: auto; }

@@ -595,7 +595,10 @@
        an unrequested overlay must not move any existing preset -- but an editor that requires a person to
        find a second control before their typed text appears is a defect in the editor, not a safety
        feature.  Typing enables; clearing disables; an explicit untick wins and keeps the text. */
-    const erow = el("div", "ssRow");
+    // The enable switch and the apply button live in one row pinned to the top of the panel.  Both were below
+    // the fold: every group added above them pushed them down, and the button was reported missing three
+    // times.  A control that exists but cannot be scrolled to is not a control.
+    const erow = el("div", "ssRow osdSticky");
     const echkLab = el("label", "chk");
     const echk = el("input");
     echk.type = "checkbox";
@@ -603,6 +606,7 @@
     echkLab.append(echk, document.createTextNode(" 启用字幕机"));
     erow.append(echkLab, estate);
     host.append(erow);
+    host.prepend(erow);          // pinned at the top, so it survives every group added below it
 
     // --- the text, multi-line, because a subtitle is
     const lab = el("div", "palGroup", "字幕文本");
@@ -857,6 +861,8 @@ function hexToRgb(hex) {
       push();
     };
     btn.onclick = push;
+    btn.classList.add("osdApply");
+    erow.append(btn);            // into the pinned row
     return osdEls;
   }
 

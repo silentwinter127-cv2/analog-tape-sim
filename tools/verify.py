@@ -3259,5 +3259,45 @@ def check_fisheye_and_beam() -> None:
            "a mask whose mean shifts would be a brightness control with a misleading name",
            "the frame's mean varies by %.5f across the four spot sizes" % spread,
            spread < 0.002)
+def check_panel_controls_reachable() -> None:
+    """
+    The subtitle panel's action row must be the pinned one, with the button inside it.
+
+    The user reported "there is no apply button" three times. It existed and worked -- `btn.onclick = push` --
+    but it sat below the visible part of a scrolling panel, and each control group added above it pushed it
+    further down, so the report came back after every fix. **A control that exists but cannot be scrolled to is
+    not a control**, and no check of "is the string present" could fail: the string was present throughout.
+
+    Four links, each of which silently stops being true when the file is edited:
+
+      * the row that carries the `osdSticky` class is the one built for the enable switch;
+      * that row is prepended to the panel host, so it is the first thing in the panel;
+      * the apply button is appended to that same row;
+      * and the stylesheet actually pins it, because a class with no rule behind it pins nothing.
+
+    A live DOM harness was written first and thrown away. It needed an internal the module does not expose, so it
+    would have reported a harness failure instead of a panel failure -- a check that cannot fail, which is the
+    fault this project has now found twelve times and would have been the thirteenth.
+    """
+    js = open(os.path.join("atsim", "web", "static", "session_ui.js"), encoding="utf-8").read()
+    css = open(os.path.join("atsim", "web", "static", "app.css"), encoding="utf-8").read()
+    import re
+
+    m_row = re.search(r'const\s+(\w+)\s*=\s*el\("div",\s*"ssRow osdSticky"\)', js)
+    row = m_row.group(1) if m_row else None
+    prepended = bool(row) and re.search(r'host\.prepend\(%s\)' % re.escape(row or ""), js)
+    btn_in_row = bool(row) and re.search(r'%s\.append\(btn\)' % re.escape(row or ""), js)
+    css_ok = bool(re.search(r'\.osdSticky\s*\{[^}]*position:\s*sticky', css, re.S))
+    links = {"the row carrying the pinned class": bool(row),
+             "that row prepended to the panel": bool(prepended),
+             "the apply button inside that row": bool(btn_in_row),
+             "the stylesheet pins the class": css_ok}
+    record("the subtitle panel's action row is pinned, with the button inside it",
+           "the apply button was reported missing three times while existing and working, because each group "
+           "added above it pushed it below the fold of a scrolling panel",
+           "; ".join("%s: %s" % (k, v) for k, v in links.items()),
+           all(links.values()),
+           "no check of the source text could have failed: the string was present the whole time, and the "
+           "arrangement is what broke")
 if __name__ == "__main__":
     raise SystemExit(main())

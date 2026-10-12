@@ -1,0 +1,31 @@
+pin the subtitle panel's action row, because the button was below the fold
+
+**The user reported "there is no apply button" three times. It existed and it worked.** `btn.onclick = push` was
+there the whole time, and every check of "is the string present" passed, because the string *was* present. What
+failed was the arrangement: the button sat below the visible part of a scrolling panel, and each control group
+added above it -- alignment, then the style template, then the two colour pickers -- pushed it further down. So
+the report came back after every fix that added something.
+
+**A control that exists but cannot be scrolled to is not a control.** The enable switch and the apply button now
+live in one row pinned to the top of the panel, which is also where they belong: "is this on" and "commit this"
+are the two things a person reaches for first, and both were below the fold while six groups of detail sat above
+them.
+
+**I asked rather than guessed, and that was the right call.** Four separate measurements had confirmed the
+subtitle itself was fine -- drawn at every preview scale from 1.0 down to 0.35, fill and outline both present,
+contrast 0.9002, and a magnified glyph strip showing a correct hard-edged bitmap character. The user's own
+screenshot showed "Kig" plainly visible. Continuing to hunt for a rendering fault would have been the fifth
+wrong turn on this. The question was one line and it settled in one answer: **"按钮，字幕是原本就在的"**.
+
+**The check is about the arrangement, because that is what broke.** It asserts four links: the row carrying the
+`osdSticky` class is the one built for the enable switch, that row is prepended to the panel host, the apply
+button is appended to that same row, and the stylesheet actually pins the class -- a class with no rule behind
+it pins nothing. Any of those four silently stops being true when the file is edited, which is exactly what
+happened here, four times in a row.
+
+**A live DOM harness was written first and thrown away.** It needed an internal the module does not expose, so it
+would have reported a harness failure rather than a panel failure -- a check that cannot fail, which is the
+fault this project has now found twelve times, and it would have been the thirteenth. The discarded version is
+recorded in the check's own docstring so the next person does not rebuild it.
+
+138 checks pass, selftest ALL CHECKS PASSED.
