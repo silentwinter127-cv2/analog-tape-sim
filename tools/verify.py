@@ -3732,5 +3732,110 @@ def check_lateral_aberration() -> None:
            "the effect is in the chroma path; a fix that resharpened the edge would move this too",
            "; ".join("luma %.1f MHz -> %.3f px" % (k, v) for k, v in sorted(lbw.items())),
            max(lbw.values()) < 0.5)
+def check_lens_field_and_longitudinal() -> None:
+    """
+    Field curvature must soften with field radius, and longitudinal chromatic aberration must widen the channels
+    **without moving them**.
+
+    **Field curvature** is a simple lens imaging a flat subject onto a curved surface, so the plane in focus at the
+    frame's centre is not the plane in focus at its corners -- the picture is sharp in the middle and soft at the
+    edges at the same focus setting. The signature is spatial: sharpness depends on *where* the edge is, and the
+    weight is the field radius squared because the point-spread function grows with the field angle.
+
+    **Longitudinal chromatic aberration** is the wavelengths focusing at different distances along the axis, so at
+    the sensor one is sharp and the others are not. Its signature is a **width** difference between the channels
+    at the same place, and critically **no position difference**: a symmetric blur cannot move a centroid, and a
+    displacement is the lateral kind.
+
+    So the two are asserted by opposite quantities, and the lateral kind is asserted by position -- three
+    mechanisms, three signatures. **The measurement matters more than the assertion here.** The first attempt at
+    field curvature used a four-pixel grid, which this format's own luma path has already softened, so there was
+    no detail left for a blur to remove and the parameter measured inert. The first attempt at longitudinal used a
+    window narrower than the edge it was measuring, so the centroid slid to the window's edge and reported a
+    displacement that does not exist.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    COEF = np.array([0.299, 0.587, 0.114], np.float32)
+    H, W = 300, 400
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+
+    class Grid:
+        """Square-wave bars spanning the frame; a **coarse** period, because a fine one has no detail left."""
+
+        def __init__(self, period=12):
+            self.width, self.height, self.fps, self.frame_count = W, H, 25.0, 4
+            self.period = period
+
+        def frame(self, index):
+            a = np.zeros((H, W, 3), np.float32)
+            a[:] = (((np.arange(W) // self.period) % 2) * 0.85)[None, :, None]
+            return a
+
+    def render(**cam):
+        p = merge_values(BASE, {"camera": dict({"exposure": 0.0}, **cam)})
+        r = Renderer(Grid(), W, H, 25.0, p, seed=5)
+        return np.clip(r.render_frame(1), 0, 1)
+
+    def sharpness(img, x0, x1):
+        band = np.asarray(img)[:, x0:x1] @ COEF
+        return float(np.abs(np.diff(band, axis=1)).mean())
+
+    centre, edge = {}, {}
+    for fc in (0.0, 0.5, 1.0):
+        img = render(field_curvature=fc)
+        centre[fc] = sharpness(img, W // 2 - 12, W // 2 + 12)
+        edge[fc] = sharpness(img, 2, 40)
+    record("field curvature softens the corners while the centre stays sharp",
+           "a simple lens images a flat subject onto a curved surface, so the plane in focus at the centre is not "
+           "the plane in focus at the corners -- sharpness depends on where the edge is, not on the parameter "
+           "alone",
+           "corner sharpness %.5f -> %.5f as the parameter goes 0 -> 1, centre/corner ratio %.2f -> %.2f"
+           % (edge[0.0], edge[1.0], centre[0.0] / edge[0.0], centre[1.0] / edge[1.0]),
+           edge[1.0] < edge[0.0] * 0.85
+           and centre[1.0] / edge[1.0] > centre[0.0] / edge[0.0] * 1.15,
+           "the first measurement used a four-pixel grid, which the format's own luma path has already softened, "
+           "so no detail was left for a blur to remove and the parameter appeared inert")
+
+    # --- the longitudinal kind, on a single edge with a window wide enough for the blurred result
+    p0 = merge_values(BASE, {"camera": {"exposure": 0.0}})
+    r0 = Renderer(Grid(999), W, H, 25.0, p0, seed=5)
+    r0._build_chain()
+    cam = r0.stage["camera"]
+    hard = np.zeros((H, W, 3), np.float32)
+    hard[:, 200:] = 0.85
+    LO, HI = 150, 250
+
+    def position(img, ch):
+        v = np.asarray(img)[H // 2, LO:HI, ch].astype(np.float64)
+        g = np.abs(np.diff(v))
+        if g.sum() < 1e-9:
+            return float("nan")
+        return LO + float((np.arange(g.size) * g).sum() / g.sum())
+
+    def width(img, ch):
+        v = np.abs(np.diff(np.asarray(img)[H // 2, LO:HI, ch].astype(np.float64)))
+        return int((v > v.max() * 0.1).sum()) if v.max() > 1e-9 else 0
+
+    cam.longitudinal_ca = 0.0
+    base = cam._longitudinal_ca(hard)
+    cam.longitudinal_ca = 1.0
+    out = cam._longitudinal_ca(hard)
+    rw, gw, bw = width(out, 0), width(out, 1), width(out, 2)
+    moved = max(abs(position(out, 0) - position(base, 0)),
+                abs(position(out, 2) - position(base, 2)))
+    record("longitudinal chromatic aberration widens the channels without moving them",
+           "the wavelengths focus at different distances along the axis, so red and blue land soft on either side "
+           "of green -- the fringes appear *around* a highlight rather than on one side of it, which is the "
+           "distinction from the lateral kind",
+           "at full strength R/G width %.2f, B/G width %.2f, and the channel positions move by %.4f px"
+           % (rw / max(1, gw), bw / max(1, gw), moved),
+           bw > gw * 1.5 and rw > gw * 1.5 and moved < 0.05,
+           "the first measurement used a 30-sample window for an edge that grows from 24 to 74 samples, so the "
+           "centroid slid to the window's edge -- a symmetric blur cannot move a centroid")
 if __name__ == "__main__":
     raise SystemExit(main())

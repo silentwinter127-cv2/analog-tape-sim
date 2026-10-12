@@ -1,0 +1,39 @@
+add field curvature and longitudinal chromatic aberration, each asserted by its own signature
+
+**Field curvature** is a simple lens imaging a flat subject onto a *curved* surface, so the plane in focus at the
+frame's centre is not the plane in focus at its corners. The result is a picture that is **sharp in the middle and
+soft towards the edges at the same focus setting**, which is why a camcorder's corners never match its centre
+whatever the aperture. The blur is a function of the **field radius** -- zero at the centre and rising outward,
+because the point-spread function grows with the square of the field angle -- implemented as the standard
+approximation rather than a per-pixel kernel: blur at the corner radius and cross-fade with a radial weight, which
+is exact at both ends and smooth between.
+
+Measured through the chain on a twelve-pixel grid: corner sharpness **0.06473 -> 0.04509** as the parameter goes 0
+to 1, with the centre/corner ratio **1.05 -> 1.37**. The centre softens only slightly because the weight there is
+0.02 and 0.98 at the corner.
+
+**Longitudinal chromatic aberration** is the wavelengths focusing at different distances along the axis, so at the
+sensor plane one is sharp and the others are not. **Nothing moves**: a red edge and a blue edge are at the same
+position and both are wider, so the fringes appear *around* a highlight rather than on one side of it. Measured,
+at full strength R/G width **2.43** and B/G **2.71**, with the channel positions moving by **0.0000 px**.
+
+**The three aberrations are now asserted by three different quantities**, and that is the point rather than tidiness:
+
+    field curvature       sharpness varies with field radius     position does not enter into it
+    longitudinal CA       channel widths differ                  channel positions must NOT differ
+    lateral CA            channel positions differ               widths are secondary
+
+A check that only asked whether the picture changed would pass each of them for the others. That is not
+hypothetical: **the lateral kind hid as a blur for several turns** precisely because the measurement was of the
+wrong quantity, and the fix was to measure a *position* where the effect is a displacement.
+
+**Two measurement faults on the way, both the same mistake in different clothes.** The field-curvature measurement
+first used a four-pixel grid, which this format's own 3 MHz luma path has already softened -- so there was no detail
+left for a blur to remove and the parameter measured inert. The longitudinal measurement first used a 30-sample
+window for an edge that grows from 24 to 74 samples wide, so the centroid slid to the window's edge and reported a
+0.6-pixel "displacement" that does not exist; a symmetric blur cannot move a centroid. **A window narrower than its
+subject is the sixth form of measuring the wrong thing this project has found.**
+
+Both default to 0.0, so no existing preset moves.
+
+153 checks pass, selftest ALL CHECKS PASSED.

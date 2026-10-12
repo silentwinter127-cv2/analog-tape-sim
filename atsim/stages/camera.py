@@ -107,6 +107,16 @@ class CameraStage(Stage):
         self.wb_temp = float(cfg.get("white_balance_temp", 0.0))
         self.sharpness = float(cfg.get("sharpness", 1.0))
         self.aberration = float(cfg.get("chroma_aberration", 0.0))
+        # **Field curvature**: a simple lens images a flat subject onto a curved surface, so the plane in
+        # focus at the centre is not the plane in focus at the corners.  The blur is a function of the
+        # *field radius* -- zero at the centre and rising outward -- because the point-spread function
+        # grows with the square of the field angle.
+        self.field_curvature = float(cfg.get("field_curvature", 0.0))
+        # **Longitudinal chromatic aberration**: the wavelengths focus at different distances along the
+        # axis, so at the sensor one is in focus and the others are not.  Unlike the lateral kind this is
+        # per-channel *defocus* with no displacement, so it softens an edge in place rather than
+        # separating the channels -- a different signature, which is why the two are asserted differently.
+        self.longitudinal_ca = float(cfg.get("longitudinal_ca", 0.0))
         self.motion_blur = float(cfg.get("motion_blur", 0.0))
         # --- the operator's hand ------------------------------------------------
         # Shake is the camera body moving, so it is applied before the sensor sees anything.
@@ -289,6 +299,55 @@ class CameraStage(Stage):
             return rgb
         out = rgb * (1.0 - float(self.overflow_drain) * ring[..., None])
         return np.clip(out, 0.0, None).astype(np.float32)
+
+    def _field_curvature(self, rgb: np.ndarray) -> np.ndarray:
+        """
+        Sharp in the middle, soft towards the corners, at the same focus setting.
+
+        A simple lens focuses a flat subject onto a curved surface, so the in-focus plane at the frame's centre is
+        not the in-focus plane at its corners. The point-spread function grows with the square of the field angle,
+        so the softening is **zero at the centre and rises outward**.
+
+        A genuine space-variant convolution would cost a kernel per pixel; this is the standard approximation --
+        blur at the corner radius and cross-fade with the sharp frame using a radial weight. It is exact at both
+        ends, the centre untouched and the corners at the full radius, with a smooth ramp between, which is what
+        the effect looks like.
+        """
+        if self.field_curvature < 1e-4:
+            return rgb
+        h, w = rgb.shape[:2]
+        amount = float(self.field_curvature)
+        # the field radius normalised so the corner is 1.0
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        nx = (xx / max(1, w - 1)) * 2.0 - 1.0
+        ny = (yy / max(1, h - 1)) * 2.0 - 1.0
+        r2 = np.clip((nx * nx + ny * ny) / 2.0, 0.0, 1.0)
+        soft = lowpass(rgb, 1.0 + 5.5 * amount)
+        # the weight is the field radius squared, matching how the point-spread function grows
+        weight = (r2 ** 1.0)[..., None].astype(np.float32)
+        return (rgb * (1.0 - weight) + soft * weight).astype(np.float32)
+
+    def _longitudinal_ca(self, rgb: np.ndarray) -> np.ndarray:
+        """
+        Per-channel defocus, with no displacement.
+
+        The wavelengths focus at different distances along the axis, so at the sensor plane one of them is in
+        focus and the others are not -- red and blue land slightly soft on either side of green. **Nothing moves**:
+        a red edge and a blue edge are at the same position and both are wider, so the coloured fringes appear
+        *around* a highlight rather than on one side of it.
+
+        That is the whole distinction from `_aberration`, which is a displacement. And because the two are
+        opposite in kind, the checks assert opposite things: a position difference between channels for the
+        lateral kind, and none for this one.
+        """
+        if self.longitudinal_ca < 1e-4:
+            return rgb
+        a = float(self.longitudinal_ca)
+        # green at the plane of best focus, red and blue on either side of it
+        r = lowpass(rgb[..., 0], 1.0 + 3.0 * a)
+        g = lowpass(rgb[..., 1], 1.0 + 0.4 * a)
+        b = lowpass(rgb[..., 2], 1.0 + 3.4 * a)
+        return np.stack([r, g, b], axis=-1).astype(np.float32)
 
     def _flare(self, rgb: np.ndarray) -> np.ndarray:
         """
@@ -663,6 +722,11 @@ class CameraStage(Stage):
         rgb = self._lens_flare(rgb)
         rgb = self._flare(rgb)
         rgb = self._aberration(rgb)
+        # **Lens aberrations, before the camera's own sharpening.**  Aperture correction is applied by
+        # the camera *after* the lens has done its work, so sharpening first would let it undo the
+        # corner softening -- which is the one thing field curvature is supposed to leave visible.
+        rgb = self._field_curvature(rgb)
+        rgb = self._longitudinal_ca(rgb)
         rgb = self._sharpen(rgb)
         if getattr(self, "_defocus", 0.0) > 1e-4:
             # a Gaussian of radius growing with defocus.  The factor is chosen so that full defocus
