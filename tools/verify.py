@@ -3802,10 +3802,12 @@ def check_lens_field_and_longitudinal() -> None:
            "so no detail was left for a blur to remove and the parameter appeared inert")
 
     # --- the longitudinal kind, on a single edge with a window wide enough for the blurred result
-    p0 = merge_values(BASE, {"camera": {"exposure": 0.0}})
-    r0 = Renderer(Grid(999), W, H, 25.0, p0, seed=5)
-    r0._build_chain()
-    cam = r0.stage["camera"]
+    #
+    # Called straight from the module, because it is a pure function: `(picture, spec) -> picture`. That is what
+    # moving these out of `CameraStage` bought -- a mechanism can be measured on its own input instead of through a
+    # rendered frame whose own softness hides it, which is how three of four measurements went wrong before.
+    from atsim.codecs.lens import LensSpec as _LensSpec
+    from atsim.codecs.lens import longitudinal_ca as _longitudinal
     hard = np.zeros((H, W, 3), np.float32)
     hard[:, 200:] = 0.85
     LO, HI = 150, 250
@@ -3821,10 +3823,8 @@ def check_lens_field_and_longitudinal() -> None:
         v = np.abs(np.diff(np.asarray(img)[H // 2, LO:HI, ch].astype(np.float64)))
         return int((v > v.max() * 0.1).sum()) if v.max() > 1e-9 else 0
 
-    cam.longitudinal_ca = 0.0
-    base = cam._longitudinal_ca(hard)
-    cam.longitudinal_ca = 1.0
-    out = cam._longitudinal_ca(hard)
+    base = _longitudinal(hard, _LensSpec(longitudinal_ca=0.0))
+    out = _longitudinal(hard, _LensSpec(longitudinal_ca=1.0))
     rw, gw, bw = width(out, 0), width(out, 1), width(out, 2)
     moved = max(abs(position(out, 0) - position(base, 0)),
                 abs(position(out, 2) - position(base, 2)))

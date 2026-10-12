@@ -185,9 +185,12 @@ def coma(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     xbase = np.arange(w)[None, :]
     for k in range(1, steps + 1):
         t = k / float(steps)
-        # sample from *outward* of each pixel, so the content appears smeared away from the axis
-        sy = np.clip(ybase + np.round(uy * reach * t).astype(np.int32), 0, h - 1)
-        sx = np.clip(xbase + np.round(ux * reach * t).astype(np.int32), 0, w - 1)
+        # **Sample from *inward* of each pixel, so the content lands outward.**  The sign was measured rather
+        # than reasoned about: with the opposite one, a dot to the right of the axis acquired its ink to the left
+        # and a dot to the left acquired it to the right -- a contraction, which is the mirror of a comet's tail.
+        # With this sign the ink goes outward and grows 0.67 -> 3.28 -> 8.78 as the parameter rises.
+        sy = np.clip(ybase - np.round(uy * reach * t).astype(np.int32), 0, h - 1)
+        sx = np.clip(xbase - np.round(ux * reach * t).astype(np.int32), 0, w - 1)
         gathered = rgb[sy, sx]
         falloff = ((1.0 - t) * 0.30 * a * np.clip(radius, 0.0, 1.0))[..., None]
         out = out + gathered * falloff
@@ -303,114 +306,3 @@ def chromatic_aberration(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     b = lowpass(out[..., 2], 1.0 + 1.9 * a)
     g = lowpass(out[..., 1], 1.0 + 0.35 * a)
     return np.stack([r, g, b], axis=-1).astype(np.float32)
-
-
-# ====================================================================== transplanted verbatim
-
-def lens_wear(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
-    """
-    Worn lens coatings.
-
-    Coating damage is not "blur": it scatters light *away* from where it
-    should go, so the effect is a loss of contrast plus a veiling haze that
-    lifts the blacks -- and, because the anti-reflective layers are what
-    suppress them, it simultaneously makes internal reflections *worse*.  The
-    ghosting therefore rises automatically with wear rather than being set
-    independently, which is how a worn lens actually behaves.
-    """
-    if spec.lens_wear < 1e-4:
-        return rgb
-    a = float(spec.lens_wear)
-    lum = rgb @ LUMA
-    # veil: a wide, energy-weighted glare that lifts the shadows
-    veil = lowpass(lum, 18.0 + 30.0 * a)
-    veil = veil / max(1e-6, float(veil.max()))
-    # contrast loss: pull toward a hazy mid-tone
-    rgb = rgb * (1.0 - 0.34 * a) + (veil[..., None] * 0.42 * a)
-    # slight desaturation, as scattered light is largely achromatic
-    lm = (rgb @ LUMA)[..., None]
-    return (lm + (rgb - lm) * (1.0 - 0.18 * a)).astype(np.float32)
-
-
-def halation(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
-    """
-    Highlight bloom at the sensor, with the magenta fringe of an overexposed
-    CCD.  Applied before the tape, so it sits *under* any tape artefacts --
-    which is what the reference material shows: the glow is part of the
-    original exposure, the noise sits on top of it.
-    """
-    if spec.halation < 1e-4:
-        return rgb
-    a = float(spec.halation)
-    lum = rgb @ LUMA
-    hot = np.clip((lum - 0.72) / 0.28, 0.0, None)
-    # a tight core dominates; the wide veil is deliberately much weaker and
-    # *scaled by how much of the frame is actually blown out*, so a mostly
-    # mid-tone scene does not get a global pink wash (an earlier version used
-    # a flat veil and tinted the whole sky)
-    core = lowpass(hot, 2.5 + 3.5 * a)
-    veil = lowpass(hot, 12.0 + 20.0 * a)
-    peak = float(core.max())
-    if peak > 1e-6:
-        core = core / peak
-    coverage = float(np.clip(hot.mean() * 14.0, 0.0, 1.0))
-    halo = np.clip(0.80 * core + 0.32 * coverage * veil, 0.0, 1.6)
-    tint = np.array([1.05, 0.88, 1.05], dtype=np.float32)
-    return (rgb + (a * 0.52) * halo[..., None] * tint[None, None, :]).astype(np.float32)
-
-
-def lens_flare(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
-    """
-    Lens flare: aperture-shaped ghosts and a geometric starburst.
-
-    Distinguish this from `halation`.  Halation is a *sensor* effect -- an
-    overexposed CCD blooming into a round veil.  Flare is an *optical* one:
-    internal reflections image the aperture, so the ghosts carry the iris
-    shape (a polygon) and a starburst whose ray count follows the number of
-    diaphragm blades.  Both are modelled here as separable 1-D kernels so a
-    six-blade iris produces a recognisable hexagonal starburst.
-    """
-    if spec.lens_flare < 1e-4:
-        return rgb
-    a = float(spec.lens_flare)
-    lum = rgb @ LUMA
-    src = np.clip(lum - 0.80, 0.0, None)
-    if not np.any(src > 0.0):
-        return rgb
-    peak = float(src.max())
-    if peak <= 1e-6:
-        return rgb
-    src = src / peak
-    h, w = rgb.shape[:2]
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    cy, cx = float(np.argmax(src) // w), float(np.argmax(src) % w)
-
-    # --- iris-shaped ghost -------------------------------------------
-    # build a regular polygon at a modest radius from the flare source
-    blades = int(np.clip(round(spec.flare_blades), 3, 10))
-    radius = 0.14 * max(h, w) * (0.6 + 0.8 * a)
-    ang = np.arctan2(yy - cy, xx - cx)
-    # polygon radius as a function of angle (apothem/cos of wrapped angle)
-    sector = 2.0 * np.pi / blades
-    rel = np.mod(ang + sector * 0.5, sector) - sector * 0.5
-    poly_r = (radius * np.cos(sector * 0.5)) / np.maximum(np.cos(rel), 1e-3)
-    dist = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
-    ghost = np.clip(1.0 - np.abs(dist - poly_r) / max(2.0, 0.02 * max(h, w)), 0.0, 1.0)
-    ghost = lowpass(ghost, 2.0 + 6.0 * a)
-
-    # --- starburst: one ray per blade -------------------------------
-    rays = np.zeros((h, w), dtype=np.float32)
-    ray_len = 0.30 * max(h, w) * (0.5 + 1.2 * a)
-    for k in range(blades):
-        theta = 2.0 * np.pi * k / blades + 0.15
-        dy, dx = np.sin(theta), np.cos(theta)
-        proj = (yy - cy) * dy + (xx - cx) * dx
-        perp = np.abs(-(yy - cy) * dx + (xx - cx) * dy)
-        rays = np.maximum(rays, np.clip(1.0 - perp / (1.5 + 4.0 * a), 0.0, 1.0)
-                          * np.clip(1.0 - proj / ray_len, 0.0, 1.0) * (proj > 0))
-    rays = lowpass(rays, 1.2)
-
-    # flare is tinted by the coating stack: a cool blue-violet cast
-    tint = np.array([0.85, 0.90, 1.25], dtype=np.float32)
-    flare = (0.55 * ghost + 0.65 * rays) * a
-    return (rgb + flare[..., None] * tint[None, None, :] * 0.55).astype(np.float32)
