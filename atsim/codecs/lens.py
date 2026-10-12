@@ -154,7 +154,11 @@ def field_curvature(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     amount = float(spec.field_curvature)
     _nx, _ny, r2 = field_coords(rgb, spec)
     soft = lowpass(rgb, 1.0 + 5.5 * amount)
-    weight = np.clip(r2, 0.0, 1.0)[..., None].astype(np.float32)
+    # **Character-for-character what the original wrote.**  `np.clip(r2, 0, 1)` is the same value but a different
+    # expression, and the round trip through this module reordered a float32 multiply: measured, 28 of 30 frames
+    # byte-identical and the two `field_curvature` frames differing by up to 2.65e-04.  A move has to be provably a
+    # move, so the expression is not tidied.
+    weight = (r2 ** 1.0)[..., None].astype(np.float32)
     return (rgb * (1.0 - weight) + soft * weight).astype(np.float32)
 
 
