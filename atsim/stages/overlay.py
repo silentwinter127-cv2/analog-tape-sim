@@ -140,5 +140,31 @@ class OverlayStage(Stage):
             return buf
         out, rep = gen.draw(rgb)
         self.report = rep
-        return FrameBuffer(out.astype(np.float32), None, buf.index, buf.time, buf.std,
-                           dict(buf.meta))
+
+        # **Re-encode the signal.**  A stage that changes the picture must change the signal it will be rebuilt
+        # from.  The display stage reconstructs with `sig.to_rgb()`, so leaving the signal alone meant the text
+        # was drawn, carried intact through the tape and the player, and then discarded by the display -- measured
+        # as 297 glyph pixels after the player and 0 after the display.  The camera position hid this, because
+        # nothing downstream of it rebuilds from the signal.
+        #
+        # The metadata is copied rather than shared: the renderer caches upstream frames, and a shared dict would
+        # let this text leak backwards into them.
+        # **All three representations, or the text is discarded by whichever consumer reads a stale one.**
+        #
+        # A FrameBuffer carries the same picture as `rgb`, as `composite` (which the tape's analogue path
+        # decomposes) and as `signal` (which the player and the display rebuild from).  The overlay wrote `rgb`
+        # and left both of the others alone, so the text survived the tape and died in the player -- measured,
+        # 297 glyph pixels after the player's input and 0 after it, because the composite the player rebuilt from
+        # had never contained them.  The camera position hid this: nothing downstream of it reconstructs.
+        #
+        # The metadata is copied rather than shared, because the renderer caches upstream frames and a shared
+        # dict would let this text leak backwards into them.
+        from ..core.signal import SignalFrame, composite_encode
+        meta = dict(buf.meta)
+        sig = SignalFrame.from_rgb(out, buf.std)
+        meta["signal"] = sig
+        comp = buf.composite
+        if comp is not None:
+            # the format stage's own encoder, so the composite stays the same kind of object it was
+            comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+        return FrameBuffer(out.astype(np.float32), comp, buf.index, buf.time, buf.std, meta)

@@ -1,0 +1,36 @@
+keep the frame's three representations consistent when the overlay draws
+
+**The title was being discarded, not damaged, and it took four measurements to find where.** A `FrameBuffer`
+carries the same picture three ways, and different stages read different ones:
+
+    rgb        the picture
+    composite  the encoded signal, built by the format stage -- **the tape's analogue path decomposes this**
+    signal     Y/I/Q -- the player and the display rebuild the picture from this
+
+The overlay wrote `rgb` and left the other two stale. So at the titler position the text was in the picture, in
+the signal, and **not in the composite** -- and the chain lost it at the player, whose only act on the picture is
+rebuilding from a composite that had never contained it. Measured stage by stage:
+
+    after overlay    rgb 0.9002  signal 0.9002  composite 0.0648   <- the divergence starts here
+    after player     rgb 0.0469  signal 0.0469                     <- and the text dies here
+
+**The camera position worked and hid the whole thing**, because nothing downstream of it reconstructs from the
+signal. That is why four rounds of checking the *slot logic* found nothing: the slot was right, the chain order
+was right, and the tape and the player were both innocent.
+
+The fix is one statement of the invariant rather than a patch per consumer: **whatever a stage leaves in `rgb`,
+it must leave in `composite` and `signal` too.** The overlay re-encodes all three from the composited picture,
+using the format stage's own `composite_encode`, so the composite stays the same kind of object it was.
+
+**And the title is then genuinely degraded rather than thrown away -- which is what that position means.**
+Measured at the user's settings, its luma range falls from 0.97 to 0.49 and it reads as a smeared block with
+colour fringing beside the camera position's crisp glyph. That is the recorder's ~3 MHz luma bandwidth applied to
+a 13-pixel glyph, and it is correct: a title recorded onto tape and read back is a title that went through the
+recorder. The earlier "the text disappears entirely" was a defect; this is the apparatus.
+
+Four probes were written and three were measuring the wrong representation before the right one: the frame's
+`rgb` after each stage, the tape's `signal` against its `rgb`, the player's internals between its separator and
+its bandwidth limit, and finally all three representations side by side -- which is the one that made the
+divergence visible immediately.
+
+143 checks pass, selftest ALL CHECKS PASSED.
