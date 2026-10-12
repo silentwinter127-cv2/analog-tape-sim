@@ -64,6 +64,10 @@ class OverlayStage(Stage):
                                float(cfg.get("outline_green", 0.03)),
                                float(cfg.get("outline_blue", 0.05)))
         self.italic = float(cfg.get("italic", 0.0))
+        self.stretch_x = float(cfg.get("stretch_x", 1.0))
+        self.stretch_y = float(cfg.get("stretch_y", 1.0))
+        self.letter_gap = int(round(float(cfg.get("letter_gap", 0.0))))
+        self.line_gap = int(round(float(cfg.get("line_gap", 0.0))))
         self.shadow_x = int(round(float(cfg.get("shadow_x", 2.0))))
         self.shadow_y = int(round(float(cfg.get("shadow_y", 2.0))))
         self.colour = (float(cfg.get("red", 0.92)), float(cfg.get("green", 0.94)),
@@ -87,6 +91,8 @@ class OverlayStage(Stage):
                        colour=self.colour, shadow=self.shadow, opacity=self.opacity,
                        outline=self.outline, outline_colour=self.outline_colour,
                        italic=self.italic, shadow_x=self.shadow_x, shadow_y=self.shadow_y,
+                       stretch_x=self.stretch_x, stretch_y=self.stretch_y,
+                       letter_gap=self.letter_gap, line_gap=self.line_gap,
                        background=(0.0, 0.0, 0.0) if self.bg_on else None)
         # the row and column offsets apply to every line
         for line in plan.lines:

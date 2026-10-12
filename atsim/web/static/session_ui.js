@@ -642,10 +642,19 @@
       o.value = v;
       styleSel.append(o);
     });
+    // a *range*, not a checkbox: the parameter is a signed shear with a symmetric range, and a tick box can
+    // only ever write one direction.  Left slant was reachable in the engine and nowhere in the panel.
     const ital = el("input");
-    ital.type = "checkbox";
+    ital.type = "range";
+    ital.min = "-0.8";
+    ital.max = "0.8";
+    ital.step = "0.05";
+    ital.value = "0";
+    ital.style.maxWidth = "90px";
+    ital.title = "斜体（剪切）：正值向右、负值向左";
+    const italVal = el("span", "ssDim", "0");
     const italLab = el("label", "chk");
-    italLab.append(ital, document.createTextNode(" 斜体（剪切）"));
+    italLab.append(document.createTextNode(" 斜体 "), ital, italVal);
     srow.append(styleSel, italLab);
 
     // --- two pickers: the glyph and its outline, because both colours carry the look
@@ -805,7 +814,7 @@
         halign: parseFloat(hsel.value) || 0,
         valign: parseFloat(vsel.value) || 0,
         style: parseFloat(styleSel.value) || 0,
-        italic: ital.checked ? 0.25 : 0.0,
+        italic: parseFloat(ital.value) || 0.0,
         // the pickers write the same numbers the sliders do, so the layer stays the source of truth
         ...(hexToRgb(glyphColor.value)
           ? { red: hexToRgb(glyphColor.value)[0], green: hexToRgb(glyphColor.value)[1],
@@ -833,6 +842,9 @@
     // pressed reads as broken, and that is what was reported
     styleSel.onchange = push;
     ital.onchange = push;
+    ital.oninput = () => {
+      if (ital.nextSibling) ital.nextSibling.textContent = Number(ital.value).toFixed(2);
+    };
     glyphColor.oninput = push;
     outColor.oninput = push;
     quick.onchange = () => {
@@ -887,7 +899,8 @@
     e.styleSel.value = String(Math.round(Number(cur.style == null ? 0 : cur.style)));
     e.glyphColor.value = rgbOf(cur, "red", "green", "blue");
     e.outColor.value = rgbOf(cur, "outline_red", "outline_green", "outline_blue");
-    e.ital.checked = Number(cur.italic == null ? 0 : cur.italic) > 0.05;
+    e.ital.value = String(Number(cur.italic == null ? 0 : cur.italic));
+    if (e.ital.nextSibling) e.ital.nextSibling.textContent = Number(e.ital.value).toFixed(2);
     e.hsel.value = String(Math.round(Number(cur.halign == null ? 0 : cur.halign)));
     e.vsel.value = String(Math.round(Number(cur.valign == null ? 0 : cur.valign)));
     SUI.osdReport = (d && d.osd_report) || null;

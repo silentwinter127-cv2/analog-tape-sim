@@ -105,6 +105,33 @@ FONTS: dict[str, FontSpec] = {
     "ming": FontSpec(
         key="ming", label="Ming-Imperial（中文点阵风格）",
         path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\Ming-Imperial-1.ttf"), scripts=('latin', 'cjk')),
+    "ocr_a_ext": FontSpec(
+        key="ocr_a_ext", label="OCR-A 扩展（机器可读）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\OCRAEXT.TTF"), scripts=('latin',)),
+    "simhei": FontSpec(
+        key="simhei", label="黑体（笔画均匀，磁带可读）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\simhei.ttf"), scripts=('latin', 'cjk')),
+    "simsun": FontSpec(
+        key="simsun", label="宋体（点阵出身，最近当年字幕机）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\simsun.ttc"), scripts=('latin', 'cjk')),
+    "msmincho": FontSpec(
+        key="msmincho", label="MS 明朝（点阵出身）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\MSMINCHO.TTF"), scripts=('latin', 'cjk')),
+    "msgothic": FontSpec(
+        key="msgothic", label="MS 哥特（点阵出身）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\msgothic.ttc"), scripts=('latin', 'cjk')),
+    "mingliu": FontSpec(
+        key="mingliu", label="细明体（繁体点阵出身）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\mingliub.ttc"), scripts=('latin', 'cjk')),
+    "consola": FontSpec(
+        key="consola", label="Consolas（等宽终端）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\consola.ttf"), scripts=('latin',)),
+    "courier": FontSpec(
+        key="courier", label="Courier New（打字机等宽）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\cour.ttf"), scripts=('latin',)),
+    "gothic": FontSpec(
+        key="gothic", label="Gothic（老式无衬线）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\GOTHIC.TTF"), scripts=('latin',)),
 }
 
 #: which character class a codepoint belongs to, since the cell size depends on it

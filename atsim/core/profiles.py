@@ -912,11 +912,28 @@ def build_schema() -> ParamSchema:
     osd.define("blue", "字色 B", 0.90, 0.0, 1.0, unit="0-1", group=g)
 
     # --- style: the outline has its own pen, and the glyph can be sheared -----------------
-    osd.define("italic", "斜体（剪切）", 0.0, -0.6, 0.6, unit="shear", group=g,
+    osd.define("italic", "斜体（剪切）", 0.0, -0.8, 0.8, unit="shear", group=g,
                phys_min=0.0, phys_max=0.4,
                help="**点阵发生器没有真正的斜体，它是把字形剪切。**"
                     "所以斜着的 OSD 文字边缘是台阶状的——剪切作用在**阈值化之后**的掩膜上，"
                     "像素结构因此保留下来。正值向右倾。")
+    osd.define("stretch_x", "字宽（拉伸）", 1.0, 0.4, 2.5, unit="x", group=g,
+               phys_min=0.75, phys_max=1.35,
+               help="横向缩放字形。**点阵发生器画瘦高字靠的是改字格，不是滤波**，"
+                    "所以这里是**在掩膜上重采样**，硬边缘保留下来。1.0 是字体本身的比例。"
+                    "和下面的「字高」是**两个独立轴**：真实机器上横向由时钟、纵向由行数决定。")
+    osd.define("stretch_y", "字高（拉伸）", 1.0, 0.4, 2.5, unit="x", group=g,
+               phys_min=0.75, phys_max=1.35,
+               help="纵向缩放字形。与「字宽」独立。把两个字轴分开，"
+                    "才能做出当年窄体/宽体字幕机那种字形。")
+    osd.define("letter_gap", "字距", 0.0, -4.0, 12.0, unit="px", group=g, step=1.0,
+               phys_min=-1.0, phys_max=4.0,
+               help="**字符之间**额外增加的像素。这与「字宽」是不同的控制："
+                    "真实发生器的字格是固定的，而字符之间的空隙取决于 ROM 被读出的方式。"
+                    "负值让字挤在一起，那是当年为了在有限字格里塞下更多字的做法。")
+    osd.define("line_gap", "行距", 0.0, -8.0, 24.0, unit="px", group=g, step=1.0,
+               phys_min=-2.0, phys_max=8.0,
+               help="**行与行之间**额外增加的像素。")
     osd.define("outline_red", "描边色 R", 0.02, 0.0, 1.0, unit="0-1", group=g)
     osd.define("outline_green", "描边色 G", 0.03, 0.0, 1.0, unit="0-1", group=g)
     osd.define("outline_blue", "描边色 B", 0.05, 0.0, 1.0, unit="0-1", group=g)
