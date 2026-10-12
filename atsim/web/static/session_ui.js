@@ -625,6 +625,23 @@
     });
     host.append(fl, fsel);
 
+
+/* --- colour, as a picker rather than three sliders ------------------------------------------------
+   The parameters are `red`/`green`/`blue` and `outline_red`/`...`, six numbers to reach two colours.  A native
+   colour input writes the same three numbers, so the layer stays the source of truth and the numeric interface
+   keeps working. */
+function rgbOf(cur, rk, gk, bk) {
+  const c = (v) => Math.max(0, Math.min(255, Math.round(Number(v == null ? 0 : v) * 255)));
+  return "#" + [c(cur[rk]), c(cur[gk]), c(cur[bk])]
+    .map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
     // --- the style templates, which are the reference looks as one click
     const sl = el("div", "palGroup", "样式模板");
     const srow = el("div", "ssRow");
@@ -641,12 +658,28 @@
     const italLab = el("label", "chk");
     italLab.append(ital, document.createTextNode(" 斜体（剪切）"));
     srow.append(styleSel, italLab);
+
+    // --- two pickers: the glyph and its outline, because both colours carry the look
+    const crow = el("div", "ssRow");
+    const glyphColor = el("input");
+    glyphColor.type = "color";
+    glyphColor.className = "ssColor";
+    glyphColor.title = "字幕字色";
+    const outColor = el("input");
+    outColor.type = "color";
+    outColor.className = "ssColor";
+    outColor.title = "描边色";
+    const cl1 = el("label", "chk");
+    cl1.append(document.createTextNode("字色 "), glyphColor);
+    const cl2 = el("label", "chk");
+    cl2.append(document.createTextNode(" 描边 "), outColor);
+    crow.append(cl1, cl2);
     const snote = el("div", "ssHelp");
     snote.style.marginLeft = "0";
     snote.innerHTML = "模板一次设好字色与描边色，选「自定义」则回到参数面板里的颜色框。"
       + "<b>点阵发生器没有真正的斜体，它是把字形剪切</b>，所以斜着的 OSD 文字边缘是台阶状的。"
       + "字色、描边色、阴影偏移在右侧参数面板的「字幕机」组里。";
-    host.append(sl, srow, snote);
+    host.append(sl, srow, crow, snote);
 
     // --- alignment, so a subtitle is placed rather than spaced
     const al = el("div", "palGroup", "对齐（不用再打空格挪位置）");
@@ -713,7 +746,7 @@
     host.append(readout);
 
     osdEls = { ta, fsel, psel, chk: echk, state: estate, warn, readout, btn,
-               hsel, vsel, quick, styleSel, ital };
+               hsel, vsel, quick, styleSel, ital, glyphColor, outColor };
 
     let timer = null;
     const refreshWarn = () => {
@@ -781,6 +814,13 @@
         valign: parseFloat(vsel.value) || 0,
         style: parseFloat(styleSel.value) || 0,
         italic: ital.checked ? 0.25 : 0.0,
+        // the pickers write the same numbers the sliders do, so the layer stays the source of truth
+        ...(hexToRgb(glyphColor.value)
+          ? { red: hexToRgb(glyphColor.value)[0], green: hexToRgb(glyphColor.value)[1],
+              blue: hexToRgb(glyphColor.value)[2] } : {}),
+        ...(hexToRgb(outColor.value)
+          ? { outline_red: hexToRgb(outColor.value)[0], outline_green: hexToRgb(outColor.value)[1],
+              outline_blue: hexToRgb(outColor.value)[2] } : {}),
         // `pos` sets both alignments in the engine, so leaving a stale non-zero value here would silently
         // overrule the two dropdowns the user is looking at
         pos: 0,
@@ -797,8 +837,12 @@
     psel.onchange = push;
     hsel.onchange = push;
     vsel.onchange = push;
+    // on change, not on the apply button: a choice whose effect is invisible until an unrelated control is
+    // pressed reads as broken, and that is what was reported
     styleSel.onchange = push;
     ital.onchange = push;
+    glyphColor.oninput = push;
+    outColor.oninput = push;
     quick.onchange = () => {
       const p = parseInt(quick.value, 10);
       quick.value = "-1";
@@ -847,6 +891,8 @@
     if (OSD_FONTS[idx]) e.fsel.value = OSD_FONTS[idx][0];
     e.psel.value = String(Math.round(Number(cur.at == null ? 0 : cur.at)));
     e.styleSel.value = String(Math.round(Number(cur.style == null ? 0 : cur.style)));
+    e.glyphColor.value = rgbOf(cur, "red", "green", "blue");
+    e.outColor.value = rgbOf(cur, "outline_red", "outline_green", "outline_blue");
     e.ital.checked = Number(cur.italic == null ? 0 : cur.italic) > 0.05;
     e.hsel.value = String(Math.round(Number(cur.halign == null ? 0 : cur.halign)));
     e.vsel.value = String(Math.round(Number(cur.valign == null ? 0 : cur.valign)));

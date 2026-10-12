@@ -82,6 +82,16 @@ class DisplayStage(Stage):
         # a focus control changes them and a painted stripe cannot.
         self.spot_sigma = float(d.get("spot_sigma", 0.42))
         self.scan_pitch = float(d.get("scan_pitch", 2.0))
+        # The shadow mask: the metal grid in front of the phosphors.  Its pitch is a property of
+        # the glass, not of the signal, and its pattern is vertical -- at right angles to the
+        # scanlines -- which is what makes a tube look like a tube rather than a striped picture.
+        self.mask_pitch = float(d.get("mask_pitch", 0.0))
+        self.mask_depth = float(d.get("mask_depth", 0.35))
+        self.mask_type = int(round(float(d.get("mask_type", 0.0))))
+        # High-voltage breathing: a bright picture draws more beam current, the final anode sags,
+        # and the deflection sensitivity rises -- so the picture gets *bigger*.  A dynamic fault,
+        # so it reads the frame rather than a parameter.
+        self.breathing = float(d.get("breathing", 0.0))
         self.gamma = float(d.get("gamma", 2.35))
         self.color_temp = float(d.get("color_temp", 0.15))
         self.contrast = float(d.get("contrast", 0.55))
@@ -163,8 +173,9 @@ class DisplayStage(Stage):
         self._cache[key] = out
         return out
 
-    def _geometry_indices(self, h: int, w: int):
-        key = ("geom", h, w)
+    def _geometry_indices(self, h: int, w: int, breathe: float = 1.0):
+        # the breathing factor belongs in the key: this is the first geometry term that varies per frame
+        key = ("geom", h, w, round(breathe, 5))
         hit = self._cache.get(key)
         if hit is not None:
             return hit
@@ -180,6 +191,10 @@ class DisplayStage(Stage):
         if abs(self.trapezoid_x) > 1e-6 or abs(self.trapezoid_y) > 1e-6:
             sx = sx * (1.0 + self.trapezoid_x * ny)
             sy = sy * (1.0 + self.trapezoid_y * nx)
+        if abs(breathe - 1.0) > 1e-6:
+            # the anode sags under beam current, deflection sensitivity rises, and the raster grows
+            sx = sx * breathe
+            sy = sy * breathe
         if abs(self.curvature) > 1e-6:
             # A spherical face: the mapping is a radial magnification that grows with radius, so the centre
             # barely moves while the edges bow outward.  `r2` is the squared radius already computed above.
@@ -201,6 +216,53 @@ class DisplayStage(Stage):
         res = (y0, x0, y1, x1, fx, fy)
         self._cache[key] = res
         return res
+
+    def _shadow_mask(self, h: int, w: int) -> np.ndarray | None:
+        """
+        The mask's shadow, as a multiplier on the picture.
+
+        Three real constructions, because the pattern is what identifies the tube:
+
+          * **aperture grille** (type 0) -- continuous vertical wires, so the pattern is vertical stripes only;
+          * **slot mask** (type 1) -- staggered slots, so the vertical lines are broken alternately, which
+            gives a brick-like pattern;
+          * **dot mask** (type 2) -- round holes on a staggered lattice, the commonest shadow mask, whose
+            pattern is two-dimensional.
+
+        The pitch is in pixels of the *displayed* frame and is not tied to the signal, so the same picture on a
+        finer tube shows a finer mask.
+        """
+        if self.mask_pitch <= 1e-3 or self.mask_depth <= 1e-4:
+            return None
+        key = ("mask", h, w, round(self.mask_pitch, 3), round(self.mask_depth, 3), self.mask_type)
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        pitch = max(1.5, float(self.mask_pitch))
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        phase = (xx / pitch) % 1.0
+        # a vertical wire/slot profile: bright at the centre of a triad, dark between
+        vert = np.cos(2.0 * np.pi * phase)
+        m = 0.5 + 0.5 * vert
+        if self.mask_type == 1:
+            # staggered slots: the vertical lines are broken every other row band, giving a brick pattern
+            band = np.floor(yy / max(1.0, pitch)) % 2.0
+            shift = band * 0.5
+            m = 0.5 + 0.5 * np.cos(2.0 * np.pi * ((xx / pitch) + shift) % 1.0)
+        elif self.mask_type == 2:
+            # a dot mask: holes on a staggered two-dimensional lattice
+            cy = np.floor(yy / max(1.0, pitch))
+            shift = (cy % 2.0) * 0.5
+            dx = ((xx / pitch) + shift) % 1.0 - 0.5
+            dy = (yy / pitch) % 1.0 - 0.5
+            r2 = dx * dx + dy * dy
+            m = np.exp(-r2 / 0.08)
+        mask = 1.0 - self.mask_depth * (1.0 - m)
+        # the mask must not change the picture's average level, or it is a brightness control
+        mask = mask / max(1e-6, float(mask.mean()))
+        mask = mask.astype(np.float32)[..., None]
+        self._cache[key] = mask
+        return mask
 
     def _channel_grid(self, h: int, w: int, scale: float):
         """
@@ -228,9 +290,9 @@ class DisplayStage(Stage):
         self._cache[key] = res
         return res
 
-    def _warp(self, rgb: np.ndarray) -> np.ndarray:
+    def _warp(self, rgb: np.ndarray, breathe: float = 1.0) -> np.ndarray:
         h, w = rgb.shape[:2]
-        y0, x0, y1, x1, fx, fy = self._geometry_indices(h, w)
+        y0, x0, y1, x1, fx, fy = self._geometry_indices(h, w, breathe)
         top = rgb[y0, x0] * (1.0 - fx) + rgb[y0, x1] * fx
         bot = rgb[y1, x0] * (1.0 - fx) + rgb[y1, x1] * fx
         out = (top * (1.0 - fy) + bot * fy).astype(np.float32)
@@ -309,8 +371,22 @@ class DisplayStage(Stage):
         # the medium's parameters -- which is what happens when a parameter moves
         # between layers and the old reader is forgotten.
 
-        if self.geometry > 1e-3:
-            rgb = self._warp(rgb)
+        # Every geometry term must be in this gate.  It tested only `geometry`, so a project with curvature or
+        # a trapezoid set and `geometry_warp` at zero had the distortion silently skipped -- reachable and
+        # inert depending on an unrelated value.
+        _geom_on = (self.geometry > 1e-3 or abs(self.curvature) > 1e-6
+                    or abs(self.trapezoid_x) > 1e-6 or abs(self.trapezoid_y) > 1e-6)
+        # breathing: a bright picture draws more beam current and the raster grows.  The frame's own mean
+        # drives it, because it is a dynamic fault rather than a setting.
+        _breathe = 1.0
+        if abs(self.breathing) > 1e-6:
+            # 0.12 puts the parameter's full travel at roughly 7% of raster size, which is what a real
+            # colour tube shows on a dark-to-bright cut.  At 0.02 the expansion was +0.14% to +1.15%,
+            # i.e. one pixel at the edge -- present in the numbers and invisible in the picture.
+            _breathe = 1.0 + self.breathing * 0.12 * (float((rgb @ LUMA).mean()) - 0.35)
+            _geom_on = True
+        if _geom_on:
+            rgb = self._warp(rgb, _breathe)
 
         # --- electron optics: beam defocus, then highlight bloom -----------
         if self.defocus > 1e-3:
@@ -339,6 +415,14 @@ class DisplayStage(Stage):
         rgb = rgb * self._col_temp
 
         # --- raster mask, vignette, glass ----------------------------------
+        # The mask's shadow is on the glass, so it goes last -- with the scanlines and the vignette,
+        # which are the other panel artefacts.  It was previously applied *before* the beam defocus,
+        # which is the one filter guaranteed to erase a three-pixel vertical pattern: measured, the
+        # rendered column standard deviation was 0.05700 with the mask and 0.05751 without it.
+        mask = self._shadow_mask(rgb.shape[0], rgb.shape[1])
+        if mask is not None:
+            rgb = rgb * mask
+
         rgb = rgb * self._masks(rgb.shape[0], rgb.shape[1])
         if self._refl is not None:
             rgb = rgb + self._refl

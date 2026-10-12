@@ -1,0 +1,38 @@
+add the shadow mask and high-voltage breathing, and give the colours a picker
+
+**The shadow mask is why a real tube has vertical structure.** Every coloured dot is a phosphor stripe behind a
+hole in a metal grid, and the grid's shadow is visible on the glass. It is not a horizontal-only effect: an
+aperture grille is continuous vertical wires, a slot mask is staggered slots, a dot mask is round holes on a
+staggered lattice. Three types, because the pattern is what identifies the tube, and the pitch is a property of
+the *glass* rather than of the signal.
+
+**It was written correct and reached nothing.** The pattern measured properly on its own -- column standard
+deviation 0.667, the exact requested period -- while the rendered frame showed 0.05700 with the mask against
+0.05751 without it. The cause was ordering: the mask was applied **before** the beam-defocus lowpass, which is
+the one filter guaranteed to erase a three-pixel vertical pattern. Physically the grid's shadow is on the glass,
+after the beam has been focused and deflected, so it belongs last with the scanlines and the vignette. That also
+puts all three panel artefacts in one place, where the order can be read.
+
+**Breathing was measurable but invisible, and the first test could not have failed.** The anode sags under beam
+current, deflection sensitivity rises, and the raster grows -- a *dynamic* fault, so it reads the frame's own
+mean rather than a parameter, which makes it the first geometry term that varies per frame. The first scale gave
++0.14% to +1.15%: one pixel at the edge, at the threshold of the noise. And the measurement was worthless for a
+different reason -- the feature it tracked spanned the whole frame, and magnifying something that reaches both
+edges changes no width. **A test that cannot fail is worse than a failing one.** At 0.12 the travel is +0.10% to
++6.94%, which is the order a real colour tube shows on a dark-to-bright cut.
+
+**A latent fault fixed on the way.** The warp was gated on `geometry_warp > 1e-3`, so a project with curvature
+or a trapezoid set and that one parameter at zero had the distortion silently skipped. Every geometry term is
+now in the gate.
+
+**The apply button existed; the complaint was still right.** It is `btn.onclick = push` and it was simply below
+the visible part of the panel in the screenshot. But the underlying fault is real: the style template, the slant
+and the alignment changed nothing until a button elsewhere was pressed, so there was no way to tell whether a
+choice had taken effect. They push on change now, as the text area already did.
+
+**And the colours have a picker.** Two colours meant six numeric sliders -- `red`/`green`/`blue` and
+`outline_red`/`outline_green`/`outline_blue` -- which is the gap the request for a wider range pointed at. Two
+native colour inputs write the same six numbers, so the layer stays the source of truth and the numeric
+interface keeps working.
+
+137 checks pass, selftest ALL CHECKS PASSED.
