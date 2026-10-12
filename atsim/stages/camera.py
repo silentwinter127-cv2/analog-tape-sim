@@ -119,6 +119,13 @@ class CameraStage(Stage):
         self.halation = float(cfg.get("halation", 0.0))
         # --- the note's optical and sensor mechanisms ---------------------------
         self.lens_fog = float(cfg.get("lens_fog", 0.0))
+        # **The overflow drain's dark rim.**  A photosite whose well overflows has its excess charge
+        # removed by the anti-blooming structure, which pulls the neighbouring sites *below* their own
+        # exposure -- so the ring just outside a blown highlight is darker than the background.  Measured
+        # without it: the ring sat 0.012 *above* the ceiling and the profile fell monotonically from the
+        # core, so nothing in the model could produce a rim at all.
+        self.overflow_drain = float(cfg.get("overflow_drain", 0.0))
+        self.overflow_width = float(cfg.get("overflow_width", 2.0))
         self.bloom_amount = float(cfg.get("bloom_amount", 0.0))
         self.bloom_threshold = float(cfg.get("bloom_threshold", 0.82))
         self.dead_sites_rate = float(cfg.get("dead_sites", 0.0))
@@ -227,6 +234,61 @@ class CameraStage(Stage):
         comp = np.where(lin <= knee, lin, knee + (1.0 - knee) * rise)
         comp = np.where(lin >= white, 1.0, comp)
         return comp.astype(np.float32)
+
+    def _overflow_drain(self, rgb: np.ndarray) -> np.ndarray:
+        """
+        The dark ring outside a saturated highlight, from the anti-blooming structure.
+
+        When a photosite's well fills, the excess charge is drained away -- and the drain takes it from the
+        neighbours, pulling them **below** their own exposure. The ring just outside a blown highlight is
+        therefore darker than the background, which is the opposite direction from a bloom and cannot be produced
+        by one. Measured before this existed: the ring sat 0.012 *above* the ceiling and the profile fell
+        monotonically from the core, so the model had only the outward direction.
+
+        Three properties make it a mechanism rather than a decoration:
+
+          * **the width is in photosites**, because the drain acts on neighbouring sites and not on a distance in
+            the picture;
+          * **the depth is a fraction of each site's own value**, so a bright background gets a proportionally
+            deeper rim and a black one gets none -- the drain removes charge that is there, and there is none to
+            remove from nothing;
+          * **it cannot go below zero**, for the same reason.
+
+        The mask is computed here from `rgb` rather than read from an attribute another method wrote, which is a
+        coupling this file has already turned into three faults.
+        """
+        if self.overflow_drain < 1e-4:
+            return rgb
+        dr = float(np.clip(self.dynamic_range, 3.0, 16.0))
+        white = float(2.0 ** ((dr - 8.0) / 8.0))
+        # **A photosite overflows as it approaches full, not only at exactly full.**  The drain structure is
+        # specified with a barrier below the well's capacity, and the practical consequence is the same as the
+        # measured one: with a mask of `>= white` the ring lands on the lens's own taper, which is already
+        # falling, so the depression is absorbed and nothing shows -- `drain 0.25` produced no rim at all.  A
+        # trigger at 0.9 of the white point puts the ring where the taper is gentle, which is also where the
+        # reference's rim sits: a separate dark band rather than a shoulder on a gradient.
+        m = np.asarray(rgb).max(axis=2) >= white * 0.9
+        if not m.any():
+            return rgb
+        # dilate by re-indexing: a square of radius w, which is one photosite's neighbourhood
+        w = max(1, int(round(self.overflow_width)))
+        ring = np.zeros_like(m)
+        for dy in range(-w, w + 1):
+            for dx in range(-w, w + 1):
+                if dy == 0 and dx == 0:
+                    continue
+                sh = np.zeros_like(m)
+                ys = slice(max(0, dy), m.shape[0] + min(0, dy))
+                yd = slice(max(0, -dy), m.shape[0] + min(0, -dy))
+                xs = slice(max(0, dx), m.shape[1] + min(0, dx))
+                xd = slice(max(0, -dx), m.shape[1] + min(0, -dx))
+                sh[yd, xd] = m[ys, xs]
+                ring |= sh
+        ring &= ~m
+        if not ring.any():
+            return rgb
+        out = rgb * (1.0 - float(self.overflow_drain) * ring[..., None])
+        return np.clip(out, 0.0, None).astype(np.float32)
 
     def _flare(self, rgb: np.ndarray) -> np.ndarray:
         """
@@ -555,6 +617,7 @@ class CameraStage(Stage):
             from ..codecs.optics import lens_fog
             rgb = lens_fog(rgb, self.lens_fog)
         rgb = self._halation(rgb)
+        rgb = self._overflow_drain(rgb)
         # charge, at the sensor: vertical because the transfer channel is vertical
         if self.bloom_amount > 1e-4:
             from ..codecs.optics import blooming

@@ -3542,5 +3542,85 @@ def check_highlight_reaches_white() -> None:
            "; ".join("dr %.0f (white %.2f) -> peak %.3f" % (d, 2.0 ** ((d - 8.0) / 8.0), peaks[d])
                      for d in sorted(peaks)),
            all(v >= 0.999 for v in peaks.values()))
+def check_overflow_drain() -> None:
+    """
+    A blown highlight must have a dark ring around it, and it must scale with the parameter.
+
+    The user's reference -- a Hi8 through an AV capture -- shows its ceiling downlights as a blown white core
+    **with a dark ring around it**, then back to the ceiling's own light grey. That is the opposite direction
+    from a bloom or a halation halo: when a photosite's well overflows, the anti-blooming structure removes the
+    excess by pulling the *neighbouring* sites below their own exposure. Measured before this existed, the ring
+    sat **0.012 above** the ceiling and the profile fell monotonically from the core, so nothing in the model
+    could produce a rim and no strength of halation could, because halation adds light outward and a rim subtracts
+    it.
+
+    **The measurement is the difference, not the profile.** `off` minus `on` isolates the mechanism. An earlier
+    attempt searched a window of the luma profile for its minimum and reported the same 0.694 for every setting,
+    drain on or off, because the window contained a dip the drain had nothing to do with -- which is the fifth
+    time this project has measured a scene instead of an effect.
+
+    Three properties, and the third is what makes it the sensor's mechanism rather than a drawn outline:
+
+      * the ring **darkens** the pixels just outside the saturated core;
+      * it **scales** with `overflow_drain`, so the parameter is a control and not a switch;
+      * and it lands **at the core's edge**, because the drain acts on neighbouring photosites.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    COEF = np.array([0.299, 0.587, 0.114], np.float32)
+    H, W = 300, 400
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+
+    class Downlight:
+        """A blown disc on a light ceiling, which is the reference's own configuration."""
+
+        def __init__(self):
+            self.width, self.height, self.fps, self.frame_count = W, H, 25.0, 4
+
+        def frame(self, index):
+            a = np.full((H, W, 3), 0.62, np.float32)
+            yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+            r = np.sqrt((yy - H / 2) ** 2 + (xx - W / 2) ** 2)
+            a[r < 9.0] = 2.6
+            return a
+
+    def render(**cam):
+        p = merge_values(BASE, {"camera": dict({"exposure": 0.0}, **cam)})
+        r = Renderer(Downlight(), W, H, 25.0, p, seed=5)
+        return np.clip(r.render_frame(1), 0, 1) @ COEF
+
+    off = render()
+    depths = {}
+    radii = {}
+    for amt in (0.15, 0.25, 0.35):
+        d = off - render(overflow_drain=amt)
+        prof = d[H // 2, W // 2:W // 2 + 30]
+        depths[amt] = float(prof.max())
+        radii[amt] = int(np.argmax(prof))
+
+    ordered = [depths[0.15], depths[0.25], depths[0.35]]
+    record("a blown highlight has a dark ring, scaling with the overflow drain",
+           "a photosite that overflows has its excess charge removed by the anti-blooming structure, which pulls "
+           "the neighbouring sites below their own exposure -- the opposite direction from a halo",
+           "; ".join("drain %.2f -> %.5f darker at radius %d px" % (a, depths[a], radii[a])
+                     for a in sorted(depths)),
+           all(v > 1e-3 for v in ordered)
+           and ordered[0] < ordered[1] < ordered[2]
+           and all(r <= 10 for r in radii.values()),
+           "measured before: the ring sat 0.012 ABOVE the ceiling and the profile fell monotonically from the "
+           "core, so no strength of halation could produce it -- halation adds light outward")
+
+    # and it must be a ring rather than a global darkening
+    on = render(overflow_drain=0.25)
+    record("the drain darkens a ring and not the picture",
+           "the mechanism acts on the photosites beside a saturated one; a whole-frame darkening would be a "
+           "brightness control with a misleading name",
+           "the frame's mean changes by %+.5f while the ring deepens by %.5f"
+           % (float(on.mean() - off.mean()), depths[0.25]),
+           abs(float(on.mean() - off.mean())) < 0.01 and depths[0.25] > 1e-3)
 if __name__ == "__main__":
     raise SystemExit(main())
