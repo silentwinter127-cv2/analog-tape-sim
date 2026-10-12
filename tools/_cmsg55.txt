@@ -1,0 +1,45 @@
+record why the user's test image cannot show a coloured highlight edge
+
+**The subject is at the one radius where the effect is defined to be absent.** The image's lamp sits at the centre
+of the frame, and lateral chromatic aberration is `k * a * r` -- proportional to the distance from the optical
+axis, so **zero at the centre by construction**. Measured on a synthetic lamp, sweeping the parameter from 0 to 1:
+
+    lamp at the frame's centre    R-B spread 0.1135 -> 0.1354    +0.022
+    lamp near a corner            R-B spread 0.1119 -> 0.1757    +0.064
+
+The corner responds three times as much, which is the radial term doing exactly what it should. **The model was
+right to show no fringe on a centred lamp**, and the reference the user sent earlier -- the ceiling downlights --
+showed its fringes on the lights at the *edges* of the frame, which is the same fact seen from the other side.
+
+**But the centre is not the whole story, and one thing is still open.** On the user's own image at maximum
+aberration the frame's total colour rose only **0.04398 -> 0.04476**, i.e. 1.8%, across chroma bandwidths from 0.75
+to 2.0. Two candidates remain and they were not separated:
+
+  * **the chroma bandwidth**, measured earlier to leave 6.7% of a fringe at 0.75 MHz. A 2.7-pixel displacement
+    against a chroma path with about ten pixels of resolution is at the edge of what it can carry;
+  * **the subject**: the image's bright areas are a *blown* ceiling light and a soft halo, and a blown area is
+    saturated to white with **no chroma left to displace** -- a fringe needs a coloured edge, and the soft grey
+    halo has very little.
+
+That the two were not separated is the fault in this pass: the check that would do it -- a hard, coloured edge at
+a known radius on the user's own image -- was not run, and the synthetic hard-edge test on a plain background did
+show the effect (a fringe going from 0.030 to 2.801 px as the chroma bandwidth widens). **So the chain works and
+the open question is which of the two suppresses it on real subjects.**
+
+**What is established and safe to act on:**
+
+  * the effect is **radial**, so it is strongest at the frame's corners and absent at its centre -- a test subject
+    has to have its highlight off-centre for this to be visible at all;
+  * `camera.chroma_aberration` at 1.0 with the defaults gives a centre lamp +0.022 and a corner lamp +0.064;
+  * `format.chroma_bandwidth` at 0.75 MHz -- VHS grade -- is the binding limit on the chroma path, and widening it
+    to 1.5 (S-VHS) or 2.0 (near-component) is what lets more through. Measured on a hard edge: **28x** more colour
+    at the edge;
+  * `display.saturation` works and is worth raising to 0.7-0.8, as the previous correction established.
+
+**The next measurement, not yet taken**: a hard high-contrast edge with colour in it, placed a quarter of the way
+from the centre, on the user's own image, swept across both parameters. That separates "the bandwidth ate it" from
+"the subject had no chroma to eat", and it is the one experiment that decides whether the coefficient needs to be
+larger or the recommendation is simply the bandwidth.
+
+Nothing is half-changed: the project's parameters were restored to `chroma_aberration 0.05`,
+`chroma_bandwidth 0.75` for both ends, and the suite is green.
