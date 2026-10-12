@@ -51,8 +51,12 @@ main{display:grid;grid-template-columns:var(--w-left,270px) minmax(320px,1fr) va
    five-pixel track does not collapse while the stage is explicitly placed beyond it: measured, the workspace
    that hides both panels left the stage at `left: 5`. */
 main.wsGrid{position:relative;
+  /* the bar's height is a variable because two rules need it: the row template and the splitters'
+     vertical extent.  A hardcoded offset in the splitter would be the same class of fault as a
+     hardcoded panel width. */
+  --ws-bar-h:32px;
   grid-template-columns:var(--w-left,270px) minmax(320px,1fr) var(--w-right,340px);
-  grid-template-rows:auto minmax(0,1fr);
+  grid-template-rows:var(--ws-bar-h) minmax(0,1fr);
   grid-template-areas:
     "bar bar bar"
     "left stage right";}
@@ -335,7 +339,7 @@ button.wide{width:100%;margin-top:8px}
 
 /* --- the workspace bar, a row of editors like Blender's ------------------------------------------ */
 .wsBar{
-  display:flex;align-items:center;gap:2px;padding:0 8px;height:32px;
+  display:flex;align-items:center;gap:2px;padding:0 8px;height:var(--ws-bar-h,32px);
   background:var(--panel2);border-bottom:1px solid var(--line);
 }
 .wsTab{
@@ -350,7 +354,10 @@ button.wide{width:100%;margin-top:8px}
 
 /* --- the splitters, as overlays rather than grid items -------------------------------------------- */
 .wsSplit{
-  position:absolute;top:0;bottom:0;width:5px;cursor:col-resize;background:transparent;z-index:4;
+  /* `top` clears the workspace bar: the containing block is `main`, which spans both grid rows, so
+     `top:0` drew the splitter across the bar's row -- visible as an orange stub under the panel. */
+  position:absolute;top:var(--ws-bar-h,32px);bottom:0;width:5px;
+  cursor:col-resize;background:transparent;z-index:4;
 }
 /* the grab target is wider than the line, which is standard and is the reason this is not in the flow */
 .wsSplit::after{

@@ -706,10 +706,13 @@
       o.value = v;
       psel.append(o);
     });
+    // Declared before use.  It was after, one line below `host.append(pl, psel, pstatus)`, and a
+    // `const` read before its declaration is a ReferenceError -- so the builder threw here and nothing
+    // after it, including the apply button and the two colour pickers, was ever created.
+    const pstatus = el("div", "ssReadout");
     host.append(pl, psel, pstatus);
     // The titler position puts the text through the recorder, so a worn tape eats it.  The user reported the
     // text "lost" twice before anything said so -- the model was right and the interface was silent.
-    const pstatus = el("div", "ssReadout");
     psel.addEventListener("change", () => {
       pstatus.innerHTML = psel.value === "1"
         ? "<b>注意</b>：字幕先写进画面、再经过磁带，所以失落、磁头磨损、"
@@ -954,7 +957,21 @@
         renderEnv();
         renderDevice();
         renderKeyframes();
-        try { osdPanels(); } catch (err) {}
+        // Not a silent catch.  A builder that throws leaves the tab present and the panel empty, and then
+      // the only symptom is a control the user cannot find.  The failure is put where it will be seen.
+      try {
+        osdPanels();
+      } catch (err) {
+        const p = $("osdPanel");
+        if (p) {
+          p.textContent = "";
+          const e = el("div", "ssWarn");
+          e.innerHTML = "<b>字幕面板构建失败</b>：" + (err && err.message ? err.message : err)
+            + "<br>这是界面缺陷，不是您操作的问题。";
+          p.append(e);
+        }
+        console.error("osdPanels failed:", err, err && err.stack);
+      }
         SUI.ready = true;
       })
       .catch(() => { /* 面板拿不到不该影响主界面 */ });
