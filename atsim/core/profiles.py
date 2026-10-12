@@ -757,6 +757,20 @@ def build_schema() -> ParamSchema:
     dsp.define("scanlines", "扫描线", 0.35, 0.0, 1.0, unit="0-1", group=g)
     dsp.define("interlace_flicker", "隔行闪烁", 0.25, 0.0, 1.0, unit="0-1", group=g)
     dsp.define("geometry_warp", "几何形变", 0.15, 0.0, 1.0, unit="0-1", group=g)
+    dsp.define("trapezoid_x", "梯形（宽）", 0.0, -0.5, 0.5, unit="0-1", group=g,
+               phys_min=-0.15, phys_max=0.15,
+               help="**偏转线圈的扫描与显像管端面不成直角**，所以上边缘与下边缘的宽度可以不等。"
+                    "这就是梯形失真（keystone），磁轭被撞歪的机器上很明显。正值下宽上窄。"
+                    "和桶形/枕形畸变是**互相独立**的两种故障。")
+    dsp.define("trapezoid_y", "梯形（高）", 0.0, -0.5, 0.5, unit="0-1", group=g,
+               phys_min=-0.15, phys_max=0.15,
+               help="左右两侧高度不等。与横向梯形是两个独立的故障，所以是两个参数。")
+    dsp.define("convergence", "会聚误差", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.6,
+               help="**三个电子束从三支枪以不同角度出发、穿过荫罩**，所以红绿蓝三幅像的大小"
+                    "并不完全一致。误差在**中心为零、向边缘增大**——这就是真实显像管"
+                    "**边缘有彩色镶边、中心却干净**的原因。模型把各通道绕中心做略微不同的缩放，"
+                    "而不是整体平移：整体平移会让整幅画面均匀镶边，那是廉价近似的做法。")
     dsp.define("overscan", "过扫描裁切", 0.0, 0.0, 0.15, unit="比例", group=g,
                phys_min=0.0, phys_max=0.10, source="家用电视典型 5%-10% 过扫描",
                help="画面被放大后越出显像管边框的比例。真实的过扫描会把画面底部那条"
@@ -854,6 +868,23 @@ def build_schema() -> ParamSchema:
     osd.define("red", "字色 R", 0.92, 0.0, 1.0, unit="0-1", group=g)
     osd.define("green", "字色 G", 0.94, 0.0, 1.0, unit="0-1", group=g)
     osd.define("blue", "字色 B", 0.90, 0.0, 1.0, unit="0-1", group=g)
+
+    # --- style: the outline has its own pen, and the glyph can be sheared -----------------
+    osd.define("italic", "斜体（剪切）", 0.0, -0.6, 0.6, unit="shear", group=g,
+               phys_min=0.0, phys_max=0.4,
+               help="**点阵发生器没有真正的斜体，它是把字形剪切。**"
+                    "所以斜着的 OSD 文字边缘是台阶状的——剪切作用在**阈值化之后**的掩膜上，"
+                    "像素结构因此保留下来。正值向右倾。")
+    osd.define("outline_red", "描边色 R", 0.02, 0.0, 1.0, unit="0-1", group=g)
+    osd.define("outline_green", "描边色 G", 0.03, 0.0, 1.0, unit="0-1", group=g)
+    osd.define("outline_blue", "描边色 B", 0.05, 0.0, 1.0, unit="0-1", group=g)
+    osd.define("shadow_x", "阴影横向偏移", 2.0, -8.0, 8.0, unit="px", group=g, step=1.0)
+    osd.define("shadow_y", "阴影纵向偏移", 2.0, -8.0, 8.0, unit="px", group=g, step=1.0)
+    osd.define("style", "样式模板", 0.0, 0.0, 5.0, unit="0-5", group=g, step=1.0,
+               phys_min=0.0, phys_max=5.0,
+               help="一次设好字色、描边色和斜体：**0 自定义**、1 绿字黑边（OSD 经典）、"
+                    "2 红字黑边（REC 经典）、3 白字黑边、4 黄字黑边、5 青字黑边。"
+                    "**0 以外的值会覆盖上面那些颜色参数。**")
 
     return s
 

@@ -625,6 +625,29 @@
     });
     host.append(fl, fsel);
 
+    // --- the style templates, which are the reference looks as one click
+    const sl = el("div", "palGroup", "样式模板");
+    const srow = el("div", "ssRow");
+    const styleSel = el("select", "ssSel");
+    [["0", "自定义（用下面的颜色参数）"], ["1", "绿字·深描边（OSD 经典）"],
+     ["2", "红字·深描边（REC 经典）"], ["3", "白字·深描边"],
+     ["4", "黄字·深描边"], ["5", "青字·深描边"]].forEach(([v, t]) => {
+      const o = el("option", null, t);
+      o.value = v;
+      styleSel.append(o);
+    });
+    const ital = el("input");
+    ital.type = "checkbox";
+    const italLab = el("label", "chk");
+    italLab.append(ital, document.createTextNode(" 斜体（剪切）"));
+    srow.append(styleSel, italLab);
+    const snote = el("div", "ssHelp");
+    snote.style.marginLeft = "0";
+    snote.innerHTML = "模板一次设好字色与描边色，选「自定义」则回到参数面板里的颜色框。"
+      + "<b>点阵发生器没有真正的斜体，它是把字形剪切</b>，所以斜着的 OSD 文字边缘是台阶状的。"
+      + "字色、描边色、阴影偏移在右侧参数面板的「字幕机」组里。";
+    host.append(sl, srow, snote);
+
     // --- alignment, so a subtitle is placed rather than spaced
     const al = el("div", "palGroup", "对齐（不用再打空格挪位置）");
     const arow = el("div", "ssRow");
@@ -661,7 +684,17 @@
       o.value = v;
       psel.append(o);
     });
-    host.append(pl, psel);
+    host.append(pl, psel, pstatus);
+    // The titler position puts the text through the recorder, so a worn tape eats it.  The user reported the
+    // text "lost" twice before anything said so -- the model was right and the interface was silent.
+    const pstatus = el("div", "ssReadout");
+    psel.addEventListener("change", () => {
+      pstatus.innerHTML = psel.value === "1"
+        ? "<b>注意</b>：字幕先写进画面、再经过磁带，所以失落、磁头磨损、"
+          + "<b>换头带（画面顶部那条）</b>会连字一起毁。字幕突然不见了先看这条。"
+        : "<span class='ssDim'>字幕写在已成形的画面上，磁带损伤不落在字上。</span>";
+    });
+    psel.dispatchEvent(new Event("change"));
     const pnote = el("div", "ssHelp");
     pnote.style.marginLeft = "0";
     pnote.innerHTML = "位置<b>不是</b>画面上的先后，而是信号链里的位置："
@@ -680,7 +713,7 @@
     host.append(readout);
 
     osdEls = { ta, fsel, psel, chk: echk, state: estate, warn, readout, btn,
-               hsel, vsel, quick };
+               hsel, vsel, quick, styleSel, ital };
 
     let timer = null;
     const refreshWarn = () => {
@@ -746,6 +779,8 @@
         at: parseFloat(psel.value) || 0,
         halign: parseFloat(hsel.value) || 0,
         valign: parseFloat(vsel.value) || 0,
+        style: parseFloat(styleSel.value) || 0,
+        italic: ital.checked ? 0.25 : 0.0,
         // `pos` sets both alignments in the engine, so leaving a stale non-zero value here would silently
         // overrule the two dropdowns the user is looking at
         pos: 0,
@@ -762,6 +797,8 @@
     psel.onchange = push;
     hsel.onchange = push;
     vsel.onchange = push;
+    styleSel.onchange = push;
+    ital.onchange = push;
     quick.onchange = () => {
       const p = parseInt(quick.value, 10);
       quick.value = "-1";
@@ -809,6 +846,8 @@
     const idx = Math.round(Number(cur.font == null ? 0 : cur.font));
     if (OSD_FONTS[idx]) e.fsel.value = OSD_FONTS[idx][0];
     e.psel.value = String(Math.round(Number(cur.at == null ? 0 : cur.at)));
+    e.styleSel.value = String(Math.round(Number(cur.style == null ? 0 : cur.style)));
+    e.ital.checked = Number(cur.italic == null ? 0 : cur.italic) > 0.05;
     e.hsel.value = String(Math.round(Number(cur.halign == null ? 0 : cur.halign)));
     e.vsel.value = String(Math.round(Number(cur.valign == null ? 0 : cur.valign)));
     SUI.osdReport = (d && d.osd_report) || null;

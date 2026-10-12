@@ -3086,5 +3086,102 @@ def check_osd_alignment() -> None:
            and cases[1][1] > cases[1][3])
 
 
+def check_style_and_crt() -> None:
+    """
+    Style templates must reach the picture, and the tube distortions must have their shapes.
+
+    Two properties, and the first is the one this project keeps having to assert: a parameter that a stage does
+    not read is inert, and a template that sets three colours is inert in three ways at once. Measured on the
+    rendered frame rather than on the attribute, because the attribute was correct the last time this failed.
+
+    The second is about *shape*. A trapezoid and a misconvergence both move pixels, so "the output changed"
+    proves nothing about whether the right distortion was built. Convergence in particular has a signature --
+    zero at the centre, growing towards the edges -- and a uniform channel shift would fail it while still
+    changing the output.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+
+    class Flat:
+        def __init__(self, frames=2):
+            self.width, self.height, self.fps, self.frame_count = 200, 150, 25.0, frames
+
+        def frame(self, index):
+            a = np.full((self.height, self.width, 3), 0.10, np.float32)
+            a[self.height // 2 - 4:self.height // 2 + 4, :] = 0.60
+            return a
+
+    def render(over):
+        p = merge_values(BASE, {"overlay": dict({"enabled": 1.0, "text": "STBY", "font": 0,
+                                                 "cell_h": 20, "margin": 0.05}, **over)})
+        r = Renderer(Flat(), 200, 150, 25.0, p, seed=5)
+        return np.clip(r.render_frame(1), 0, 1), r
+
+    off, _ = render({"enabled": 0.0})
+    colours = {}
+    for st in range(6):
+        img, r = render({"style": float(st)})
+        ov = r.stage["overlay"]
+        colours[st] = (tuple(round(v, 2) for v in ov.colour), float(np.abs(img - off).mean()))
+    distinct = len({c[0] for c in colours.values()})
+    record("every style template draws and has its own colour",
+           "a template a stage does not read is inert in three colours at once",
+           "; ".join("style %d -> %s, frame diff %.5f" % (k, v[0], v[1])
+                     for k, v in sorted(colours.items())),
+           distinct >= 5 and all(v[1] > 1e-4 for v in colours.values()),
+           "measured on the rendered frame, because the attribute was correct the last time this failed")
+
+    # --- the tube distortions have their shapes
+    class Grid:
+        def __init__(self, frames=2):
+            self.width, self.height, self.fps, self.frame_count = 240, 180, 25.0, frames
+
+        def frame(self, index):
+            a = np.zeros((self.height, self.width, 3), np.float32)
+            a[:, ::20] = 0.85
+            return a
+
+    def tube(**disp):
+        p = merge_values(BASE, {"display": dict({"enabled": 1.0}, **disp)})
+        r = Renderer(Grid(), 240, 180, 25.0, p, seed=5)
+        return np.clip(r.render_frame(1), 0, 1)
+
+    a = tube()
+    moves = {}
+    for key in ("trapezoid_x", "trapezoid_y", "convergence"):
+        b = tube(**{key: 0.4 if key != "convergence" else 1.0})
+        moves[key] = float(np.abs(b - a).max())
+    record("the tube's trapezoid and misconvergence each move the picture",
+           "a distortion parameter no stage reads is inert",
+           "; ".join("%s max change %.4f" % (k, v) for k, v in sorted(moves.items())),
+           all(v > 1e-3 for v in moves.values()))
+
+    b = tube(convergence=1.0)
+    d = np.abs((b[..., 0] - b[..., 1]) - (a[..., 0] - a[..., 1]))
+    edge = float(d[:, :40].mean())
+    mid = float(d[:, 110:130].mean())
+    record("misconvergence fringes at the edges and not at the centre",
+           "three beams through a shadow mask land differently by an amount that grows from the centre",
+           "edge displacement %.5f against %.5f at the centre (ratio %.2f)"
+           % (edge, mid, edge / max(1e-9, mid)),
+           edge > mid * 2.0,
+           "a uniform channel shift would fringe evenly and pass a merely-different test")
+
+    # --- the outline is what makes text legible without covering the picture
+    from atsim.codecs.osd import CharacterGenerator, OSDLine, OSDPlan
+    g = CharacterGenerator("apos", OSDPlan(lines=[OSDLine("Kig")], cell_h=24, outline=1.0,
+                                           colour=(0.92, 0.94, 0.90)))
+    _i, rep = g.draw(np.full((80, 200, 3), 0.95, np.float32))
+    record("an outline makes white text legible on a bright frame",
+           "this is what a real camcorder OSD uses, and why a box is not the default",
+           "with the outline: behind=%s contrast=%s legible=%s"
+           % (rep.get("behind_luma"), rep.get("contrast"), rep.get("legible")),
+           rep.get("legible") is True and (rep.get("contrast") or 0) > 0.5,
+           "without it, white text on a 0.95 frame is invisible")
 if __name__ == "__main__":
     raise SystemExit(main())

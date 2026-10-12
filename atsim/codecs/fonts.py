@@ -96,6 +96,15 @@ FONTS: dict[str, FontSpec] = {
         key="apos", label="A-POS 点阵（中英文数字）",
         path=r"C:\USERS\ADMINISTRATOR\APPDATA\LOCAL\MICROSOFT\WINDOWS\FONTS\A-POS点阵修改后.TTF",
         scripts=("latin", "cjk")),
+    "ocr_a": FontSpec(
+        key="ocr_a", label="OCR-A（机器可读，OSD 经典）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\OCR-A BT.ttf"), scripts=('latin',)),
+    "ocr_b": FontSpec(
+        key="ocr_b", label="OCR-B（机器可读）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\OCR-B 10 BT.ttf"), scripts=('latin',)),
+    "ming": FontSpec(
+        key="ming", label="Ming-Imperial（中文点阵风格）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\Ming-Imperial-1.ttf"), scripts=('latin', 'cjk')),
 }
 
 #: which character class a codepoint belongs to, since the cell size depends on it

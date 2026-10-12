@@ -65,6 +65,15 @@ class OSDPlan:
     #: a dark border around every glyph.  This is what a real camcorder's OSD uses: it makes the text readable
     #: on any picture without obscuring any of it, which a box does not.
     outline: float = 1.0
+    #: the outline's own colour.  A generator's outline is a separate pen, not a darkened copy of the glyph --
+    #: which is why green-inside-black and red-inside-black are both possible and neither is a shade of white.
+    outline_colour: tuple[float, float, float] = (0.02, 0.03, 0.05)
+    #: a slant, as a shear.  A bitmap generator had no oblique; it sheared the glyph, so slanted OSD text has
+    #: stepped edges.  Applied to the mask after thresholding, so the pixel structure survives.
+    italic: float = 0.0
+    #: shadow offset in pixels, both axes
+    shadow_x: int = 2
+    shadow_y: int = 2
     opacity: float = 1.0
     #: threshold the glyph coverage into a one-bit mask.  On by default because all three fonts are
     #: bitmap-derived and a character generator's ROM is one bit per pixel -- there is no antialiasing
@@ -151,6 +160,19 @@ class CharacterGenerator:
                 pass
         a = np.asarray(big, np.float32) / 255.0
         small = a[1:1 + cell_h, 1:1 + cw]
+        if abs(self.plan.italic) > 1e-3:
+            # shear by indexing: row r is taken from column r * slant earlier, which is nearest-neighbour and
+            # therefore keeps the hard pixel edges a bitmap glyph has
+            slant = float(self.plan.italic)
+            hh, ww = small.shape
+            out_s = np.zeros_like(small)
+            for r in range(hh):
+                off = int(round((r - hh * 0.5) * slant))
+                src0 = max(0, -off)
+                src1 = min(ww, ww - off)
+                if src1 > src0:
+                    out_s[r, src0 + off:src1 + off] = small[r, src0:src1]
+            small = out_s
         if self.plan.hard_edges:
             # one bit per pixel, as the ROM is.  The midpoint is the only defensible threshold: a value at
             # or above half coverage is more on than off.
@@ -263,9 +285,14 @@ class CharacterGenerator:
                 base[r0:r1, c0:c1] = box + (bg[None, None, :] - box) * float(plan.opacity)
 
         if plan.shadow > 1e-3:
-            off = max(1, cell_h // 12)
+            ox = int(plan.shadow_x) if plan.shadow_x else max(1, cell_h // 12)
+            oy = int(plan.shadow_y) if plan.shadow_y else max(1, cell_h // 12)
             sh = np.zeros_like(a)
-            sh[off:, off:] = a[:-off, :-off]
+            ys = slice(max(0, oy), a.shape[0] + min(0, oy))
+            yd = slice(max(0, -oy), a.shape[0] + min(0, -oy))
+            xs = slice(max(0, ox), a.shape[1] + min(0, ox))
+            xd = slice(max(0, -ox), a.shape[1] + min(0, -ox))
+            sh[yd, xd] = a[ys, xs]
             base = base * (1.0 - sh[..., None] * plan.shadow)
 
         if plan.outline > 1e-3:
@@ -281,7 +308,8 @@ class CharacterGenerator:
                 sh[yd, xd] = a[ys, xs]
                 np.maximum(ring, sh, out=ring)
             border = np.clip(ring - a, 0.0, 1.0) * float(plan.outline)
-            dark = np.array([0.02, 0.03, 0.05], np.float32)
+            # the outline's own pen, not a darkened copy of the glyph
+            dark = np.asarray(plan.outline_colour, np.float32)
             base = base * (1.0 - border[..., None]) + dark[None, None, :] * border[..., None]
 
         col = np.array(plan.colour, np.float32)
@@ -304,7 +332,7 @@ class CharacterGenerator:
         elif plan.outline > 1e-3:
             # an outline gives the text its own dark backdrop whatever is underneath, so it is legible by
             # construction -- which is the reason real camcorders use one
-            dark = float(np.array([0.02, 0.03, 0.05], np.float32) @ COEF)
+            dark = float(np.asarray(plan.outline_colour, np.float32) @ COEF)
             reported["behind_luma"] = round(dark, 4)
             reported["contrast"] = round(abs(dark - text_luma), 4)
             reported["legible"] = reported["contrast"] >= 0.18

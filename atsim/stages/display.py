@@ -65,6 +65,15 @@ class DisplayStage(Stage):
         self.bloom = float(d.get("bloom", 0.35))
         self.defocus = float(d.get("defocus", 0.20))
         self.geometry = float(d.get("geometry_warp", 0.15))
+        # --- the tube's own geometry faults -------------------------------------
+        # A trapezoid raster: the yoke's scan is not rectangular to the tube face, so the top
+        # and bottom edges can differ in width and the left and right edges in height.
+        self.trapezoid_x = float(d.get("trapezoid_x", 0.0))
+        self.trapezoid_y = float(d.get("trapezoid_y", 0.0))
+        # Misconvergence: three beams through a shadow mask, so red and blue land slightly
+        # scaled about the centre.  Zero at the centre and growing outwards, which is why a real
+        # tube fringes at the edges and not in the middle.
+        self.convergence = float(d.get("convergence", 0.0))
         self.gamma = float(d.get("gamma", 2.35))
         self.color_temp = float(d.get("color_temp", 0.15))
         self.contrast = float(d.get("contrast", 0.55))
@@ -132,8 +141,39 @@ class DisplayStage(Stage):
         k = self.geometry * 0.035
         sx = nx * (1.0 + k * r2)
         sy = ny * (1.0 + k * 0.6 * r2) + self.geometry * 0.006 * nx * nx
+        # a keystone: the raster's width tapers from the top to the bottom, and its height from the left
+        # to the right.  Two independent faults, as on a real set with a knocked yoke.
+        if abs(self.trapezoid_x) > 1e-6 or abs(self.trapezoid_y) > 1e-6:
+            sx = sx * (1.0 + self.trapezoid_x * ny)
+            sy = sy * (1.0 + self.trapezoid_y * nx)
         src_x = np.clip((sx * 0.5 + 0.5) * (w - 1), 0, w - 1)
         src_y = np.clip((sy * 0.5 + 0.5) * (h - 1), 0, h - 1)
+        x0 = np.floor(src_x).astype(np.int32)
+        y0 = np.floor(src_y).astype(np.int32)
+        x1 = np.clip(x0 + 1, 0, w - 1)
+        y1 = np.clip(y0 + 1, 0, h - 1)
+        fx = (src_x - x0)[..., None].astype(np.float32)
+        fy = (src_y - y0)[..., None].astype(np.float32)
+        res = (y0, x0, y1, x1, fx, fy)
+        self._cache[key] = res
+        return res
+
+    def _channel_grid(self, h: int, w: int, scale: float):
+        """
+        A sampling grid with the image scaled about the centre by `scale`.
+
+        Used for misconvergence: scaling each channel about the centre makes the error zero in the middle and
+        worse at the edges, which is the shape a real tube has.  A uniform shift would instead fringe evenly
+        across the whole picture, which is the approximation this avoids.
+        """
+        key = ("conv", h, w, round(scale, 6))
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        cx, cy = (w - 1) * 0.5, (h - 1) * 0.5
+        src_x = np.clip(cx + (xx - cx) / max(1e-6, scale), 0, w - 1)
+        src_y = np.clip(cy + (yy - cy) / max(1e-6, scale), 0, h - 1)
         x0 = np.floor(src_x).astype(np.int32)
         y0 = np.floor(src_y).astype(np.int32)
         x1 = np.clip(x0 + 1, 0, w - 1)
@@ -149,7 +189,19 @@ class DisplayStage(Stage):
         y0, x0, y1, x1, fx, fy = self._geometry_indices(h, w)
         top = rgb[y0, x0] * (1.0 - fx) + rgb[y0, x1] * fx
         bot = rgb[y1, x0] * (1.0 - fx) + rgb[y1, x1] * fx
-        return (top * (1.0 - fy) + bot * fy).astype(np.float32)
+        out = (top * (1.0 - fy) + bot * fy).astype(np.float32)
+
+        if abs(self.convergence) > 1e-6:
+            # red is drawn slightly larger than green and blue slightly smaller, both about the centre, so
+            # the fringing is zero in the middle and grows towards the edges
+            c = self.convergence * 0.02
+            for ch, scale in ((0, 1.0 + c), (2, 1.0 - c)):
+                yy0, xx0, yy1, xx1, ffx, ffy = self._channel_grid(h, w, scale)
+                t = rgb[yy0, xx0] * (1.0 - ffx) + rgb[yy0, xx1] * ffx
+                b = rgb[yy1, xx0] * (1.0 - ffx) + rgb[yy1, xx1] * ffx
+                plane = (t * (1.0 - ffy) + b * ffy)
+                out[..., ch] = plane[..., ch]
+        return out
 
     # ------------------------------------------------------------------
     def _apply_crt_moisture(self, rgb: np.ndarray, frame_index: int
