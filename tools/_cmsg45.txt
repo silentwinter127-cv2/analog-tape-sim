@@ -1,0 +1,48 @@
+derive the overlay's font list, add a saturation point, and hold saturation to the end
+
+**The new fonts were unreachable, and for a reason this project keeps meeting.** The registry grew from three
+fonts to fifteen, the panel builds its dropdown from the registry, and the overlay stage still held
+
+    FONTS = ("osd", "lyusung", "apos")
+    key = self.FONTS[int(np.clip(round(self.font_kind), 0, len(self.FONTS) - 1))]
+
+so every index above 2 was clamped to `lyusung`. Measured over the API: **fourteen distinct font indices were
+posted and the server drew `lyusung` every time.** The interface showed fourteen fonts and all of them drew the
+same one. It is derived from `font_catalogue()` now -- the registry's own view, filtered for availability -- so
+the panel and the engine cannot disagree again, and the index the panel sends is the index the stage resolves.
+
+**The highlight chain could not produce white, which is the defect in the user's reference.** A CCD saturates:
+the well fills and the value clips. The shoulder here was
+
+    comp = knee + (1 - knee) * (1 - exp(-(lin - knee) / (1 - knee)))
+
+which is **asymptotic** -- it approaches 1.0 and never arrives -- so measured, a lamp at twice the reference white
+came out at **0.786 and no pixel in any picture could be pure white**. That is why the highlights read as flat
+grey, and it is not something a parameter could fix.
+
+The white point now follows the range, which is what `dynamic_range` means: `2 ** ((dr - 8) / 8)` puts it at
+twice the reference for an 8-stop sensor, 1.32x at 5 stops and 2.83x at 12, so a narrow-range CCD blows out
+sooner. Above it the value is exactly 1.0, and the shoulder is a rational curve normalised so the knee and the
+white point are both exact rather than fitted.
+
+**And the saturation is held to the end of the camera's chain**, because it was still being lost. Instrumenting
+`apply` method by method showed exactly where:
+
+    _roll_off      1.000     the shoulder saturates correctly after the fix
+    _halation      1.197
+    _sharpen       1.116     <- the unsharp mask averages the saturated core back down
+
+The hold had been placed immediately after `_aberration`, so the sharpening undid it: the mask was set (504
+pixels) and restored nothing. **Reading the file had been wrong twice; asking the object once settled it.** The
+hold is now the last thing the camera does, which is also the physically correct place -- the well fills at the
+imager and nothing downstream can legitimately un-clip it. Measured: the camera's own output now reaches 1.000
+over 432 pixels, and a normally exposed 0.45 source is untouched at 0.324.
+
+**One reduction remains and is not fixed.** The camera outputs 1.000, the format stage's `signal` reports a peak
+of 0.739, and the player rebuilds from the signal, so the final frame peaks at 0.73 rather than white. The
+composite encoder only adds chroma to luma and `composite_encode` cannot attenuate a flat white, so the loss is in
+the encode or in the player's reconstruction -- and that is the next thing to measure. It is recorded here rather
+than guessed at, because this turn has already produced three faults from reasoning about the code instead of
+asking it.
+
+143 checks pass, selftest ALL CHECKS PASSED.

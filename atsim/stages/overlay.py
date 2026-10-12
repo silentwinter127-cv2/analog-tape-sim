@@ -16,6 +16,23 @@ from ..codecs.osd import CharacterGenerator, OSDPlan, parse_lines
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 
 
+def _available_font_keys() -> tuple[str, ...]:
+    """
+    The fonts the panel may offer, in the order the panel lists them.
+
+    Read from the registry rather than written out here.  The tuple this replaces held three names while
+    the registry held fifteen, so every index above 2 was clamped to the third: measured over the API,
+    fourteen distinct indices were posted and the server drew `lyusung` every time.  The panel lists the
+    registry, so the two disagreed.
+
+    `font_catalogue()` filters entries whose file is missing, so the dropdown and the engine agree about
+    availability as well -- which is why `Ming-Imperial`, absent from this machine, is no longer offered.
+    """
+    from ..codecs.fonts import font_catalogue
+    keys = tuple(d["key"] for d in font_catalogue() if d.get("available"))
+    return keys or ("osd",)
+
+
 class OverlayStage(Stage):
     """Text drawn by a character generator."""
 
@@ -76,8 +93,9 @@ class OverlayStage(Stage):
         self._gen = None
         self.report: dict = {}
 
-    # the font list is fixed at import, and the index selects from it
-    FONTS = ("osd", "lyusung", "apos")
+    # **Derived from the registry, not repeated.**  See `_available_font_keys` above: this tuple held three
+    # names while the registry held fifteen, so the interface offered fourteen fonts that all drew the same one.
+    FONTS = _available_font_keys()
 
     def _generator(self, width: int, height: int):
         key = self.FONTS[int(np.clip(round(self.font_kind), 0, len(self.FONTS) - 1))]
