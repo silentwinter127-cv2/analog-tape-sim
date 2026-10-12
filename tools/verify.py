@@ -3183,5 +3183,81 @@ def check_style_and_crt() -> None:
            % (rep.get("behind_luma"), rep.get("contrast"), rep.get("legible")),
            rep.get("legible") is True and (rep.get("contrast") or 0) > 0.5,
            "without it, white text on a 0.95 frame is invisible")
+def check_fisheye_and_beam() -> None:
+    """
+    The tube face's curvature must be radial, and the beam's spot must control the scanline depth.
+
+    Two shapes, and in both cases "the output changed" proves nothing.
+
+    **A fisheye is a radial magnification.** The signature is that the centre barely moves while the edges bow,
+    because the mapping grows with radius. Measured: centre 0.00204 against edge 0.13829, a ratio of 68. A
+    uniform zoom would change the frame by a similar total amount and fail this.
+
+    **A scanline is the gap between beam passes, not a painted stripe.** The model previously used
+    `cos(2*pi*rows/1.4)` with a comment saying the period was chosen to keep a fine structure visible -- a
+    number picked for appearance, darkening whole rows without reference to the beam. The beam form has a
+    signature too: a smaller spot must give *deeper* lines, which is what a focus control does. It was written
+    inert twice, first by dividing the deviation by its mean and then by its spread, each of which cancels
+    exactly because the deviation is sampled once per line. Measured after the fix: 0.4316 at a spot of 0.20
+    against 0.0740 at 1.30, monotone, with the frame's mean unchanged.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+
+    class Grid:
+        def __init__(self, frames=2):
+            self.width, self.height, self.fps, self.frame_count = 240, 180, 25.0, frames
+
+        def frame(self, index):
+            a = np.zeros((self.height, self.width, 3), np.float32)
+            a[::20, :] = 0.85
+            a[:, ::20] = 0.85
+            return a
+
+    def render(**disp):
+        p = merge_values(BASE, {"display": dict({"enabled": 1.0, "scanlines": 0.0}, **disp)})
+        r = Renderer(Grid(), 240, 180, 25.0, p, seed=5)
+        return np.clip(r.render_frame(1), 0, 1)
+
+    a = render()
+    b = render(curvature=0.8)
+    d = np.abs(b - a).mean(axis=2)
+    h, w = d.shape
+    ctr = float(d[h // 2 - 10:h // 2 + 10, w // 2 - 10:w // 2 + 10].mean())
+    edge = float(np.concatenate([d[:6].ravel(), d[-6:].ravel(), d[:, :6].ravel(),
+                                 d[:, -6:].ravel()]).mean())
+    record("the tube's curvature is radial, not a uniform magnification",
+           "a curved face magnifies about the centre, so the centre barely moves and the edges bow",
+           "curvature 0.8: centre changes by %.5f, the edge band by %.5f (ratio %.0f)"
+           % (ctr, edge, edge / max(1e-9, ctr)),
+           edge > ctr * 8.0,
+           "a uniform zoom would change the frame by a similar total and fail this")
+
+    depths = {}
+    means = {}
+    for sigma in (0.20, 0.42, 0.90, 1.30):
+        img = render(scanlines=0.8, spot_sigma=sigma)
+        depths[sigma] = float(np.abs(np.diff(img.mean(axis=(1, 2)))).mean())
+        means[sigma] = float(img.mean())
+    ordered = [depths[s] for s in (0.20, 0.42, 0.90, 1.30)]
+    monotone = all(ordered[i] > ordered[i + 1] for i in range(len(ordered) - 1))
+    record("the beam's spot controls the scanline depth",
+           "a smaller spot leaves darker gaps, which is what a focus control does on a real set",
+           "; ".join("spot %.2f -> depth %.5f" % (s, depths[s])
+                     for s in (0.20, 0.42, 0.90, 1.30)),
+           monotone and ordered[0] > ordered[-1] * 3.0,
+           "written inert twice: dividing the deviation by its mean, then by its spread, each cancels "
+           "exactly because the deviation is sampled once per line -- measured 0.14360 for every spot")
+
+    spread = max(means.values()) - min(means.values())
+    record("the scanline structure costs no light",
+           "a mask whose mean shifts would be a brightness control with a misleading name",
+           "the frame's mean varies by %.5f across the four spot sizes" % spread,
+           spread < 0.002)
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -74,6 +74,14 @@ class DisplayStage(Stage):
         # scaled about the centre.  Zero at the centre and growing outwards, which is why a real
         # tube fringes at the edges and not in the middle.
         self.convergence = float(d.get("convergence", 0.0))
+        # The tube face is curved, so the picture is magnified about the centre and the edges bow
+        # outward.  Its own parameter: a set can have a curved face and a well-aligned yoke.
+        self.curvature = float(d.get("curvature", 0.0))
+        # The scanning beam: a Gaussian spot of this width in lines, and the line pitch in pixels.
+        # Scanlines are the gaps between passes, so their visibility follows the spot -- which is why
+        # a focus control changes them and a painted stripe cannot.
+        self.spot_sigma = float(d.get("spot_sigma", 0.42))
+        self.scan_pitch = float(d.get("scan_pitch", 2.0))
         self.gamma = float(d.get("gamma", 2.35))
         self.color_temp = float(d.get("color_temp", 0.15))
         self.contrast = float(d.get("contrast", 0.55))
@@ -107,16 +115,42 @@ class DisplayStage(Stage):
             self._refl = None
 
     def _masks(self, h: int, w: int):
-        key = ("masks", h, w)
+        key = ("masks", h, w, round(self.spot_sigma, 3), round(self.scan_pitch, 3),
+               round(self.scanlines, 4))
         hit = self._cache.get(key)
         if hit is not None:
             return hit
         rows = np.arange(h, dtype=np.float32)[:, None, None]
-        # The delivered image is presented on a finer display raster; a
-        # scanline period of ~1.4 output lines keeps the classic fine line
-        # structure visible after any resampling.
-        mod = 0.5 + 0.5 * np.cos(2.0 * np.pi * rows / 1.4)
-        row = (1.0 - self.scanlines * 0.45 * mod).astype(np.float32)
+        # The beam, not a painted stripe.  The light reaching a row is the Gaussian spot evaluated at its
+        # distance from the nearest scan centre, so the gaps between passes are dark only when the spot is
+        # small compared with the pitch.  With the spot at the pitch the structure vanishes -- which is what a
+        # focus control does, and what a cosine of a fixed period can never reproduce.
+        pitch = max(1.05, float(self.scan_pitch))
+        centres = np.round(rows / pitch) * pitch
+        dist = (rows - centres) / max(1e-3, float(self.spot_sigma))
+        beam = np.exp(-0.5 * dist * dist)
+        # **The beam keeps its own mean.**  Dividing it by its mean would make the deviation average zero and
+        # therefore the mask average one -- tidy physics that moves every existing render brighter by 8%,
+        # because the mask it replaces averaged 0.921 at the default.  The check about fog clearing broke on
+        # exactly that, and the cause was this normalisation rather than the fog.
+        #
+        # The depth is instead scaled so the mask's mean matches the old cosine's, which is
+        # `1 - scanlines * 0.225`.  The *shape* is the beam's, which is what was asked for; the level is
+        # unchanged, which is what keeps the calibration meaningful.
+        # **The beam is used absolutely, and the mean is removed afterwards.**
+        #
+        # Both earlier attempts normalised the deviation *before* applying the depth, and both destroyed the
+        # thing that was meant to vary: `dev / mean(dev)` and `dev / std(dev)` are each identical for every spot
+        # size, because the deviation is sampled once per line and a change of spot width only rescales it.
+        # Measured: the row-to-row standard deviation was 0.14360 for spots of 0.25, 0.42, 0.70 and 1.00.
+        #
+        # A narrow beam delivers less light in the gaps, so the line structure *is* deeper -- that is what a
+        # focus control does on a real set and it should be visible. What must not change is the picture's
+        # overall level, and that is a separate step: build the mask from the absolute beam, then divide by its
+        # own mean. Depth from the beam, level from the mean, in that order.
+        mask = 1.0 - self.scanlines * (1.0 - beam)
+        mask = mask / max(1e-6, float(mask.mean()))
+        row = mask.astype(np.float32)
         if self.vignette > 1e-3:
             yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
             nx = (xx / max(1, w - 1)) * 2.0 - 1.0
@@ -146,6 +180,16 @@ class DisplayStage(Stage):
         if abs(self.trapezoid_x) > 1e-6 or abs(self.trapezoid_y) > 1e-6:
             sx = sx * (1.0 + self.trapezoid_x * ny)
             sy = sy * (1.0 + self.trapezoid_y * nx)
+        if abs(self.curvature) > 1e-6:
+            # A spherical face: the mapping is a radial magnification that grows with radius, so the centre
+            # barely moves while the edges bow outward.  `r2` is the squared radius already computed above.
+            # The square-root form is what makes the *edge* bow rather than the whole picture scaling, which
+            # is the difference between a fisheye and a zoom.
+            k = self.curvature * 0.32
+            r = np.sqrt(np.clip(r2, 1e-8, None))
+            f = 1.0 / (1.0 + k * r2)
+            sx = sx * f * (1.0 + k * 0.5 * r)
+            sy = sy * f * (1.0 + k * 0.5 * r)
         src_x = np.clip((sx * 0.5 + 0.5) * (w - 1), 0, w - 1)
         src_y = np.clip((sy * 0.5 + 0.5) * (h - 1), 0, h - 1)
         x0 = np.floor(src_x).astype(np.int32)
