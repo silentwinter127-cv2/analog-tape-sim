@@ -3299,5 +3299,62 @@ def check_panel_controls_reachable() -> None:
            all(links.values()),
            "no check of the source text could have failed: the string was present the whole time, and the "
            "arrangement is what broke")
+def check_no_function_is_cut_in_half() -> None:
+    """
+    No function body may contain a line at column zero.
+
+    A function declaration inserted at a text anchor inside another function **ends that function early**: every
+    line after it becomes a top-level statement. That is what happened to `osdPanels` -- two colour helpers were
+    inserted at a comment that sits inside it, so about 170 lines of its body moved to module scope and referred
+    to `el`, `host` and `osdEls`, which do not exist there. The whole IIFE threw while loading, so **nothing** in
+    the client was built: no button, no pickers, no alignment controls, no panels. The user reported it four
+    times as "the button is missing".
+
+    **`node --check` cannot see this.** The file is syntactically valid; it is wrong only at run time.
+
+    The boundary comes from the **balanced braces**, which is what delimits a function in JavaScript. The first
+    version of this check looked for a `return` instead and crossed every boundary, failing on twenty-eight
+    perfectly good functions -- a check that fails on everything carries no more information than one that cannot
+    fail, and both are the fault this project keeps finding.
+    """
+    import re
+    path = os.path.join("atsim", "web", "static", "session_ui.js")
+    lines = open(path, encoding="utf-8").read().split("\n")
+
+    def body_span(i: int) -> int:
+        """The line index of the brace that closes the function declared at line `i`."""
+        depth = 0
+        seen = False
+        for j in range(i, len(lines)):
+            depth += lines[j].count("{") - lines[j].count("}")
+            if lines[j].count("{"):
+                seen = True
+            if seen and depth <= 0:
+                return j
+        return len(lines) - 1
+
+    broken = []
+    checked = 0
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)function\s+(\w+)", line)
+        if not m:
+            continue
+        checked += 1
+        last = body_span(i)
+        for j in range(i + 1, last):
+            cur = lines[j]
+            if not cur.strip():
+                continue
+            if not cur.startswith((" ", "\t")):
+                broken.append("%s (line %d) has a top-level line at %d" % (m.group(2), i + 1, j + 1))
+                break
+    record("no client function is cut in half by an insertion inside it",
+           "a function declaration inserted at a text anchor inside another function ends it early, and the body "
+           "after it becomes top-level statements referring to names that do not exist there",
+           ("; ".join(broken) if broken else
+            "all %d functions keep their bodies indented to their closing brace" % checked),
+           not broken,
+           "measured after `osdPanels` was split: the entire client failed to load and the user saw one "
+           "checkbox, while `node --check` passed because the file was still syntactically valid")
 if __name__ == "__main__":
     raise SystemExit(main())

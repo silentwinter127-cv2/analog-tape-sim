@@ -630,21 +630,6 @@
     host.append(fl, fsel);
 
 
-/* --- colour, as a picker rather than three sliders ------------------------------------------------
-   The parameters are `red`/`green`/`blue` and `outline_red`/`...`, six numbers to reach two colours.  A native
-   colour input writes the same three numbers, so the layer stays the source of truth and the numeric interface
-   keeps working. */
-function rgbOf(cur, rk, gk, bk) {
-  const c = (v) => Math.max(0, Math.min(255, Math.round(Number(v == null ? 0 : v) * 255)));
-  return "#" + [c(cur[rk]), c(cur[gk]), c(cur[bk])]
-    .map((v) => v.toString(16).padStart(2, "0")).join("");
-}
-function hexToRgb(hex) {
-  const m = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim());
-  if (!m) return null;
-  const n = parseInt(m[1], 16);
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-}
 
     // --- the style templates, which are the reference looks as one click
     const sl = el("div", "palGroup", "样式模板");
@@ -1027,4 +1012,21 @@ function hexToRgb(hex) {
   }
 
   window.SessionUI = { syncFromProject: syncFromProject, state: SUI };
+
+/* --- colour, as a picker rather than three sliders ------------------------------------------------
+   The parameters are `red`/`green`/`blue` and `outline_red`/`...`, six numbers to reach two colours.  A native
+   colour input writes the same three numbers, so the layer stays the source of truth and the numeric interface
+   keeps working. */
+function rgbOf(cur, rk, gk, bk) {
+  const c = (v) => Math.max(0, Math.min(255, Math.round(Number(v == null ? 0 : v) * 255)));
+  return "#" + [c(cur[rk]), c(cur[gk]), c(cur[bk])]
+    .map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
 })();
