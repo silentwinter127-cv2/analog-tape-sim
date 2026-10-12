@@ -41,10 +41,30 @@ input[type=number],input[type=text]{background:#151311;border:1px solid var(--li
 .chainnode.cached .nm{color:var(--good)}
 
 /* ---- layout ---- */
-main{display:grid;grid-template-columns:270px minmax(420px,1fr) 340px;gap:0;
-  height:calc(100vh - 108px)}
+/* The panel widths are variables so the arrangement stays declarative: the grid keeps describing the
+   layout while the splitters change the numbers. */
+main{display:grid;grid-template-columns:var(--w-left,270px) minmax(320px,1fr) var(--w-right,340px);
+  gap:0;height:calc(100vh - 108px)}
+/* In a workspace the bar takes the first row and the three editors the second.  An explicit
+   grid-template-areas rather than sizes, so the panels cannot be reordered by accident and a hidden panel's
+   track simply collapses.  **The splitters are not grid items** -- they are absolute overlays, because a named
+   five-pixel track does not collapse while the stage is explicitly placed beyond it: measured, the workspace
+   that hides both panels left the stage at `left: 5`. */
+main.wsGrid{position:relative;
+  grid-template-columns:var(--w-left,270px) minmax(320px,1fr) var(--w-right,340px);
+  grid-template-rows:auto minmax(0,1fr);
+  grid-template-areas:
+    "bar bar bar"
+    "left stage right";}
+main.wsGrid > .wsBar{grid-area:bar}
+main.wsGrid > #panelLeft{grid-area:left}
+main.wsGrid > .stage{grid-area:stage;min-height:0}
+main.wsGrid > #panelRight{grid-area:right}
+
 .panel{background:var(--panel);overflow-y:auto;border-right:1px solid var(--line)}
-.panel:last-child{border-right:none;border-left:1px solid var(--line)}
+.panel:last-child{border-right:none}
+main.wsGrid > #panelRight{border-right:none;border-left:none}
+
 .stage{display:flex;flex-direction:column;min-width:0;background:#0e0c0b}
 
 .tabs{display:flex;flex-wrap:wrap;gap:4px;padding:10px;position:sticky;top:0;
@@ -312,3 +332,42 @@ button.wide{width:100%;margin-top:8px}
 }
 
 .osdSticky .osdApply { margin-left: auto; }
+
+/* --- the workspace bar, a row of editors like Blender's ------------------------------------------ */
+.wsBar{
+  display:flex;align-items:center;gap:2px;padding:0 8px;height:32px;
+  background:var(--panel2);border-bottom:1px solid var(--line);
+}
+.wsTab{
+  background:transparent;border:1px solid transparent;color:var(--ink-dim);
+  font:12px/1 inherit;padding:5px 9px;border-radius:4px;cursor:pointer;
+}
+.wsTab:hover{color:var(--ink);background:#2a241e}
+.wsTab.on{color:#141110;background:var(--accent);border-color:var(--accent);font-weight:600}
+.wsSpacer{flex:1 1 auto}
+.wsHint{color:#6c6156;font-size:11px;margin-right:10px}
+.wsReset{font-size:11px;padding:4px 7px}
+
+/* --- the splitters, as overlays rather than grid items -------------------------------------------- */
+.wsSplit{
+  position:absolute;top:0;bottom:0;width:5px;cursor:col-resize;background:transparent;z-index:4;
+}
+/* the grab target is wider than the line, which is standard and is the reason this is not in the flow */
+.wsSplit::after{
+  content:"";position:absolute;top:0;bottom:0;left:-3px;right:-3px;
+}
+.wsSplit-left{left:calc(var(--w-left,270px) - 2px);border-left:1px solid var(--line)}
+.wsSplit-right{right:calc(var(--w-right,340px) - 2px);border-left:1px solid var(--line)}
+.wsSplit:hover,.wsSplit.dragging{background:var(--accent)}
+body.wsDragging{cursor:col-resize;user-select:none}
+body.wsDragging img{pointer-events:none}
+.wsSplit::after{
+  content:"";position:absolute;top:0;bottom:0;left:-2px;right:-2px;
+}
+.wsSplit:hover,.wsSplit.dragging{background:var(--accent);border-color:var(--accent)}
+body.wsDragging{cursor:col-resize;user-select:none}
+body.wsDragging img{pointer-events:none}
+
+/* a panel hidden by the workspace: the track collapses and the panel goes away entirely */
+.wsHidden{display:none !important}
+/* an overlay has no track to collapse: hiding it is enough */

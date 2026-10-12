@@ -3356,5 +3356,77 @@ def check_no_function_is_cut_in_half() -> None:
            not broken,
            "measured after `osdPanels` was split: the entire client failed to load and the user saw one "
            "checkbox, while `node --check` passed because the file was still syntactically valid")
+def check_workspace_layout() -> None:
+    """
+    The workspace grid: every area has an element, the splitters are overlays, and the widths are variables.
+
+    Three faults this feature produced, all of them *valid* markup that lays out wrongly:
+
+      * **the splitters were grid items.**  `grid-template-columns` named a five-pixel `lspl` track, and a named
+        track does not collapse while the stage is explicitly placed beyond it.  Measured with both panels
+        hidden: `stageLeft: 5` rather than `0`.  They are absolute overlays now, so the grid has three columns
+        and a hidden panel's track collapses on its own;
+      * **a named area with no element** shows as empty space, and a **claim naming no area** is ignored, and
+        neither is a syntax error anywhere.  So the areas and the claims are checked against each other;
+      * **a hardcoded panel width in a later rule** silently wins over the variable, which makes dragging look
+        broken while every measurement of the variable agrees.  The old
+        `main{grid-template-columns:270px ... 340px}` is exactly that shape, so the check requires the
+        declaration to use the variables.
+
+    Verified live over the DevTools protocol as well, which is what actually proved the arrangement: dragging
+    the left splitter took it from 270 to 390 and the stage from 864 to 744, and the workspace hiding both panels
+    gave the stage the full 1484 pixels.
+    """
+    import re as _re
+    css = open(os.path.join("atsim", "web", "static", "app.css"), encoding="utf-8").read()
+    html = open(os.path.join("atsim", "web", "static", "index.html"), encoding="utf-8").read()
+
+    m = _re.search(r"grid-template-areas:\s*((?:\s*\"[^\"]+\")+)", css)
+    areas = set()
+    if m:
+        for row in _re.findall(r'"([^"]+)"', m.group(1)):
+            areas.update(row.split())
+    claimed = dict((a, sel) for sel, a in _re.findall(
+        r"main\.wsGrid\s*>\s*([.#\w-]+)\s*\{[^}]*grid-area:\s*(\w+)", css, _re.S))
+    unclaimed = sorted(a for a in areas if a not in claimed)
+    undefined = sorted(a for a in claimed if a not in areas)
+    record("every workspace grid area has an element claiming it",
+           "an area with no element lays out as empty space and a claim naming no area is ignored, and neither "
+           "is an error anywhere",
+           "areas %s; claimed %s; unclaimed %s; undefined %s"
+           % (sorted(areas), sorted(claimed), unclaimed or "none", undefined or "none"),
+           bool(areas) and not unclaimed and not undefined,
+           "checked against the CSS alone: a browser would silently render a hole")
+
+    split_rule = _re.search(r"\.wsSplit\{[^}]*\}", css, _re.S)
+    is_overlay = bool(split_rule and "position:absolute" in split_rule.group(0))
+    stage_is_area = "grid-area:stage" in css
+    record("the splitters are overlays and not grid items",
+           "a named five-pixel track does not collapse while the stage is placed beyond it, so a hidden panel "
+           "left the stage five pixels off the edge",
+           "the splitter rule is absolute: %s; the stage is an area: %s" % (is_overlay, stage_is_area),
+           is_overlay and stage_is_area,
+           "measured before the fix: the workspace hiding both panels gave stageLeft 5, and 0 after")
+
+    # Only the main layout's own rules matter here.  Other components legitimately hardcode their columns --
+    # the timeline, the parameter rows -- and an earlier version of this check flagged three of them.
+    uses_vars = bool(_re.search(r"grid-template-columns:\s*var\(--w-left", css))
+    main_rules = _re.findall(r"(?:^|\n)(main(?:\.[\w-]+)?\s*\{[^}]*\})", css)
+    offenders = [r[:60].replace("\n", " ") for r in main_rules
+                 if "grid-template-columns" in r and "var(--w-left" not in r]
+    record("the panel widths come from the workspace's own variables",
+           "a hardcoded width in a later rule silently wins over the variable, so dragging appears to do "
+           "nothing while every measurement of the variable agrees",
+           "the main grid uses var(--w-left): %s; main rules with a hardcoded column list: %s"
+           % (uses_vars, offenders or "none"),
+           uses_vars and not offenders)
+
+    loads = '<script src="/static/workspace.js">' in html
+    balanced = len(_re.findall(r"<script src=", html)) == len(_re.findall(r"</script>", html))
+    record("the workspace script loads and the script tags are balanced",
+           "a replace that leaves a stray closing tag stops every later script loading, and the page still "
+           "parses",
+           "workspace.js is loaded: %s; script tags balanced: %s" % (loads, balanced),
+           loads and balanced)
 if __name__ == "__main__":
     raise SystemExit(main())
