@@ -1,0 +1,49 @@
+make lateral chromatic aberration a real displacement, and find out why the composite path removes it
+
+**The parameter was a blur, not a dispersion.** `_aberration` gave each channel its own lowpass and shifted
+nothing:
+
+    r = lowpass(rgb[..., 0], 1.0 + 2.2 * a)
+    b = lowpass(rgb[..., 2], 1.0 + 2.6 * a)
+    g = lowpass(rgb[..., 1], 1.0 + 0.5 * a)
+
+Measured, R/G/B softened almost equally -- 0.1107/0.1111/0.1057 falling to 0.0826/0.0823/0.0818 -- and no edge
+acquired a fringe. Blurring the channels by different amounts gives a coloured *haze*; a lens gives a coloured
+*fringe*, because the red and blue images arrive at slightly different magnifications about the optical axis.
+
+It is a radial resampling now, one grid per channel about the frame's centre, with the per-channel softening kept
+because a real lens does both. Called on a hard edge it produces exactly what it should: **red 300.204, green
+299.000, blue 297.804 at full strength -- a 2.4-pixel fringe**, with the raw channels showing red rising slowly,
+green steeply and blue between them.
+
+**And through the chain it disappears, which turned out to be correct.** Measured after every stage, as the
+`R-B` edge position:
+
+    camera     +2.226      the fringe is there
+    format     from the signal +0.149     <- 6.7% of it survives the composite encoding
+    player     -0.008      and the picture is rebuilt from the signal
+
+The format stage encodes to composite, and **NTSC composite chroma has about 1.3 MHz of bandwidth** -- roughly ten
+pixels of spatial resolution across this frame. A 2.2-pixel channel separation is far below that, so the encoder
+averages it away. **The composite path cannot carry a sharp channel offset**, which is why real VHS and Hi8
+footage never shows a crisp colour fringe: what it shows is a soft, spread coloured edge, and the reference's
+lights are exactly that.
+
+So the mechanism is in place and the softness is the apparatus rather than a defect -- **the characteristic the
+user asked for lives at the camera and the composite path is what shapes it.**
+
+**Four measurements were wrong before that one, and each was a different way of measuring a scene instead of the
+effect:**
+
+  * an edge locator that found the strongest gradient **per channel** on a bar pattern, so it reported three
+    different edges;
+  * a single edge at the **frame's centre**, where the radial term is zero by construction -- 0.6 px, inside the
+    noise;
+  * a window that spanned **both** edges of a bar, so the centroid measured the bar's centre;
+  * and the mean `R-B` near an edge, which is nearly blind to a channel offset because moving red sideways
+    redistributes its contribution symmetrically -- **that is why the camera read -0.171 while the finished frame
+    read 0.00000, and why the YIQ round trip appeared to be the culprit when it preserves a fringe exactly.**
+
+A position is what a displacement needs, and the centroid of one channel's gradient at one edge is one.
+
+148 checks pass, selftest ALL CHECKS PASSED.
