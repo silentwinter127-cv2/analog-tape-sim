@@ -3622,5 +3622,115 @@ def check_overflow_drain() -> None:
            "the frame's mean changes by %+.5f while the ring deepens by %.5f"
            % (float(on.mean() - off.mean()), depths[0.25]),
            abs(float(on.mean() - off.mean())) < 0.01 and depths[0.25] > 1e-3)
+def check_lateral_aberration() -> None:
+    """
+    Lateral chromatic aberration must be a *displacement*, and the composite chroma path must shape how much of
+    it reaches the picture.
+
+    **A displacement, not a difference in blur.**  The method this replaced gave each channel its own lowpass and
+    shifted nothing:
+
+        r = lowpass(rgb[..., 0], 1.0 + 2.2 * a)
+        b = lowpass(rgb[..., 2], 1.0 + 2.6 * a)
+        g = lowpass(rgb[..., 1], 1.0 + 0.5 * a)
+
+    Measured, R/G/B softened almost equally -- 0.1107/0.1111/0.1057 falling to 0.0826/0.0823/0.0818 -- and no edge
+    acquired a fringe.  Blurring the channels by different amounts gives a coloured *haze*; a lens gives a
+    coloured *fringe*, because the red and blue images arrive at slightly different magnifications about the
+    optical axis, so the effect is `k * a * r`: nothing at the centre and growing towards the corners.
+
+    **The metric is a position.**  Four earlier attempts measured intensity and every one was blind to a shift:
+    an edge locator that found a different edge per channel; an edge at the frame's centre where the radial term
+    is zero; a window spanning both edges of a bar; and the mean `R-B` near an edge, which is nearly invariant to
+    a sideways move because it redistributes the contribution symmetrically.  That last one is why the camera
+    measured -0.171 while the finished frame measured 0.00000 and the YIQ round trip looked guilty when it
+    preserves a fringe exactly.
+
+    **And the chain is asserted, not just the camera.**  The composite chroma path is what decides how much
+    survives -- measured, 2.226 px at the camera becomes 0.149 px in the format's signal -- so the check walks the
+    parameter that controls it, and also asserts the control: the luma bandwidth must not change the result.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    H, W = 300, 400
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+
+    class Hard:
+        """A hard vertical edge near the frame's border, where the radial term is largest."""
+
+        def __init__(self):
+            self.width, self.height, self.fps, self.frame_count = W, H, 25.0, 4
+
+        def frame(self, index):
+            a = np.zeros((H, W, 3), np.float32)
+            a[:, 300:] = 0.9
+            return a
+
+    def render(ab, bw=None, luma_bw=None):
+        fmt = {}
+        if bw is not None:
+            fmt["chroma_bandwidth"] = bw
+        if luma_bw is not None:
+            fmt["luma_bandwidth"] = luma_bw
+        p = merge_values(BASE, {"camera": {"exposure": 0.0, "chroma_aberration": ab},
+                                "format": fmt})
+        r = Renderer(Hard(), W, H, 25.0, p, seed=5)
+        return np.clip(r.render_frame(1), 0, 1)
+
+    def centroid(rgb, ch):
+        v = np.asarray(rgb)[H // 2, 288:312, ch].astype(np.float64)
+        g = np.abs(np.diff(v))
+        if g.sum() < 1e-9:
+            return float("nan")
+        return 288.0 + float((np.arange(g.size) * g).sum() / g.sum())
+
+    def fringe(rgb):
+        return centroid(rgb, 0) - centroid(rgb, 2)
+
+    # the camera must separate the channels, and by more as the parameter rises
+    p_cam = merge_values(BASE, {"display": {"enabled": 0.0}, "tape": {"enabled": 0.0},
+                                "player": {"enabled": 0.0}})
+    from atsim.core.pipeline import FrameBuffer
+
+    def camera_fringe(ab):
+        pp = merge_values(p_cam, {"camera": {"exposure": 0.0, "chroma_aberration": ab}})
+        r = Renderer(Hard(), W, H, 25.0, pp, seed=5)
+        r._build_chain()
+        buf = FrameBuffer(np.asarray(r._fit_source(r.source.frame(1)), np.float32), None, 1,
+                          0.04, r.std, {"field": 1})
+        return fringe(r.stage["camera"].apply(buf).rgb)
+
+    lo, hi = camera_fringe(0.0), camera_fringe(1.0)
+    record("lateral chromatic aberration displaces the channels radially",
+           "a lens focuses the three wavelengths at different magnifications, so the fringe is `k * a * r` -- "
+           "absent at the centre and growing outward. Blurring the channels by different amounts gives a haze",
+           "the R-B edge offset at the camera: %.3f px at 0.0, %.3f px at 1.0" % (lo, hi),
+           abs(lo) < 0.3 and abs(hi) > 1.5,
+           "measured before: R/G/B softened 0.1107/0.1111/0.1057 -> 0.0826/0.0823/0.0818, i.e. equally, and no "
+           "edge acquired a fringe at all")
+
+    surv = {bw: abs(fringe(render(1.0, bw=bw))) for bw in (0.25, 0.5, 0.75, 2.0)}
+    narrow = max(surv[b] for b in (0.25, 0.5, 0.75))
+    wide = surv[2.0]
+    record("the composite chroma bandwidth decides how much of the fringe survives",
+           "NTSC composite chroma has about 1.3 MHz of bandwidth, roughly ten pixels of resolution, so a "
+           "few-pixel channel offset is below what it can carry and the encoder averages it away",
+           "; ".join("chroma %.2f MHz -> %.3f px of fringe" % (k, v) for k, v in sorted(surv.items())),
+           narrow < 0.5 and wide > 1.0,
+           "measured after every stage: the camera produces 2.226 px, the format's signal carries 0.149, and the "
+           "picture is rebuilt from that signal.  **Not asserted as monotone**: at 0.25 MHz the chroma is filtered "
+           "so heavily that the edge centroid is moved by the filter's own phase response, which is a property of "
+           "the metric rather than of the dispersion -- 0.030 against 0.007 at 0.75.  The claim the physics makes "
+           "is that a narrow path suppresses the fringe and a wide one preserves it, and that is what is asserted")
+
+    lbw = {v: abs(fringe(render(1.0, luma_bw=v))) for v in (3.0, 6.0)}
+    record("the luma bandwidth does not change the fringe",
+           "the effect is in the chroma path; a fix that resharpened the edge would move this too",
+           "; ".join("luma %.1f MHz -> %.3f px" % (k, v) for k, v in sorted(lbw.items())),
+           max(lbw.values()) < 0.5)
 if __name__ == "__main__":
     raise SystemExit(main())
