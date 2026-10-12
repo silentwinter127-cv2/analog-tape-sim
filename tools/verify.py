@@ -2333,13 +2333,48 @@ def check_autocontrol() -> None:
            "the loop can run correctly and its result never be used",
            "largest luma difference against no loop: %.4f" % moved, moved > 0.02)
 
-    awb = run({"awb_enabled": 1.0, "awb_tau_s": 1.5})
-    first, last = cast(awb[0]), cast(awb[-1])
-    record("auto white balance reduces the cast during the clip",
-           "the loop nulls the scene's average colour, which a static cast cannot do",
-           "cast %.4f at frame 0, %.4f at frame %d" % (first, last, N - 1),
-           last < first,
-           "a static colour cast cannot drift, which is the argument for a loop")
+    # **The loop's own contribution, on a cast that does not move.**
+    #
+    # The previous form compared frame 0 against frame N-1 and the clip's cast decays on its own: measured, loop
+    # off takes it 1.2725 -> 1.0140 and loop on 1.2668 -> 1.0493, so the scene supplied the whole 0.2585 of the
+    # reduction and the loop contributed **-0.0353**.  It passed by **0.0005**, which is what a check passes by
+    # when it is measuring the scene generator's drift rather than the loop.
+    #
+    # Sixty frames at tau 1.5 s is also two fifths of a time constant, so the old form read the first part of a
+    # curve.  Measured on a stationary cast the gain walks 1.0 -> 0.906 over 200 frames and the cast falls
+    # 1.1573 -> 1.0615: real, monotone, and **bounded**, because a real auto-white-balance corrects towards its
+    # metering target and holds some of the cast instead of nulling every scene.
+    def run_steady(over, n):
+        """The same size and seed, with a cast present identically in every frame."""
+
+        class Steady:
+            def __init__(self):
+                self.width, self.height, self.fps, self.frame_count = W, H, FPS, n
+
+            def frame(self, index):
+                a = np.full((H, W, 3), 0.30, np.float32)
+                a[..., 0] += 0.16            # a fixed warm cast, in every frame
+                a[..., 2] -= 0.08
+                a[40:120, 40:200] = 0.75     # and a bright area, so the metering has range
+                return a
+
+        p = merge_values(base, {"camera": dict({"exposure": 0.0}, **over),
+                                "display": {"enabled": 0.0}, "tape": {"enabled": 0.0},
+                                "player": {"enabled": 0.0}})
+        rr = Renderer(Steady(), W, H, FPS, p, seed=9)
+        return [np.clip(rr.render_frame(i), 0, 1) for i in (0, n - 1)]
+
+    STEADY_N = 120
+    c_off = cast(run_steady({"awb_enabled": 0.0}, STEADY_N)[-1])
+    c_on = cast(run_steady({"awb_enabled": 1.0, "awb_tau_s": 1.5}, STEADY_N)[-1])
+    record("auto white balance reduces a cast that cannot drift",
+           "the loop integrates the scene's average colour and drives the channels together. A fixed cast cannot "
+           "drift away on its own, so every part of the reduction is the loop's",
+           "with the loop off the cast settles at %.4f; with it on %.4f (%+.4f, %.1f%% of the cast removed)"
+           % (c_off, c_on, c_on - c_off, 100.0 * (1.0 - c_on / c_off)),
+           c_on < c_off * 0.98,
+           "the previous form compared frame 0 against frame %d and the clip's own decay supplied 0.2585 of the "
+           "reduction, so it passed by 0.0005 while measuring the wrong quantity" % (N - 1))
 
 def check_operator() -> None:
     """
@@ -3428,5 +3463,84 @@ def check_workspace_layout() -> None:
            "parses",
            "workspace.js is loaded: %s; script tags balanced: %s" % (loads, balanced),
            loads and balanced)
+def check_highlight_reaches_white() -> None:
+    """
+    A saturated highlight must reach white in the camera's own output, and a normal scene must not be lifted.
+
+    `_roll_off` compresses the sensor's highlights, and the curve it used was
+
+        knee + (1 - knee) * (1 - exp(-(lin - knee) / (1 - knee)))
+
+    which is **asymptotic**: it approaches 1.0 and never arrives. Measured, a lamp at twice the reference white
+    left the step at **0.991** -- 504 pixels at or above 1.0 went in and zero came out -- and only `_halation`
+    afterwards lifted them back. **No pixel in any picture could be pure white**, which is why the highlights read
+    as flat grey and why the user's reference, whose whole character is a large blown white core with a halo,
+    could not be reproduced.
+
+    The replacement puts the white point where `dynamic_range` says it is -- `2 ** ((dr - 8) / 8)`, so a
+    narrow-range CCD blows out sooner -- and normalises a rational shoulder so that `comp(knee) == knee` and
+    `comp(white) == 1.0` exactly.
+
+    **The camera's own output is what is measured.** The stages below it rebuild the picture from a signal, so a
+    measurement taken at the end conflates this curve with the whole chain -- and an earlier attempt to fix the
+    same symptom at the end of the chain broke the auto-white-balance loop instead, because it clamped the pixels
+    that loop acts on. Measured here: a 2.5x source peaks at 1.106 with 188 pixels at or above white, and a 0.45x
+    source is untouched.
+    """
+    import numpy as np
+
+    from atsim.core.pipeline import FrameBuffer
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    W, H = 200, 260
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+
+    class Lamp:
+        def __init__(self, level):
+            self.width, self.height, self.fps, self.frame_count = W, H, 25.0, 4
+            self.level = level
+
+        def frame(self, index):
+            a = np.full((H, W, 3), 0.14, np.float32)
+            a[H // 2 - 14:H // 2 + 14, W // 2 - 3:W // 2 + 3] = self.level
+            return a
+
+    def camera_out(level, **over):
+        p = merge_values(BASE, {"camera": dict({"exposure": 0.0}, **over),
+                                "display": {"enabled": 0.0}, "tape": {"enabled": 0.0},
+                                "player": {"enabled": 0.0}})
+        r = Renderer(Lamp(level), W, H, 25.0, p, seed=5)
+        r._build_chain()
+        buf = FrameBuffer(np.asarray(r._fit_source(r.source.frame(1)), np.float32), None, 1, 0.04,
+                          r.std, {"field": 1})
+        return np.clip(r.stage["camera"].apply(buf).rgb, 0.0, 2.0)
+
+    bright = camera_out(2.5)
+    white = int((bright >= 0.999).sum())
+    record("a saturated highlight reaches pure white in the camera's own output",
+           "the sensor's well fills and the value clips; a curve that only approaches white cannot produce the "
+           "blown core that is the whole character of an overexposed highlight",
+           "a 2.5x source peaks at %.3f with %d pixels at or above 1.0" % (float(bright.max()), white),
+           float(bright.max()) >= 0.999 and white > 20,
+           "measured before: the step returned 0.991 and 504 pixels at or above 1.0 went in with zero coming out")
+
+    normal = camera_out(0.45)
+    record("a normally exposed scene is not lifted by the saturation curve",
+           "a fix based on a floor would raise the whole picture; only pixels at the sensor's white point may move",
+           "a 0.45x source peaks at %.3f" % float(normal.max()),
+           float(normal.max()) < 0.9,
+           "the shoulder is a per-pixel curve, so a value below the knee passes through unchanged")
+
+    # and the white point must follow the sensor's range, which is what the parameter means
+    peaks = {}
+    for dr in (5.0, 8.0, 12.0):
+        peaks[dr] = float(camera_out(2.5, dynamic_range=dr).max())
+    record("the sensor's white point follows its dynamic range",
+           "a narrow-range CCD blows out sooner and a wide one holds more; that is what the parameter is for",
+           "; ".join("dr %.0f (white %.2f) -> peak %.3f" % (d, 2.0 ** ((d - 8.0) / 8.0), peaks[d])
+                     for d in sorted(peaks)),
+           all(v >= 0.999 for v in peaks.values()))
 if __name__ == "__main__":
     raise SystemExit(main())

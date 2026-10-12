@@ -207,13 +207,25 @@ class CameraStage(Stage):
         """
         dr = float(np.clip(self.dynamic_range, 3.0, 16.0))
         knee = float(np.clip(0.5 ** (dr / 8.0), 0.05, 0.95))
+        # **The sensor's saturation point, and the curve must reach it exactly.**  The curve that was here was
+        # asymptotic -- it approaches 1.0 and never arrives -- so a saturated highlight left this step at 0.991:
+        # measured, 504 pixels at or above 1.0 went in and zero came out.  No pixel in any picture could be pure
+        # white, which is the one thing the reference shows and this model did not.
+        #
+        # The white point follows the range, which is what `dynamic_range` means: 2 ** ((dr - 8) / 8) is twice the
+        # reference at 8 stops, 1.32x at 5 and 2.83x at 12.  A rational shoulder normalised so that
+        # `comp(knee) == knee` and `comp(white) == 1.0` exactly, so both points are exact rather than fitted.
+        #
+        # **Nothing is clamped after this.**  The gain stages -- the AE and AWB loops -- run before it, so they
+        # already act on a value that may exceed white; a hold added afterwards is what broke the colour-cast
+        # check on an earlier attempt, and it was solving a problem that did not exist.
+        white = float(2.0 ** ((dr - 8.0) / 8.0))
         lin = np.clip(rgb, 0.0, None)
-        # soft knee: x / (1 + x/limit) style compression, normalised to unity at knee
-        comp = np.where(
-            lin <= knee,
-            lin,
-            knee + (1.0 - knee) * (1.0 - np.exp(-(lin - knee) / max(1e-4, 1.0 - knee))),
-        )
+        span = max(1e-4, white - knee)
+        t = np.clip((lin - knee) / span, 0.0, 1.0)
+        rise = (2.0 * t) / (1.0 + t)
+        comp = np.where(lin <= knee, lin, knee + (1.0 - knee) * rise)
+        comp = np.where(lin >= white, 1.0, comp)
         return comp.astype(np.float32)
 
     def _flare(self, rgb: np.ndarray) -> np.ndarray:
