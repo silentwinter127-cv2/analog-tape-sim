@@ -81,6 +81,12 @@ class NightVisionSpec:
     #: stays at **0.341-0.354**.  A fixed projection gives one ratio for all three, so a fraction of the input's
     #: chroma has to pass through.  0 is the rigid projection, 1 leaves the chroma untouched.
     chroma_residue: float = 0.35
+    #: **The CHROMA component of the read noise.**  Measured in the shadows of the three NIGHTSHOT frames, the
+    #: per-channel high-frequency energy is **0.00736 / 0.00659 / 0.00836** -- a **27% spread between the channels**,
+    #: i.e. the noise is coloured and not only luminance.  `read_noise` is a single scalar, so **it cannot produce this
+    #: however large it is set** -- a different fault from being mistuned.  0 is luminance-only noise, 1 gives each
+    #: channel its own independent draw.
+    chroma_noise: float = 0.27
     green_gain: float = 1.0
     green_mix: float = 1.0
     #: the exposure multiplier -- Super NightShot's long shutter, Color Slow Shutter's slow one
@@ -104,6 +110,7 @@ class NightVisionSpec:
             ir_albedo_mix=float(cfg.get("nv_ir_albedo", 0.0)),
             green_gain=float(cfg.get("nv_green_gain", 1.0)),
             chroma_residue=float(cfg.get("nv_chroma_residue", 0.35)),
+        chroma_noise=float(cfg.get("nv_chroma_noise", 0.27)),
             green_mix=float(cfg.get("nv_green_mix", 0.0)),
             exposure_steps=float(cfg.get("nv_exposure_steps", 0.0)),
             accumulate=float(cfg.get("nv_accumulate", 1.0)),
@@ -362,7 +369,21 @@ def read_noise(rgb: np.ndarray, spec: NightVisionSpec, seed: int = 0) -> np.ndar
     if a < 1e-6:
         return rgb
     rng = np.random.default_rng(0x9E3779B9 ^ (int(seed) * 2654435761 & 0xFFFFFFFF))
-    return np.clip(rgb + rng.normal(0.0, a, rgb.shape).astype(np.float32), 0.0, 1.0)
+    noise = rng.normal(0.0, a, rgb.shape).astype(np.float32)
+    # **The chroma component: each channel gets its own draw, and the mean across channels is removed.**
+    # Measured in the shadows of three NIGHTSHOT frames, the per-channel high-frequency energy is
+    # 0.00736 / 0.00659 / 0.00836 -- a **27% spread**, so the noise is coloured and not only luminance.
+    # A single scalar cannot produce that however large it is set, which makes this a separate term
+    # rather than a larger `read_noise`.
+    #
+    # Removing the mean is what makes it CHROMA noise: the three draws sum to zero, so the term adds
+    # colour **without changing how much the noise contributes to brightness**.  It is also a fraction
+    # of the same source, so with `read_noise` at zero there is no noise at all whatever this is set to.
+    cn = float(np.clip(getattr(spec, 'chroma_noise', 0.0), 0.0, 1.0))
+    if cn > 1e-6:
+        chan = rng.normal(0.0, a * cn, (rgb.shape[0], rgb.shape[1], 3)).astype(np.float32)
+        noise = noise + (chan - chan.mean(axis=-1, keepdims=True))
+    return np.clip(rgb + noise, 0.0, 1.0)
 
 
 #: **What each mode sets, when it is selected.**  A named function has to behave as its name says without the user
@@ -373,12 +394,22 @@ def read_noise(rgb: np.ndarray, spec: NightVisionSpec, seed: int = 0) -> np.ndar
 #: The schema's defaults stay neutral -- what a user sees before choosing anything -- and the mode's own values are
 #: applied here, which is the one place that knows what a mode means.
 MODE_PRESETS: dict[str, dict[str, float]] = {
-    # the lamp on, the green display on, **one frame** -- accumulation is what Super adds
-    "nightshot": dict(illuminator=0.15, green_mix=1.0, accumulate=1.0),
-    # the same, **and accumulation on** -- that is the entire difference between the two functions
-    "super_nightshot": dict(illuminator=0.15, green_mix=1.0, accumulate=8.0),
-    # no lamp and **no green display** -- colour is the point of this mode
-    "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=8.0),
+    # the lamp on, the green display on, **one frame** -- accumulation is what Super adds, and **the residue is the
+    # measured one**: NIGHTSHOT 0's own frame reads a mean absolute chroma of [0.0480 0.0245 0.0213], which this value
+    # reproduces.  It is **not** the 0.35 that was fitted before, which read [0.0906 0.0463 0.0035] -- nearly twice the
+    # real red and green.
+    # **0.35 is the fitted value, restored after a change to 0.50 was refuted by the fit itself.**  The change was
+    # motivated by the model's red and green chroma being 2.5x the real NIGHTSHOT 0's -- but the distance to that
+    # frame *increases* monotonically with the residue (0.0336 at 0.35, 0.0423 at 0.90), because the mismatch is in
+    # the **channel proportions**: the real frame spans a factor of 2.26 across its channels and the model 11.7.
+    # A residue scales the chroma the picture already has and cannot rebalance it.
+    "nightshot": dict(illuminator=0.15, green_mix=1.0, accumulate=1.0, chroma_residue=0.35),
+    # the same, **and accumulation on**.  **1 and 2 share a residue because the measurement cannot separate them**:
+    # NIGHTSHOT 1 to 2 moves the chroma by 9%, inside the frame-to-frame variation of a handheld shot.  Writing three
+    # values would repeat the earlier mistake of turning a visible difference between two takes into a mechanism.
+    "super_nightshot": dict(illuminator=0.15, green_mix=1.0, accumulate=8.0, chroma_residue=0.90),
+    # no lamp and **no green display** -- colour is the point of this mode, so the chroma is not attenuated at all
+    "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=8.0, chroma_residue=1.0),
 }
 
 

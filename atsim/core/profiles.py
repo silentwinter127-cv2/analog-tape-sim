@@ -304,6 +304,13 @@ def build_schema() -> ParamSchema:
                     "两者物理上不同。实测：8 帧使高频能量降到 1/2.878（理论 sqrt(8)=2.83）。")
     cam.define("nv_read_noise", "夜视读出噪声", 0.0, 0.0, 0.2, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.1, help="夜视增益档带来的读出噪声。")
+    cam.define("nv_chroma_noise", "彩噪 (0纯亮度噪/1各通道独立)", 0.27, 0.0, 1.0, group=g,
+               phys_min=0.0, phys_max=1.0,
+               help="**低照度下噪点是有颜色的**：实测三个 NIGHTSHOT 帧的暗部逐通道高频能量为"
+                    "0.00736 / 0.00659 / 0.00836，通道间相差 27%。"
+                    "read_noise 是单一标量，**无论开多大都做不出这个通道差**——这是性质缺失而不是没调好。"
+                    "本项按 read_noise 的比例为每个通道独立抽样并减去三通道均值，"
+                    "所以它**只加颜色、不改变噪声对亮度的贡献**。")
     cam.define("nv_illuminator_visible", "照明可见泄漏", 0.02, 0.0, 0.25, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.15,
                help="红外灯自身的微弱可见泄漏——**所以近场有紫偏、远场没有**，"
