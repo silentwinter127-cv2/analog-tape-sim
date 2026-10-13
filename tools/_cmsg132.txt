@@ -1,0 +1,61 @@
+find the 89% brightness excess by attribution, and fix the term that caused it
+
+**The excess was found by attributing it stage by stage, which is the step the earlier rounds skipped.**  Each component
+was added to the one before it and the mean luminance recorded:
+
+    the source photograph alone                 0.1973    -
+    the mode off (baseline chain)               0.1422    -0.0551
+    + the mode on, nothing else                 0.4441    **+0.3019**   2.251x
+    + the infrared illuminator                  0.4441    **+0.0000**   2.251x
+    + the mode's exposure bias                  0.8969    +0.4528        4.546x
+    the mono display applied to the source      0.1973    luma gain **0.99977**
+
+**Two suspects were eliminated by measurement rather than by reasoning.**  The **illuminator** is additive and was the
+prime suspect by construction -- it contributes **exactly zero**.  And the **mono display** carries luminance exactly
+(0.99977), so the normalisation question that occupied the previous round was never the cause: its sum/luminance
+distinction is a **0-13%** effect, and I had inferred a 1.61x fault from it **without checking the sign against the
+effect it was meant to explain.**
+
+**The cause is `ir_highlights`, which ADDED `lum^0.55` to the picture instead of blending it:**
+
+    ir = np.power(lum, 0.55)
+    return rgb + ir[..., None] * m
+
+**`lum^0.55 >= lum` everywhere in [0, 1]**, measured on the photograph's own percentiles: **5.306x at the 1st, 2.416x at
+the 50th, 1.165x at the 99th** -- so it is an **additive brightening of the shadows**, and at the schema's `m = 0.70` it
+was the whole of the excess.  Gating it off moved the chain from **0.4441 to 0.1989**.
+
+**And its own docstring says it is a blend**: the term exists so the picture appears *"bright where a surface returns
+near-IR and dark where it does not"*, with `ir_albedo_mix` setting how much of its appearance the term governs.
+**Adding a positive quantity can only brighten; governing an appearance is a mix** -- so the implementation contradicted
+its stated intent, the fault class this project has met repeatedly.
+
+**The fix separates two jobs, because one was not enough.**  Scaling the channels by the per-pixel ratio `lum_new / lum`
+gives the right tone curve but not the right mean -- `mean(rgb * s) != mean(rgb) * mean(s)` unless `s` is uniform, and
+the measured gain came out **1.30 to 1.86**.  So the per-pixel ratio supplies the **tone curve** and **one uniform
+constant** then restores the mean, which a uniform scale does exactly:
+
+    shape = lum_new / lum                      which pixels lift and which deepen
+    out   = rgb * shape                        the appearance, at the wrong overall level
+    out  *= mean(lum) / mean(lum(out))         one constant, and the mean is carried
+
+**Result, verified:**
+
+    the chain's level at the schema's defaults   2.2507x -> **0.9895x**   (the real frame is 1.19x)
+    the gain across the mix 0.0 / 0.35 / 0.7 / 1.0   1.00000 / 1.04683 / 1.07825 / 1.09796
+    and the tone curve survives: the 1st percentile +153%, the 25th +78%, the 50th +34%,
+    the 75th -10%, the 99th -25% -- pale surfaces lifting and dark ones deepening, which is the IR character
+
+**The residual 1.05-1.10x at higher mixes is clipping**, since the compensation runs after a scale that pushes some
+pixels past 1.0 -- stated rather than tuned away.
+
+**One thing the result render showed that is NOT fixed, and it is reported rather than buried.**  With the level
+corrected, the three modes render **identically** through the test chain, although the residue is **verified to work at
+the module level** (channel means 0.150/0.298/0.242 at 0.0 against 0.157/0.284/0.281 at 0.35) and is **verified to
+propagate** through the schema and the spec.  So it is being attenuated **downstream** -- that chain sets
+`chroma_bandwidth` to 4.0 and `saturation` to 0.62, both of which compress chroma.  **A mechanism that works at its own
+level and not through the chain is the same fault class again**, and it is the next item rather than something this
+round resolved.
+
+163 checks pass, selftest clean.  `tools/attribute.py` and `tools/confirm_ir.py` are kept: the first is what divided the
+excess among its causes, and the second is what isolated the term that owned it.
