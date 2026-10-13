@@ -149,8 +149,13 @@ def illuminator_field(height: int, width: int, spec: NightVisionSpec) -> np.ndar
     # the floor it is aimed at either: its brightness is finite at any distance and it is the *ratio* between near and
     # far that reads as the characteristic falloff.  So the field is scaled so that a mid distance receives
     # `illuminator`, and the near field saturates at a bounded multiple of it.
+    # **The field reads 1.0 at the reference distance and falls from there.**  The first version normalised in a way
+    # that gave 16.67 at the near field, so `illuminator = 0.10` added 1.67 of light instead of 0.10 -- every mode blew
+    # out (blown fraction 27%, 55%, 98.5%).  The bound at the near field is a modest multiple of unity, because a lamp
+    # whose light is unity at the reference distance is a few times that on the floor in front of it, not sixteen.
     ref = 0.75
-    field = ref * ref / np.maximum(dist * dist, ref * ref * 0.06)
+    near_bound = 3.0
+    field = np.minimum(ref * ref / np.maximum(dist * dist, 1e-4), near_bound)
     return (spec.illuminator * cone * field).astype(np.float32)
 
 

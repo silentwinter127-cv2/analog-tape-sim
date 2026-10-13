@@ -93,7 +93,44 @@ class CameraStage(Stage):
         self.grain = float(cfg.get("noise_grain", 1.4))
         self.fixed_pattern = float(cfg.get("fixed_pattern", 0.0))
         self.dynamic_range = float(cfg.get("dynamic_range", 8.0))
+        # --- the night-vision modes ------------------------------------------------
+        # Physical reconstruction rather than a colour grade: the illuminator, the removal of the IR-cut
+        # filter, the monochrome green display, and frame accumulation.  Built against the reference clip
+        # `索尼F717夜视测试`, segmented into its four modes and measured per segment.
+        from ..codecs.nightvision import NightVisionSpec
+        self.nv = NightVisionSpec.from_params(cfg)
+        #: The recent post-exposure frames, so a mode that accumulates has frames to sum.  The module
+        #: returns the mean, so the picture stays at the same scale as a single frame -- which is what makes
+        #: the noise *fall* rather than the brightness rise.
+        self._nv_history: list = []
         self.exposure = float(cfg.get("exposure", 0.0))
+        # **The night-vision exposure bias is added here, not applied as a gain at the end.**  The stage's own
+        # exposure feeds the auto-exposure loop, the roll-off, the gain stages and the white balance in a fixed
+        # order; a multiplier bolted on afterwards would lighten the picture without it ever having been exposed
+        # differently -- no shift in the highlight roll-off and nothing for the AE loop to react to.  Super
+        # NightShot's character *is* a different exposure, so the bias belongs in the value.
+        self._exposure_base = self.exposure
+        # the mode's own bias, added to whatever the user set -- through the same value, so it is exposed
+        # rather than painted on.  Zero when the mode is off.
+        self.exposure = self._exposure_base + self._nv_exposure_bias()
+        # **The night-vision exposure bias is added here, not applied as a gain at the end.**  The stage's own
+        # exposure feeds the auto-exposure loop, the roll-off, the gain stages and the white balance in a fixed
+        # order; a multiplier bolted on afterwards would lighten the picture without it ever having been exposed
+        # differently -- no shift in the highlight roll-off and nothing for the AE loop to react to.  Super
+        # NightShot's character *is* a different exposure, so the bias belongs in the value.
+        self._exposure_base = self.exposure
+        # the mode's own bias, added to whatever the user set -- through the same value, so it is exposed
+        # rather than painted on.  Zero when the mode is off.
+        self.exposure = self._exposure_base + self._nv_exposure_bias()
+        # **The night-vision exposure bias is added here, not applied as a gain at the end.**  The stage's own
+        # exposure feeds the auto-exposure loop, the roll-off, the gain stages and the white balance in a fixed
+        # order; a multiplier bolted on afterwards would lighten the picture without it ever having been exposed
+        # differently -- no shift in the highlight roll-off and nothing for the AE loop to react to.  Super
+        # NightShot's character *is* a different exposure, so the bias belongs in the value.
+        self._exposure_base = self.exposure
+        # the mode's own bias, added to whatever the user set -- through the same value, so it is exposed
+        # rather than painted on.  Zero when the mode is off.
+        self.exposure = self._exposure_base + self._nv_exposure_bias()
         # --- automatic control loops -------------------------------------------
         # A handycam has no operator setting exposure; it has a loop that measures the
         # picture and moves a control, with a time constant, and gets it slightly wrong.
@@ -234,6 +271,42 @@ class CameraStage(Stage):
         if abs(self.exposure) < 1e-4:
             return rgb
         return rgb * float(2.0 ** self.exposure)
+
+    def _night_vision(self, rgb: np.ndarray, stage: str) -> np.ndarray:
+        """
+        The night-vision terms, called twice per frame because they belong in two different places.
+
+        `stage="scene"` runs **before the sensor**: the illuminator's light reaches the scene and comes back, and the
+        cut filter's removal lets the sensor admit near-infrared. `stage="display"` runs **after every sensor term**:
+        the monochrome green view, which is the viewfinder's output and therefore the last thing to happen.
+
+        Kept as one method with a stage argument rather than two, so the physical ordering is visible in one place
+        instead of being implied by two call sites far apart in `apply`.
+        """
+        from ..codecs.nightvision import add_illuminator, ir_highlights, mode_of, monochrome_green
+        if mode_of(self.nv) == "off":
+            return rgb
+        if stage == "scene":
+            out = add_illuminator(rgb, self.nv)
+            out = ir_highlights(out, self.nv)
+            return out
+        # the display stage
+        out = monochrome_green(rgb, self.nv)
+        return out
+
+    def _nv_exposure_bias(self) -> float:
+        """
+        The extra exposure a night-vision mode asks for, in the model's exposure units.
+
+        **This is how Super NightShot and Color Slow Shutter get brighter** -- through the same exposure path as every
+        other setting, so the picture meets the same roll-off, gain and white-balance machinery. A mode off returns
+        nothing, so the parameter is inert unless a mode is selected.
+        """
+        from ..codecs.nightvision import mode_of
+        m = mode_of(self.nv)
+        if m == "off" or abs(self.nv.exposure_steps) < 1e-4:
+            return 0.0
+        return float(self.nv.exposure_steps)
 
     def _roll_off(self, rgb: np.ndarray) -> np.ndarray:
         """
@@ -766,6 +839,10 @@ class CameraStage(Stage):
         if self.is_3ccd:
             rgb = self._color_cleanup(rgb)
 
+        # **The night-vision scene terms, before the sensor.**  The illuminator is outside the camera, so its
+        # light is part of what the camera is looking at -- added here rather than at the end, where it would
+        # be light added to an already-exposed picture.
+        rgb = self._night_vision(rgb, "scene")
         rgb = self._roll_off(rgb)
         # fog is on the front element, so light passes through it before anything else
         if self.lens_fog > 1e-4:
@@ -811,6 +888,20 @@ class CameraStage(Stage):
         rgb = source_glow(rgb, self.lens)
         rgb = spherical(rgb, self.lens)
         rgb = self._sharpen(rgb)
+        # **The monochrome green view, after every sensor term.**  It is the viewfinder's output, so
+        # nothing at the sensor can follow it.  Frame accumulation also happens here, on the
+        # post-exposure picture -- summing pre-exposure frames would sum the same frame N times and show
+        # no noise reduction, which is the one thing the mode exists to change.
+        from ..codecs.nightvision import accumulate, mode_of
+        if mode_of(self.nv) in ("nightshot", "super_nightshot", "colour_slow_shutter"):
+            n = int(round(float(np.clip(self.nv.accumulate, 1.0, 64.0))))
+            if n > 1:
+                self._nv_history.append(rgb.copy())
+                if len(self._nv_history) > n:
+                    self._nv_history = self._nv_history[-n:]
+                if len(self._nv_history) == n:
+                    rgb = accumulate(list(self._nv_history), self.nv)
+        rgb = self._night_vision(rgb, "display")
         if getattr(self, "_defocus", 0.0) > 1e-4:
             # a Gaussian of radius growing with defocus.  The factor is chosen so that full defocus
             # (1.0) is a clearly soft picture and the loop's typical steps are visible but gentle.

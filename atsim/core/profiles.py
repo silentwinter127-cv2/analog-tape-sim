@@ -243,6 +243,56 @@ def build_schema() -> ParamSchema:
                     "因为加光会同时抬高线和周围、从而减小它们的差，"
                     "也就稀释了线的颜色（这正是灯杆蓝色丢失的原因）。"
                     "实测：原来靠调低泛光来提对比，结果对比从 0.2185 掉到 0.2069，方向相反。")
+    # --- the night-vision modes ------------------------------------------------
+    cam.define("nv_mode", "夜视模式", 0.0, 0.0, 3.0, unit="0-3", group=g,
+               phys_min=0.0, phys_max=3.0, source="索尼 Digital 8 / DSC-F717 的三种夜视功能",
+               help="**从物理底层重建的索尼夜视功能。**"
+                "0 = 关；1 = NightShot（拆掉红外截止滤镜 + 开红外照明，显示为绿单色）；"
+                "2 = Super NightShot（更长曝光 + 帧积累，所以【更亮且更少噪】）；"
+                "3 = Color Slow Shutter（保留彩色、只放慢快门）。"
+                "对照素材 `索尼F717夜视测试` 的分段实测：绿段 G 占比 0.44-0.58、色相散度 0.06-0.18；"
+                "彩色段 G 占比 0.28-0.30、色相散度 0.24-0.37。")
+    cam.define("nv_illuminator", "红外照明强度", 0.15, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.6,
+               help="**平方反比、且在锥形光束内**——所以近场被照亮、走廊远处归黑。"
+                    "这是手持 NightShot 画面最好认的特征，而它来自灯而不是场景。"
+                    "实测：`illuminator=1.0` 时场从近场 7.41 降到地平线 0.11，58/58 步单调下降。")
+    cam.define("nv_beam_x", "照明光轴 X", 0.5, 0.0, 1.0, unit="x", group=g,
+               phys_min=0.0, phys_max=1.0, help="红外灯瞄准的位置（画面横向）。")
+    cam.define("nv_beam_y", "照明光轴 Y", 0.75, 0.0, 1.0, unit="y", group=g,
+               phys_min=0.0, phys_max=1.0, help="红外灯瞄准的位置（画面纵向；机位在画面底部）。")
+    cam.define("nv_beam_angle", "光束角", 0.55, 0.1, 2.0, unit="rad", group=g,
+               phys_min=0.15, phys_max=1.5, help="红外灯的锥形光束宽度。")
+    cam.define("nv_ir_albedo", "近红外反射占比", 0.70, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.9,
+               help="**NightShot 的物理核心：拆掉红外截止滤镜后，画面由【近红外反射率】主导，**"
+                    "而近红外反射率与可见光颜色【无关】——这是为什么皮肤、植被、白布会发亮，"
+                    "而深色衣物和沥青变黑，这是任何调色都做不出来的。")
+    cam.define("nv_ir_response", "红外响应", 1.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0, help="红外截止滤镜被移除的程度（0 = 滤镜在位）。")
+    cam.define("nv_green_mix", "绿单色显示", 1.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0,
+               help="1 = 纯绿单色取景，0 = 保留原色。"
+                    "**是【单轴增益】而不是去饱和**——实测素材绿段的通道差大而色相散度小"
+                    "（0.06-0.18 对彩色照片的 0.37），这正是单色取景器接到彩色录像机的结果。")
+    cam.define("nv_green_gain", "绿通道增益", 1.0, 0.5, 1.6, unit="x", group=g,
+               phys_min=0.7, phys_max=1.4, help="绿单色显示里绿通道的增益。")
+    cam.define("nv_exposure_steps", "夜视曝光补偿", 0.00, 0.0, 3.0, unit="EV", group=g,
+               phys_min=0.0, phys_max=2.5,
+               help="**模式自己的曝光提升，走相机正常的曝光通路**——"
+                    "所以在高光滚降、增益噪声和白平衡上都和普通曝光一样。"
+                    "在末端乘一个系数只会让画面变亮，而没有真的被曝光过。")
+    cam.define("nv_accumulate", "帧积累", 1.0, 1.0, 16.0, unit="frames", group=g,
+               phys_min=1.0, phys_max=16.0,
+               help="**Super NightShot 的关键：信号相干相加、噪声按平方根相加，"
+                    "所以信噪比按 sqrt(N) 改善。**单次 N 倍曝光则会同时放大暗电流和散粒噪声，"
+                    "两者物理上不同。实测：8 帧使高频能量降到 1/2.878（理论 sqrt(8)=2.83）。")
+    cam.define("nv_read_noise", "夜视读出噪声", 0.0, 0.0, 0.2, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.1, help="夜视增益档带来的读出噪声。")
+    cam.define("nv_illuminator_visible", "照明可见泄漏", 0.02, 0.0, 0.25, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.15,
+               help="红外灯自身的微弱可见泄漏——**所以近场有紫偏、远场没有**，"
+                    "这是给【灯】上色而不是给画面上色。")
     cam.define("source_glow", "光源色散射晕", 0.0, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.8,
                help="**光源的光在空气和镜片里散射，散射光带的是光源自己的颜色**——"

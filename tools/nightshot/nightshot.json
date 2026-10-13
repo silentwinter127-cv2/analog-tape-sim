@@ -1,0 +1,46 @@
+{
+  "params": {
+    "camera": {
+      "chroma_aberration": 0.0,
+      "ccd_smear": 0.0,
+      "halation": 0.0,
+      "nv_mode": 1.0,
+      "spike_spread": 0.0,
+      "flare_defocus": 0.0
+    },
+    "format": {
+      "luma_bandwidth": 5.0,
+      "chroma_bandwidth": 2.0
+    },
+    "codec": {
+      "dv_enabled": 1.0
+    },
+    "tape": {
+      "head_switching": 0.0
+    },
+    "player": {
+      "luma_bandwidth": 5.0,
+      "chroma_bandwidth": 2.0
+    },
+    "display": {
+      "enabled": 1.0,
+      "gamma": 1.0,
+      "saturation": 0.62,
+      "scanlines": 0.0,
+      "interlace_flicker": 0.0,
+      "geometry_warp": 0.0,
+      "spot_sigma": 0.0,
+      "scan_pitch": 0.0,
+      "mask_depth": 0.0,
+      "vignette": 0.0,
+      "bloom": 0.0,
+      "defocus": 0.0,
+      "reflection": 0.0,
+      "crt_age": 0.0
+    }
+  },
+  "param_count": 26,
+  "seed": 20240101,
+  "standard": "ntsc",
+  "note": "nv_mode selects the function: 1 NightShot, 2 Super NightShot, 3 Color Slow Shutter. The clip's green segments measure G share 0.44-0.58 and hue spread 0.06-0.18."
+}

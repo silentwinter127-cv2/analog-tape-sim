@@ -1,0 +1,48 @@
+wire the night-vision modes into the camera, the schema and the renderer, and calibrate them against the clip
+
+**The modes now render, and each one measures against the reference clip's own segmented figures.**
+
+    mode                          mean     blown     G share   hue spread   hf (noise)   channel ratio
+    off (baseline)                0.1203   0.00794   0.2931    0.5326       0.00795      0.580:0.293:0.127
+    **1 NightShot**               0.4884   0.01126   **0.5064** **0.1657**   0.01000      0.298:0.506:0.195
+    **2 Super NightShot, 8 fr**   0.4936   **0.00496** 0.5085   0.1553      **0.00585**   0.297:0.509:0.194
+    **3 Color Slow Shutter, 8 fr** 0.4502  0.09229   0.3364    0.3860       0.00692      0.386:0.336:0.278
+
+    the clip's green segments:  G share 0.44-0.58,  hue spread 0.06-0.18,  ratio 0.29:0.46:0.25
+
+**NightShot hits the clip's green range on both quantities** (G share 0.5064 inside 0.44-0.58, hue 0.1657 inside
+0.06-0.18) and its ratio 0.298:0.506:0.195 is close to the clip's 0.29:0.46:0.25. **Super NightShot's noise is lower
+than NightShot's** (0.00585 against 0.01000) **because it sums frames** -- the physical distinction between the two
+green modes, and the reason the clip's own green segments differ by a factor of about four. **Color Slow Shutter keeps
+colour and has no green dominance** (G share 0.3364 against NightShot's 0.5064), which is what "colour" means here.
+
+**Five faults were found and fixed getting there, and four of them are the project's recurring classes.**
+
+  * **the parameters were inert** (all four modes identical at mean 0.4066): `nv_*` was not declared in the schema, so
+    `merge_values` never carried it -- the "reachable but inert" fault in its exact form;
+  * **a read-order fault**: `_read_params` folded the exposure bias into `self.exposure` *before* reading the
+    night-vision spec, so every render raised `AttributeError`. A sequence insertion needs to know what depends on
+    what -- the same lesson as the lens-ordering fault, where a move has to preserve the sequence and not just the set;
+  * **the illuminator was miscalibrated by 16x**: the field normalised to 16.67 at the near field, so
+    `illuminator = 0.10` added 1.67 of light. **The same class as the `source_glow` coefficient**, a scale set against a
+    synthetic case and out by more than an order of magnitude on real material;
+  * **the default exposure bias was far too strong** (1.0 EV, giving a 24.7% blown fraction against the baseline's
+    0.8%); with it at 0.0 the blown fraction is 1.1% and the green share lands in range. **Calibration, not structure**;
+  * **a test supplied its own value and so could not report on a default** -- the modes test passed
+    `nv_exposure_steps = 0.8` explicitly and measured the old setting. The same "the instrument was measuring something
+    else" fault that recurred earlier.
+
+**And two things were verified rather than assumed.** The exposure bias **is not inert** (0.0 / 0.8 / 2.0 give 0.3433 /
+0.8857 / 0.9703, so folding it into `self.exposure` does reach the auto-exposure loop), and **it is correctly gated by
+the mode** (with `nv_mode = 0` and `exposure_steps = 2.0` the output is bit-identical to the baseline). Frame
+accumulation is verified against theory rather than against a target: **8 frames reduce high-frequency energy by 2.878
+against sqrt(8) = 2.83.**
+
+**Deliverables**: `tools/nightshot/nightshot.json` (26 parameters, mode selectable), the four mode renders
+`tools/nightshot/mode_*.png`, and `atsim/codecs/nightvision.py` as the physical layer.
+
+**Still to do, and it is the remaining part of the objective**: the **WebUI** -- a mode selector and the twelve
+parameters need to appear in the interface with live preview, and the offline render path exercised end to end for a
+multi-frame accumulating mode, which requires the renderer to supply a sequence rather than a single frame.
+
+163 checks pass, selftest clean.
