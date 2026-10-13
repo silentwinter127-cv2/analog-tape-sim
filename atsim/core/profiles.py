@@ -251,9 +251,10 @@ def build_schema() -> ParamSchema:
                     "也就稀释了线的颜色（这正是灯杆蓝色丢失的原因）。"
                     "实测：原来靠调低泛光来提对比，结果对比从 0.2185 掉到 0.2069，方向相反。")
     # --- the night-vision modes ------------------------------------------------
-    cam.define("nv_mode", "夜视模式 0关/1NightShot/2Super/3ColorSlow", 1.00, 0.0, 3.0, unit="", group=g,
+    cam.define("nv_mode", "夜视模式 0关/1NightShot/2Super/3ColorSlow", 0.00, 0.0, 3.0, unit="", group=g,
                phys_min=0.0, phys_max=3.0, source="索尼 Digital 8 / DSC-F717 的三种夜视功能",
                help="**从物理底层重建的索尼夜视功能。**"
+                "**默认 0（关闭）：模式是被选择的功能，不是一个一直在运行的机制。**"
                 "0 = 关；1 = NightShot（拆掉红外截止滤镜 + 开红外照明，显示为绿单色）；"
                 "2 = Super NightShot（更长曝光 + 帧积累，所以【更亮且更少噪】）；"
                 "3 = Color Slow Shutter（保留彩色、只放慢快门）。"

@@ -1,0 +1,53 @@
+wire three night-vision parameters that were declared but never read, and find that a mode default had broken twelve checks
+
+**The check that found the inert parameters.** Each was varied over its **full declared range** and the frames compared.
+Three gave **bit-identical output**:
+
+    nv_green_gain     0.5 to 1.6     identical frame
+    nv_read_noise     0.0 to 0.2     identical frame
+    nv_ir_response    0.0            identical frame
+
+**All three are the "declared, reachable, and never read" fault**, which this project has found in `agc_range`,
+`chroma_under_luma`, `player.line_delay`, `tape.row_chroma_*`, `player.chroma_vert_blend`, `crt_age`, `convergence`,
+`mask_depth`, and in `nv_*` itself before it reached the schema. **`nv_ir_response` was the worst**, because it means
+*the IR-cut filter has been removed* -- NightShot's entire physical premise -- and setting it to 0 changed nothing.
+
+**Now, measured:**
+
+    nv_green_gain    0.5 -> G share 0.2891      1.6 -> 0.7520     (a hue shift: the mean moves under 0.05)
+    nv_ir_response   0.0 -> mean 0.19862 against the mode's 0.42520, i.e. back toward the baseline
+    nv_read_noise    0.0 -> identical (correct) 0.2 -> the picture moves
+
+**And `nv_read_noise` is applied to each frame BEFORE the sum**, which is where its meaning lives: read noise adds per
+frame at the sensor, so N frames add it N times in quadrature while the signal adds N times coherently. **Applied after
+the sum it would not fall at all, and the model could not show why the camera has an accumulating mode** -- the entire
+content of Super NightShot. The law is now verified on the real render path:
+
+    mode                           mean       hf (noise)   1/sqrt(N)   measured
+    NightShot (1 frame)            0.42801    0.01030      1.0000      1.0000
+    Super NightShot, 2 frames      0.43158    0.00775      0.7071      0.7527
+    Super NightShot, 4 frames      0.43656    0.00535      0.5000      0.5193
+    Super NightShot, 8 frames      0.44113    0.00340      0.3536      0.3304
+    Super NightShot, 16 frames     0.44541    0.00240      0.2500      **0.2326**
+
+**Sixteen frames measure 0.2326 against the predicted 0.2500.**
+
+**And then twelve checks failed, from a fault of my own making.** `nv_mode` had been given the default **1.0** -- i.e.
+**NightShot on by default** -- so every render that did not explicitly select a mode was a green infrared picture, and
+the camera's own mechanisms measured as inert against it: the overflow drain's dark ring, chromatic aberration's lateral
+displacement, the composite chroma bandwidth, the luma bandwidth, the scanline structure, the saturation curve, and both
+auto loops. **A mode parameter's default must be "off": a function that is selected is not a function that is running.**
+Set to 0, the suite returns to **163 passed**.
+
+**And the cause of that value is a tooling fault worth recording.** It was written by a helper that rewrote the *third
+comma-separated argument* of each `define(...)` call -- which is not the argument count, because those calls carry
+`unit=`, `group=g`, `phys_min=`, `source=` and `help=` keywords whose strings and nested calls contain commas. **The
+safe form is a targeted replacement of the exact text**, which is what fixed it, and the other five values were then
+checked rather than assumed.
+
+**Where the objective stands.** The physics, the module, the camera wiring, the schema, the render path, the calibration
+and all thirteen parameters are done and measured. The twelve parameters **already appear in the interface** -- they are
+in the camera layer's "光学与传感器" group, confirmed by reading `/api/schema`. **What remains is a mode dropdown and a
+browser verification pass**, which is the last step.
+
+163 checks pass, selftest clean.
