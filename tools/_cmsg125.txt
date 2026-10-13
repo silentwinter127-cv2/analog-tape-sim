@@ -1,0 +1,68 @@
+verify the user's segment boundaries, and withdraw an accumulation claim that a control refuted
+
+**The boundaries are now the recordings' own, given by the operator rather than inferred by me.** Seven times were
+supplied, converted to frames at 30 fps and checked before being used:
+
+    0-690      0-23 s      normal colour
+    690-1350  23-45 s      the first mode (NightShot)
+    1350-1560 45-52 s      normal colour
+    1560-1590 52-53 s      the first mode (NightShot), short
+    1620-2040 54-68 s      NIGHTSHOT 1
+    2040-2490 68-83 s      NIGHTSHOT 2
+
+**And none of the seven is a cut**, which corrects the assumption the previous round was building on:
+
+    frame 690   corr 0.9877   neighbourhood median 0.9972, 1st percentile 0.7891
+    frame 1350  corr 0.9241   median 0.9476
+    frame 1560  corr 0.9950   median 0.9805
+    frame 1590  corr 0.9220   median 0.9854   a dip, but inside the neighbourhood's range
+    frame 1620  corr 0.9942   median 0.9844
+    frame 2040  corr 0.9999   median 0.9997
+    frame 2490  corr 0.9998   median 0.9995
+
+**Every one is above its own neighbourhood's 1st percentile**, so this is **one continuous recording in which the
+operator changed settings**, not seven edits. The genuine hard cut found earlier -- the block-diagonal correlation
+matrix at frame 2382 -- is **inside the 68-83 s segment**, not at any of these boundaries. **So the statistics of each
+segment are a take's own and not an average across cuts**, which is what the earlier rounds could not say.
+
+**The segments are measurably distinct**, from the 30 fps scan:
+
+    segment                        frames   R        G        B        hue      luma     hf
+    normal (0-23 s)                  690   0.2603   0.3284   0.4109   0.4846   0.0761   0.00278
+    first mode / NightShot (23-45 s) 660   0.2892   0.3690   0.3410   0.7202   0.1976   0.01340
+    normal (45-52 s)                 210   0.1833   0.3261   0.4897   0.3889   0.1091   0.00601
+    first mode / NightShot (52-53 s)  30   0.2804   0.3477   0.3711   0.6223   0.1023   0.00739
+    NIGHTSHOT 1 (54-68 s)            420   0.2339   0.4125   0.3529   0.2068   0.2532   0.02309
+    NIGHTSHOT 2 (68-83 s)            450   0.2011   0.4439   0.3543   0.2463   0.3390   0.01711
+
+**The two normal segments are the control that makes the rest meaningful**: 0-23 s is **blue-dominant** (B 0.4109 >
+G 0.3284 > R 0.2603) with hue 0.4846, and 45-52 s is **the bluest in the clip** (B 0.4897). Both are far from the
+NightShot segments on every axis, so the discriminator works.
+
+**One claim was made and then refuted by its own control, and it is withdrawn.** NIGHTSHOT 2 against NIGHTSHOT 1 reads
+**greener (0.4125 to 0.4439), 34% brighter (0.2532 to 0.3390) and 26% lower in detail (0.02309 to 0.01711)** -- and
+those three moving together is the signature of **frame accumulation**, which implied **N = 1.82 from the noise law and
+N = 2.25 from the motion**, converging on about 2 frames. **The model's preset uses 8, so it looked like a four-fold
+error worth correcting.**
+
+**The control refuted it.** The camera's own displacement was measured per segment by aligning consecutive frames:
+
+    NIGHTSHOT 1   8.71 px per frame
+    NIGHTSHOT 2   2.99 px per frame      the speed ratio is 0.343
+
+**A camera moving at a third of the speed produces a third of the frame-to-frame change with no accumulation at all** --
+and dividing the motion ratio 0.444 by the speed ratio 0.343 gives **1.296, which implies N = 0.77**. So the motion
+ratio is **explained by the shooting** and is not evidence about the camera. **And the noise law cannot be measured from
+one segment either**: across the frames of each, `corr(luma, hf)` is **+0.077** and **-0.030**, i.e. no noise signature.
+
+**So what the two NightShot segments differ by is gain and white balance** -- 34% brighter and 0.031 greener with B
+unchanged at 0.3543 -- **and the accumulation count is not determinable from this footage.** The preset stays at 8 for
+now: **the honest state is that this clip does not constrain it**, and changing it on the strength of the refuted
+estimate would have written a guess into the model as a calibration.
+
+**The lesson, recorded because it is the second time this session**: a ratio between two *different takes* measures the
+takes as much as the mechanism. The default's value is a separate question from whether the mechanism works, and the
+mechanism's law was verified against a controlled moving source where the camera's speed was a known input.
+
+163 checks pass, selftest clean. `tools/seg_verify.py` and `tools/seg_accum_control.py` are kept: one verifies
+boundaries, the other is the control that stopped a wrong calibration.
