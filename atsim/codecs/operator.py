@@ -51,11 +51,23 @@ class ShakeComponent:
 
 #: A hand, as the four things a hand actually does.  The amplitudes fall with frequency, and the
 #: ratio between them is what the eye reads as a human hand rather than as a fault.
+#:
+#: **The rates are calibrated against footage, not chosen.**  A 103 s handheld clip's own offset autocorrelates at
+#: **48 frames (1.60 s) at r = 0.671**; at the original rates (0.9 / 2.1 / 5.5 / 9.5 Hz) this profile autocorrelated at
+#: **25 frames (0.83 s) at r = 0.15**, i.e. at the footage's *second harmonic* rather than its fundamental.  Scaling
+#: every rate by **0.60** brings the composite to **42-45 frames (1.40-1.50 s)**.
+#:
+#: **Its periodicity strength is a known limit and is deliberately not forced.**  Across fifteen combinations of rate
+#: and drift the autocorrelation peak stays between **0.12 and 0.22** against the footage's **0.671**, and lowering the
+#: drift does not raise it -- it makes a drift component dominant and pushes the period out to **4-9 s**.  So this
+#: represents an *unsteady hand*, whose motion is random at a characteristic rate, and the footage shows an *operator
+#: sweeping deliberately*, which is a different kind of motion.  Adding a second sway term to reach r = 0.67 would give
+#: the model two sources for one behaviour, so the rates are the part that is corrected and the strength is recorded.
 HAND: tuple[ShakeComponent, ...] = (
-    ShakeComponent("postural sway", 0.9, 0.0100, 0.20),
-    ShakeComponent("walking / breathing", 2.1, 0.0042, 0.25),
-    ShakeComponent("arm and shoulder", 5.5, 0.0016, 0.30),
-    ShakeComponent("physiological tremor", 9.5, 0.0008, 0.35),
+    ShakeComponent("postural sway", 0.54, 0.0100, 0.20),
+    ShakeComponent("walking / breathing", 1.26, 0.0042, 0.25),
+    ShakeComponent("arm and shoulder", 3.30, 0.0016, 0.30),
+    ShakeComponent("physiological tremor", 5.70, 0.0008, 0.35),
 )
 
 

@@ -223,9 +223,11 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     axis**, which is what a monochrome viewfinder fed to a colour recorder produces: the electronics route one signal to
     the green channel and leave a little in the others.
 
-    `green_mix` is the amount of colour remaining: **0 is a pure green display, 1 leaves the picture alone.** The
-    reference clip's own R:G:B ratio inside the green segments is about **0.29 : 0.46 : 0.25**, which fixes the
-    proportions once the mix is chosen.
+    `green_mix` is the amount of colour remaining: **0 leaves the picture alone, 1 is the monochrome view.** The
+    proportions are **measured rather than assumed**, and they differ by subject: a corridor with no coloured emitters
+    reads `0.29:0.46:0.25`, while a NightShot frame of an **RGB case** -- whose own emitters are blue, cyan and magenta
+    -- reads `0.2168:0.4294:0.3538`, i.e. **0.10 more blue**.  The triple in use is the second, because a fixed one
+    cannot fit both, and the weights are normalised by their own luma so the view carries the picture's brightness.
     """
     # **`green_mix` is the amount of the monochrome green display, so 1 is a pure green view and 0 leaves the picture
     # alone.**  The first version had it the other way round while its own comment and its name said otherwise:
@@ -241,7 +243,15 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # 0.46228, a 0.70 at 0.80898, all at a gain of 1.15569.  A monochrome view does not brighten the scene it is
     # displaying.  Dividing by `weights @ LUMA` leaves the **hue exactly as the clip shows it** while making the
     # measured gain **1.0000** on every level below clipping.
-    weights = np.array([0.29, 0.46, 0.25], dtype=np.float32)
+    # **The proportions are the camera's, measured on material that has coloured emitters in it.**  The earlier
+    # reference was a corridor -- no coloured light sources -- and gave `0.29:0.46:0.25`.  This clip's stable green
+    # stretch, on an RGB case whose own emitters are blue, cyan and magenta, measures `0.2168:0.4294:0.3538`:
+    # **0.10 more blue**.  A fixed triple cannot fit both, because the triple describes *the display plus what the
+    # sensor passed*, not the display alone.
+    weights = np.array([0.2168, 0.4294, 0.3538], dtype=np.float32)
+    # **and normalised by their own luma, so the view still carries the picture's brightness** -- the property a
+    # previous round established by measurement, where a constant multiplier gave a 15.6% gain (1.15569 on every flat
+    # field) and the normalisation brought it to 1.0000.  Calibrating the ratios must not disturb that.
     weights = weights / float(weights @ LUMA)
     # **The green gun's own gain.**  `nv_green_gain` was declared and never read -- measured, 0.5 and 1.6 gave
     # bit-identical frames.  It scales the green channel alone, which is what a viewfinder's green gain does, and then
