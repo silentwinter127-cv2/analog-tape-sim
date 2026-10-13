@@ -1,0 +1,56 @@
+try two more lens mechanisms, measure both honestly, ship neither
+
+**Both were implemented, both were measured, and neither produced its own signature.** Four attempts in total
+across two mechanisms, and the record of what each measured is the useful part.
+
+**Aspherical bokeh** -- a mirror lens images an out-of-focus point as a ring rather than a disc, because the
+aperture has an obstruction. Three constructions:
+
+    wide_blur - narrow_blur        mostly negative: a hole with a faint rim.  Measured, the centre fell by 0.125
+                                   while the ring's radius rose by 0.0003 -- it dimmed the highlight, no ring
+    an annulus weighted by the     nothing.  A defocused dot's detail is a few pixels wide and one wide blur
+    frame's local detail           flattens it before an annulus can be taken; the rise was 0.00015
+    narrow_blur - wide_blur, its   raises the **centre** by up to 0.33.  The difference of two blurs of the same
+    positive part                  blob peaks at the blob's middle, so the largest rise was at r = 0 every time
+
+**The third is a fact, not a bug:** a radial structure cannot be obtained by convolving a compact feature, because
+the convolution of a blob is a blob. A ring has to be built explicitly around each feature's own position and
+radius.
+
+**Axial chromatic aberration** -- a blown highlight on these sensors gets a magenta edge, because the channels
+saturate at different exposures. Two placements:
+
+    at the end of apply, after the   interior R-B -0.174, edge -0.008, largest at r = 0: a **uniform tint**, and
+    roll-off                         backwards. A blown region is white, so compressing all three channels'
+                                     excess catches them equally and nothing can differ
+    ahead of the roll-off, on a      centre +0.176, skirt +0.176, outside 0.000 -- the profile falls
+    shallow-skirted warm lamp        **monotonically** outward, so there is no band. The core's value is largest
+                                     only because a warm lamp's core is its warmest part
+
+**And that is the physical reason, which generalises:** a per-channel shoulder gives a colour difference
+proportional to the channels' difference in the input, so on a warm highlight it reduces colour without relocating
+it. A fringe needs the operation to be **non-monotonic in luminance** -- stronger in the transition band than
+inside or outside -- and a soft shoulder is not.
+
+**It also means the existing `highlight_tint` already covers this observable.** A uniform tint above a luminance
+threshold is exactly what per-channel shoulders produce on a warm highlight, so a second parameter would be one
+mechanism with two controls -- the fault this project has found repeatedly as a list drifting from its source of
+truth.
+
+**Two conclusions worth carrying forward.**
+
+**A mechanism has to be checked against what the available operators can express before it is implemented.** The
+ring needs per-feature radial construction and neither convolution nor a per-pixel curve can express it; the fringe
+needs a non-monotonic transfer function and a shoulder cannot be one. **Both were geometric facts, discoverable
+before writing any code**, and both cost several attempts to find by measurement instead.
+
+**And `flare_blades` is a better target than either.** A note from an earlier turn called it inert and reading the
+code said otherwise; the reading was right and the note was wrong -- `_lens_flare` does build an iris polygon and one
+ray per blade. But measured, **6 blades against 8 gives 811 against 877 of ink beyond a point source's core, an 8%
+difference, and all 24 angular sectors carry ink at both settings**, so the rays are not distinguishable as rays.
+That is a mechanism that exists, is reachable, and whose parameter barely reads -- a different fault from an inert
+one, and a concrete target with an existing check to extend.
+
+The tree is restored to the verified state: seven mechanisms in the module, all pure, all inert at their defaults,
+the pre-existing three keeping their relative order, 156 checks passing, and the byte-identical comparison against
+the pre-refactor tree still available as a tool.
