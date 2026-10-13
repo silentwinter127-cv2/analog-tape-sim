@@ -1,7 +1,7 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-13T14:35:43",
+  "exported": "2026-10-13T14:56:56",
   "name": "新工程",
   "standard": "ntsc",
   "seed": 20240101,
@@ -9,30 +9,19 @@
   "environment": {},
   "keyframes": [],
   "unit_identities": {},
-  "source": "runs\\uploads\\raw_lamp_arena.jpg",
+  "source": "runs\\uploads\\raw_light_close.jpg",
   "source_info": {
-    "path": "runs\\uploads\\raw_lamp_arena.jpg",
-    "width": 3840,
-    "height": 2560,
+    "path": "runs\\uploads\\raw_light_close.jpg",
+    "width": 864,
+    "height": 864,
     "fps": 25.0,
     "frame_count": 1,
     "duration": 0.04,
     "has_audio": false,
     "codec": "mjpeg",
-    "aspect": 1.5
+    "aspect": 1.0
   },
   "params": {
-    "camera": {
-      "halation": 0.9,
-      "ccd_smear": 0.85,
-      "chroma_aberration": 0.2,
-      "lens_flare": 0.5,
-      "spike_spread": 0.85,
-      "flare_defocus": 1.0,
-      "longitudinal_ca": 0.12,
-      "axis_offset": 0.2,
-      "overflow_drain": 0.35
-    },
     "format": {
       "chroma_bandwidth": 2.0,
       "luma_bandwidth": 5.0,
@@ -56,8 +45,20 @@
     },
     "display": {
       "gamma": 1.0,
-      "saturation": 0.6
+      "saturation": 0.62
+    },
+    "camera": {
+      "halation": 0.85,
+      "ccd_smear": 0.8,
+      "chroma_aberration": 0.2,
+      "lens_flare": 0.5,
+      "spike_spread": 0.85,
+      "flare_defocus": 1.0,
+      "longitudinal_ca": 0.12,
+      "axis_offset": 0.2,
+      "overflow_drain": 0.35,
+      "source_glow": 0.85
     }
   },
-  "param_count": 24
+  "param_count": 25
 }

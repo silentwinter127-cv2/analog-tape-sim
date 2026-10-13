@@ -1,0 +1,13 @@
+{
+ "source": "raw_lights_road.jpg",
+ "licence": "CC BY-SA 4.0",
+ "author": "W.carter, Wikimedia Commons",
+ "crop": [
+  1872,
+  864,
+  864,
+  864
+ ],
+ "saturated_fraction": 0.030237268518518517,
+ "reach_below_core_px": 50
+}

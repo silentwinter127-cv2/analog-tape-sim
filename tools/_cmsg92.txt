@@ -1,0 +1,48 @@
+add `source_glow`, calibrate it against the reference's profile, and locate the remaining gap in the subject
+
+**The mechanism, which was genuinely missing.** Light from a bright source scattered in the air and in the glass keeps
+the source's spectrum, so an orange lamp wears an orange halo and a white one a white halo. The reference's own profile
+below a blown core, in B-R:
+
+    rows below    +60      +100     +160     +180
+    the reference -0.170   -0.510   +0.178   +0.226
+    without it    -0.193   -0.137   -0.072   -0.094
+
+**Nothing in the module followed the source's colour.** `halation` adds a glow with a **fixed, cool** tint and
+`lens_flare`'s is the **coating stack's**; a fixed tint is a constant and a source's colour is not, so neither could
+be made to do this at any value. `atsim/codecs/lens.py: source_glow` builds it as the highlight map blurred **per
+channel** -- so each keeps its own proportion, which is what carries the colour -- and added directly. Verified on
+sources of four colours: orange gives B-R **-0.0027**, white **0.0000**, blue and red follow their own signs; the
+strength falls monotonically with distance and scales with the source's brightness; inert at its default.
+
+**A construction fault was found and fixed on the way.** The first version divided the per-channel blur by a grey
+coverage term and multiplied by it again, which **cancels** -- and for a *broad* bright region the coverage is large,
+so the term was **reduced where the source is biggest**, backwards for a glow.
+
+**And the calibration turned out to be about scale in two senses.** A coefficient of 2.2 moved B-R by 0.01 where the
+reference needs 0.17 to 0.51; the value that reaches that order is roughly **60**, with the blur radius scaled to the
+frame's height rather than fixed in pixels. On a realistic source the halo then reaches **0.53** against the
+reference's **0.51**. **The hundredfold between the first coefficient and the right one is the same confusion that has
+run through this work: a 7x7 test square and a real blown lamp are not the same object, and a value chosen against one
+is two orders of magnitude wrong for the other.**
+
+**And the remaining gap is measured to be the subject, not the mechanism.** The reference's lamp is a large
+multiple-bulb fixture covering about **18%** of its frame, so 100 rows below its core is still inside its scattering
+region. Every raw photograph available has a saturated region from **0.05% to 0.62%** of its frame; cropping the one
+whose light is nearest the camera -- a field-of-view choice on a raw photograph, recorded with its own provenance --
+raises it to **3.02%**, five times better and six times short. With that crop the render's profile at 100 rows is
+**-0.621** (control) and **-0.937** (effect) against the reference's **-0.510**: **the same order at last, where
+before it was -0.137, fifteen times too weak.** The mechanism reaches the reference's magnitude; what cannot be
+matched without a comparable subject is *where* the warm region is, because a small source's scatter ends sooner.
+
+**So the honest position is: the mechanism exists, is calibrated, and reaches the right magnitude; the reference's
+specific shape needs a light source that fills a comparable part of the frame, and none of the available raw
+photographs has one.** The crop used here is a close-up in which the source fills half the frame, which is the other
+extreme and blows out 18% of the picture -- so it demonstrates the scale rather than matching the reference.
+
+**The settings file** `tools/ntscrs_ref/repro-highlight.json` now carries 25 parameters across 6 layers, including
+`source_glow 0.85` alongside the nine mechanisms and the tape and display settings, all at the raw-photograph
+reproduction's values.
+
+163 checks pass, selftest clean, and the mechanism checks were proved to fire earlier in this work. Nothing else in
+the model changed.
