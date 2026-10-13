@@ -1,0 +1,45 @@
+withdraw the attribution to `_separate`, and record five refuted hypotheses
+
+**The withdrawal.** I recorded that the chromatic banding originates in `_separate`, on the strength of one
+observation: replacing it with a pass-through that takes the source's own Y/I/Q drops the picture's banding from
+0.011733 to 0.003417, the source's own value. **That observation does not support the conclusion**, because the
+pass-through also skips `remod_chroma` and the reconstruction, so it replaces more than `_separate`'s internals.
+Attributing the difference to `_separate` was an inference the measurement could not carry.
+
+**And five hypotheses inside it have now been refuted by measurement, which is what forced the withdrawal:**
+
+  * **the chroma band filter.** `_separate`'s first split uses `window = clip(chroma_bw * 1.15, 0.35e6, 0.9e6)`, so
+    it saturates at 0.90 MHz. Sweeping `chroma_bw` from 0.20 to 4.00 MHz moves the window from 0.35 to 0.90 and
+    leaves the recovered I's ripple at **0.006990, unchanged to six digits**. (This also explains, at last, why
+    every earlier sweep of `player.chroma_bandwidth` appeared inert: above 0.78 MHz the window is pinned.)
+  * **the per-line chroma phase error.** Bypassed, and `color_noise` at 0, 0.25, 0.60 and 1.00: unchanged.
+  * **the luma frequency response.** Bypassed: 0.01135 against 0.01171.
+  * **`composite_encode`.** Tested in isolation with I and Q set to exactly zero: `std 0.000000` at four luma levels
+    and four sample rates, the composite equal to luma to the last digit. **So the encoder is exact**, and my
+    earlier claim that a non-constant composite proved a construction fault was wrong -- the `std 0.153369` I
+    pointed at is the **subcarrier itself**, since a sodium-lit orange carries real chroma.
+  * **the time-base displacement.** `_timebase_offset` computes a genuinely per-row displacement, std 0.6855
+    samples, and forcing it to zero moves the recovered I's ripple from 0.006990 to **0.006783**, a change of 3%.
+
+**And the quantity I was chasing was partly my own artefact.** The encoder's own I has a row-to-row ripple of
+**0.001363** -- because at 3.17 samples per subcarrier cycle the recovered chroma is not row-constant either -- and
+the player's is 0.006990. Reporting that as "5.1x the encoder's own" compared two quantities that both have ripple,
+without establishing what the ripple of a *correct* recovery would be. **A reference figure for that is what the
+whole series of measurements lacked**, and it is the thing to obtain before another hypothesis is proposed.
+
+**What the record does support, and it is not nothing:**
+
+    the source's own banding                  0.003417
+    the picture after the neutral chain       0.011733
+    with every highlight mechanism at zero    unchanged, which is what makes it a blocker
+    the chroma band filter, the phase error, the luma response, the encoder and the time-base
+    displacement                              each excluded by measurement
+
+**So the banding is real, it is larger than the effects, and it is not in any of the five places examined.** The
+next step is not a sixth hypothesis: it is to establish **what the row-to-row ripple of a correct chroma recovery
+should be** for this signal, from the standard's own geometry -- 227.5 subcarrier cycles per line means the phase
+advances by half a cycle per line, so a recovery that is correct will still show a per-line pattern, and until that
+figure exists every measurement of "ripple" is being compared against nothing.
+
+Nothing was changed: `signal.py`, `player.py` and `standards.py` are all byte-identical to their committed state, and
+163 checks pass.
