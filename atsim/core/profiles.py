@@ -812,8 +812,12 @@ def build_schema() -> ParamSchema:
     dsp = s.layer("display")
     g = "显像管"
     dsp.define("enabled", "显示设备接入", 1.0, 0.0, 1.0, unit="bool", group=g, step=1.0)
-    dsp.define("gamma", "伽马", 2.35, 1.5, 3.2, unit="x", group=g,
-               phys_min=2.0, phys_max=2.8, source="消费级 CRT 典型 2.2-2.4")
+    # **The minimum was 1.5, which made the parameter one-sided.**  A gamma is a curve that can go either
+    # way, and the stage applies `rgb ** (1/g)`, so a value below 1 darkens the mid-tones.  Measured, asking
+    # for 0.50 / 0.80 / 1.00 / 1.25 all left the stage holding **1.5** because the schema raised them, so
+    # the lower half of the range the name implies was unreachable rather than mis-implemented.
+    dsp.define("gamma", "伽马", 2.35, 0.4, 3.2, unit="x", group=g,
+               phys_min=0.4, phys_max=2.8, source="消费级 CRT 典型 2.2-2.4")
     dsp.define("contrast", "对比度", 0.55, 0.0, 1.0, unit="0-1", group=g)
     dsp.define("brightness", "亮度", 0.5, 0.0, 1.0, unit="0-1", group=g)
     dsp.define("saturation", "饱和度", 0.5, 0.0, 1.0, unit="0-1", group=g)

@@ -401,7 +401,15 @@ class DisplayStage(Stage):
 
         # --- phosphor / tube response --------------------------------------
         rgb = np.clip(rgb, 0.0, 1.0)
-        g = max(1.0, self.gamma)
+        # `max(1.0, ...)` was removed here, and **it was not the fault it looked like**.  The claim that it made
+        # half the range dead was wrong: the schema's own minimum for this parameter is **1.5**
+        # (`profiles.py`, `define("gamma", ..., 2.35, 1.5, 3.2)`), so the stage never received a value below 1.5 and
+        # the clamp never bound.  Measured, asking for 0.50 / 0.80 / 1.00 / 1.25 / 1.50 left the stage holding
+        # **1.5** every time, and only 2.20 survived -- the *schema* was raising them.
+        #
+        # The line is still written without a lower clamp, since a guard against division by zero is all it needs and
+        # a clamp that happens to be unreachable is a trap for whoever lowers the minimum next.
+        g = max(0.05, float(self.gamma))
         if abs(g - 1.0) > 1e-3:
             np.power(rgb, 1.0 / g, out=rgb)
         if abs(self.contrast - 0.5) > 1e-4:

@@ -4152,5 +4152,106 @@ def check_flare_defocus_per_channel() -> None:
            "core widths at zero: red %.4f, green %.4f, blue %.4f (spread %.4f)"
            % (w0[0], w0[1], w0[2], max(w0) - min(w0)),
            max(w0) - min(w0) < 0.2)
+def check_declared_ranges_are_reachable() -> None:
+    """
+    Every parameter's declared range must reach the stage, and changing it must change the picture.
+
+    **The fault this exists for.** `display.gamma` was declared `1.5..3.2` and the stage read it faithfully, so every
+    mechanism check passed -- but asking for 0.50, 0.80, 1.00 or 1.25 all left the stage holding **1.5**, because the
+    *schema* raised them. The parameter was not mis-implemented, it was **mis-declared**: the lower half of the range
+    its own name implies was unreachable, and no check asked that question. It took a ramp and a direct read of the
+    stage's attribute to find it.
+
+    So two assertions, on a small set of parameters whose effect a chosen subject can actually show:
+
+      * **the stage holds the value it is given**, at each end of the declared range -- a reader that clamps, or a
+        `merge_values` that raises, shows up here;
+      * **and the picture changes** between the two ends -- a declared range that is inert at one end is either
+        mis-declared or unwired.
+
+    The subject matters and is chosen per parameter. A check that used one picture for everything would pass on
+    parameters whose effect that picture cannot show, which is the mistake this project has made most often.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.pipeline import FrameBuffer
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    H, W = 60, 128
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+
+    class Ramp:
+        """A grey ramp and a row of saturated colours: enough structure for most parameters to show on."""
+
+        def __init__(self, frames=3):
+            self.width, self.height, self.fps, self.frame_count = W, H, 25.0, frames
+
+        def frame(self, index):
+            a = np.zeros((H, W, 3), np.float32)
+            ramp = np.linspace(0.0, 1.0, W, dtype=np.float32)
+            a[:] = ramp[None, :, None]
+            a[H // 2:, :W // 3] = [0.80, 0.10, 0.10]
+            a[H // 2:, W // 3:2 * W // 3] = [0.10, 0.70, 0.10]
+            a[H // 2:, 2 * W // 3:] = [0.10, 0.10, 0.80]
+            return a
+
+    CLEAN = {
+        "camera": {"exposure": 0.0, "color_cast": 0.0, "halation": 0.0, "ccd_smear": 0.0,
+                   "chroma_aberration": 0.0, "lens_flare": 0.0, "spike_spread": 0.0,
+                   "flare_defocus": 0.0, "longitudinal_ca": 0.0, "axis_offset": 0.0,
+                   "bloom_amount": 0.0, "lens_wear": 0.0, "lens_fog": 0.0},
+        "format": {"color_noise": 0.0, "cross_color": 0.0, "cross_luma": 0.0, "edge_boost": 0.0},
+        "player": {"color_noise": 0.0, "cross_color": 0.0, "cross_luma": 0.0},
+        "codec": {"dv_enabled": 1.0},
+        "tape": {},
+    }
+    # the display's own geometry and mask terms would blur or tint the subject and hide a small effect
+    QUIET_DISPLAY = {"enabled": 1.0, "scanlines": 0.0, "mask_depth": 0.0, "vignette": 0.0,
+                     "reflection": 0.0, "bloom": 0.0, "defocus": 0.0, "interlace_flicker": 0.0,
+                     "crt_age": 0.0, "spot_sigma": 0.0, "geometry_warp": 0.0, "overscan": 0.0}
+
+    def run(layer, key, value):
+        merged = {k: dict(v) for k, v in CLEAN.items()}
+        merged["display"] = dict(QUIET_DISPLAY)
+        merged[layer] = dict(merged.get(layer) or {}, **{key: float(value)})
+        p = merge_values(BASE, merged)
+        r = Renderer(Ramp(), W, H, 25.0, p, seed=5)
+        r._build_chain()
+        st = r.stage.get(layer)
+        held = float(getattr(st, key, float("nan"))) if st is not None else float("nan")
+        out = st.apply(FrameBuffer(Ramp().frame(0).copy(), None, 1, 0.04, r.std, {"field": 0}))
+        rgb = np.asarray(out.rgb if out.rgb is not None else out.signal.to_rgb(), np.float32)
+        return held, np.clip(rgb, 0.0, 1.0)
+
+    subject = [("display", "gamma"), ("display", "contrast"), ("display", "brightness"),
+               ("display", "saturation")]
+    unreachable, inert = [], []
+    for layer, key in subject:
+        spec = SCHEMA.layer(layer).specs.get(key)
+        if spec is None:
+            continue
+        lo, hi = float(spec.minimum), float(spec.maximum)
+        held_lo, img_lo = run(layer, key, lo)
+        held_hi, img_hi = run(layer, key, hi)
+        if abs(held_lo - lo) > 1e-6 or abs(held_hi - hi) > 1e-6:
+            unreachable.append("%s.%s: range %g..%g, stage held %g..%g"
+                               % (layer, key, lo, hi, held_lo, held_hi))
+        if float(np.abs(img_lo - img_hi).max()) < 1e-3:
+            inert.append("%s.%s: %g and %g give the same picture" % (layer, key, lo, hi))
+
+    record("every declared parameter range reaches the stage",
+           "a parameter whose lower or upper end is raised or clamped in transit is mis-declared rather than "
+           "mis-implemented, so every mechanism check passes while half its range is dead -- which is what "
+           "`display.gamma` did at a minimum of 1.5",
+           "checked %d parameters; unreachable: %s" % (len(subject), unreachable or "none"),
+           not unreachable,
+           "found by asking the stage what it holds after being handed a value at each end of the declared range")
+
+    record("both ends of each declared range change the picture",
+           "a range that is inert at one end is either mis-declared or not wired to anything",
+           "inert: %s" % (inert or "none"),
+           not inert)
 if __name__ == "__main__":
     raise SystemExit(main())

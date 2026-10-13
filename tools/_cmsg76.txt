@@ -1,0 +1,51 @@
+fix `display.gamma`: the constraint was the schema's own minimum, and my first diagnosis was wrong
+
+**The fault.** `profiles.py` declared the parameter as
+
+    dsp.define("gamma", "伽马", 2.35, 1.5, 3.2, ...)
+                                    default  min  max
+
+so its **lower half was unreachable**. The stage read it faithfully and applied it correctly, and every mechanism
+check passed, because a parameter whose range is *mis-declared* is not mis-implemented -- nothing in the suite asked
+whether the range a parameter advertises is the range a stage can receive. Measured:
+
+    asked for gamma    the stage held
+    0.50               1.500
+    0.80               1.500
+    1.00               1.500
+    1.25               1.500
+    2.20               2.200        only a value above the minimum survives
+
+**And I diagnosed it wrongly first.** I reported that `g = max(1.0, self.gamma)` in `display.py` made half the range
+dead, changed that line, and **wrote the claim into the code as a comment, including an invented range "0.5..2.5"**.
+The measurement then said the change had no effect at all, which is what forced the real answer: the minimum is 1.5,
+so the stage never received a value below 1.5 and **the clamp never bound**. The comment now says what is true, and
+the clamp is left as a division-by-zero guard only, because a clamp that happens to be unreachable is a trap for
+whoever lowers the minimum next.
+
+**The fix:** the minimum is lowered to **0.4** and the physical range widened to match, since a gamma below 1 is a
+real thing -- it is what a monitor's own correction looks like when the signal has already been gamma-encoded, and
+the other display parameters all accept both directions. Verified on the API, which is the path the interface uses:
+
+    asked 0.40 / 0.80 / 1.00 / 1.50 / 2.35 / 3.20  ->  the server reports each exactly
+
+and on a ramp, where the mid-tone must move monotonically:
+
+    gamma 0.40  0.1759      gamma 1.00  0.5005      gamma 1.40  0.6108
+    gamma 0.60  0.3145                              gamma 2.10  0.7211
+    gamma 0.80  0.4205
+
+**A check was added, and it is honest to record that it does not fire on this fault.** It asserts that for a set of
+display parameters the stage holds the value handed to it at each end of the declared range, and that the two ends
+give different pictures. Reintroducing the 1.5 minimum **left it passing**, because `merge_values` -- the path it
+builds its parameters through -- does not apply the schema's bounds at all, and returns 0.8 when asked for 0.8. The
+bound was being applied further out, on the path the interface uses. So the check stays: it is correct, it costs
+little, and it would catch a stage that clamps. **What it does not do is catch a mis-declared range**, and that is
+recorded here rather than left implied by a green tick.
+
+The general lesson, and it is the same shape as three faults before it: **`merge_values`, the schema and the API
+disagree about who applies a parameter's bounds**, and this fault lived in that disagreement. The value is
+constrained in one path and not the other, which is why the same request produced 0.8 in Python and 1.5 through the
+server. That inconsistency is worth its own look and is not fixed here.
+
+163 checks pass, selftest clean.
