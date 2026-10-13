@@ -314,16 +314,25 @@ class CameraStage(Stage):
         """
         if self.smear < 1e-4:
             return rgb
-        peak = rgb.max(axis=2, keepdims=True)
-        hot = np.clip(peak - 0.82, 0.0, None)
+        # **Per channel, because the excess charge is a property of each well.**  The red channel's well fills
+        # first in a tungsten-lit highlight, then green's, then blue's -- so the charge that spills down the
+        # vertical transfer channel carries a per-channel excess, and because blue has the most left to give the
+        # streak reads **cyan-blue**.  The version this replaces reduced the highlight to `hot.mean(axis=0)`, one
+        # scalar, and added it back with a single tint: all three channels got the same vertical profile, so the
+        # smear was **achromatic at its root** and a blown white lamp produced a neutral grey stripe.  No parameter
+        # could make it blue in the direction the physics requires, because the blue end has to come from blue
+        # having more excess rather than from a tint that happens to be blue.
+        #
+        # The thresholds are the same shape as the axial-CA discussion elsewhere: the *order* is the physics (red
+        # clips first), and the three numbers are the filter transmissions.
+        clips = np.array([0.78, 0.86, 0.94], dtype=np.float32)[None, None, :]
+        hot = np.clip(rgb - clips, 0.0, None)
         if not np.any(hot > 0.0):
             return rgb
-        col = hot.mean(axis=0, keepdims=True)
-        # smear is a charge-transfer effect: it is sharper than a lens flare and
-        # carries a slight colour tint from the filter array
-        col_s = lowpass(col, 3.0, axis=1)
-        tint = np.array([1.0, 0.92, 1.12], dtype=np.float32)
-        return (rgb + (0.85 * self.smear) * col_s * tint[None, None, :]).astype(np.float32)
+        # each channel keeps its own column profile: sharper than a lens flare, because it is charge transfer
+        cols = hot.mean(axis=0, keepdims=True)
+        cols = lowpass(cols, 3.0, axis=1)
+        return (rgb + (0.85 * self.smear) * cols).astype(np.float32)
 
     def _halation(self, rgb: np.ndarray) -> np.ndarray:
         """

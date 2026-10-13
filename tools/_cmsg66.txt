@@ -1,0 +1,50 @@
+analyse the DSC-W210 reference video, and make the CCD smear per channel
+
+**The video.** 960x720, 6.4 s, 192 frames. Frame 48 shows a blown street lamp at the top of the frame with a
+**teal-white stripe dragged down** from it, and a second small source lower down with the same vertical trail. The
+direction is the giveaway: this is charge transfer along the readout column, which in this model is the existing
+`ccd_smear` -- default **0.35**, and already implemented as a vertical column smear.
+
+**And its colour was structurally neutral, which is why it could not be made blue.** The mechanism was:
+
+    peak = rgb.max(axis=2, keepdims=True)
+    hot  = clip(peak - 0.82, 0, None)
+    col  = hot.mean(axis=0, keepdims=True)      <- one scalar for all three channels
+    tint = [1.00, 0.92, 1.12]
+    rgb + 0.85 * smear * col * tint
+
+The highlight is reduced to a **single scalar** and added back with one tint, so the smear is **achromatic at its
+root**: all three channels receive the same vertical profile, and the colour is a constant painted on top. A blown
+white lamp therefore produces a neutral stripe, and no parameter could make it blue in the direction the physics
+requires, because the blue end has to come from blue having **more excess**, not from a tint that happens to be blue.
+
+**Made per channel**, because the excess charge is a property of each well: red's well fills first in a tungsten-lit
+highlight, then green's, then blue's, so the spilled charge carries a per-channel excess and the streak should read
+cyan-blue.
+
+**Measured, and the honest result is that it does not:**
+
+    smear 0.0   added R 0.00000, G 0.00000, B 0.00000
+    smear 0.4   added R 0.03077, G 0.02942, B 0.02807   B/R 0.91
+    smear 0.8   added R 0.06155, G 0.05884, B 0.05614   B/R 0.91
+
+**Still neutral, slightly warm.** The reason is that the subject is a **pure white** lamp at 2.6: all three channels
+are far above their own thresholds, so all three produce excess in proportion to the same value and the profile is
+nearly identical across channels. **Per-channel thresholds separate the channels only where a highlight is
+chromatic**, and a blown white lamp is not. That is a real limitation of the mechanism and not a tuning problem --
+making a white lamp's smear blue needs a source of channel asymmetry other than a threshold, and the candidates are
+a wavelength-dependent **transfer efficiency** along the readout (blue is transferred less efficiently and lingers)
+rather than a threshold on the incident charge.
+
+**So the change is kept on its own merit and the colour claim is withdrawn.** Reducing a highlight to one scalar
+before smearing it discards the per-channel information that a charge-transfer model is supposed to carry, which is
+worth fixing regardless; but it does **not** produce the blue streak the reference shows, and that is recorded here
+rather than papered over with a tint coefficient.
+
+159 checks pass, selftest clean, and `ccd_smear` at its default of 0.35 still applies.
+
+**Next, and the reason this matters:** the blue vertical streak in the reference is more likely to be **longitudinal
+chromatic aberration in the flare** -- per-channel focus, which makes the out-of-focus image of the aperture larger
+in blue than in red, giving a blue halo *below and around* a source rather than on it. That is the mechanism the five
+TRV310E photographs point at as well, and it is the same one the earlier `longitudinal_ca` applies to the picture but
+not to the flare.
