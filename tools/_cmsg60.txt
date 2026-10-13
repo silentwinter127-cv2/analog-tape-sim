@@ -1,0 +1,38 @@
+roll back the ring bokeh: three constructions, three measurements, one geometric fact
+
+**The mechanism is real and it is not shipped.** Three constructions were tried and each was measured:
+
+    wide_blur - narrow_blur        mostly negative -- a hole with a faint rim.  The centre fell by 0.125 and the
+                                   ring's radius rose by 0.0003: it dimmed the highlight and made no ring
+    an annulus weighted by local   nothing.  The detail of a defocused dot is a few pixels wide and one wide blur
+    detail                         flattens it before an annulus can be taken; the rise was 0.00015
+    narrow_blur - wide_blur, its   raises the **centre** by up to 0.33, because the difference of two blurs of the
+    positive part                  same blob peaks at the blob's middle.  The largest rise was at r = 0 every time
+
+**The third failure is a fact rather than a bug, and it is the one worth keeping:** a radial structure cannot be
+obtained by convolving a compact feature, because the convolution of a blob is a blob. A ring has to be built
+explicitly around each feature's own position and radius, which is per-feature work and belongs in its own design
+rather than being improvised at the end of a long pass.
+
+**Three attempts that each failed on a measurement are not a reason for a fourth.** The mechanism is rolled back
+rather than shipped in a state where it dims highlights, and what each attempt measured is recorded so the next one
+starts from the geometry instead of rediscovering it.
+
+**And `flare_blades` was checked, because a note from an earlier turn called it inert and reading the code said
+otherwise.** The reading was right and the note was wrong: `_lens_flare` builds an iris polygon and one ray per
+blade, and `lens_flare` measurably acts -- ink beyond a point source's core rises 465 -> 811. **But `flare_blades`
+barely changes it**: 6 blades against 8 gives 811 against 877, an 8% difference, and all 24 angular sectors carry
+ink at both settings, so the rays are not distinguishable. So the parameter is wired and its effect is too weak to
+read as a starburst, which is a different fault from an inert one and is not diagnosed.
+
+**The state is clean and verified:**
+
+    156 checks pass, selftest clean
+    the eight mechanics remain, all pure and all inert at their defaults
+    the camera's sequence is unchanged: distortion, chromatic_aberration, field_curvature, longitudinal_ca, coma,
+    astigmatism, spherical
+    the byte-identical comparison against the pre-refactor tree is available as tools/compare_frames.py, with its
+    baseline in tools/camera_prerefactor.py, so the refactor's proof stays repeatable
+
+Nothing is half-changed: the three files are restored, the parameter is gone from the schema, and no preset refers
+to it.
