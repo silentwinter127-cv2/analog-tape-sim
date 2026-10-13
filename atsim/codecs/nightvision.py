@@ -125,54 +125,42 @@ def mode_of(spec: NightVisionSpec) -> str:
     return {0: "off", 1: "nightshot", 2: "super_nightshot", 3: "colour_slow_shutter"}.get(m, "off")
 
 
-def illuminator_field(height: int, width: int, spec: NightVisionSpec) -> np.ndarray:
+def illuminator_field(h: int, w: int, spec: NightVisionSpec) -> np.ndarray:
     """
-    The illuminator's light on the scene: **inverse square, and inside a cone**.
+    The illuminator's light across the frame: **an inverse-square falloff about the beam's own origin.**
 
-    Two properties of a real IR lamp, and both matter for the look:
+    **Why radial and not top-down.**  A camcorder's NightShot lamp is **coaxial with the lens**, so it lights a cone
+    whose axis is the lens axis: the falloff is **radial about the point the beam is aimed at**, with no preference for
+    the top or the bottom of the frame beyond where the operator points it.  The previous version measured distance
+    **from the top edge downward** -- the geometry of a lamp mounted *above* the lens -- and it produced a field that was
+    **12.7x brighter at the bottom than at the top** (0.2710 against 0.0214), correlating **+0.766** with distance from
+    the top where the real frames correlate **-0.353 to -0.501**.
 
-      * **it falls off with distance**, so the floor near the camera is lit and the far end of a corridor is not.  That
-        is the single most recognisable thing about handheld NightShot footage -- a bright near field fading to black --
-        and it comes from the lamp rather than from the scene;
-      * **it is aimed**, so the beam has an edge.  A lamp on the camera covers a cone, and outside the cone the picture
-        is lit only by whatever the scene itself emits.
+    **And it was hidden.**  The rendered pictures correlated **-0.42**, the right way, because the scene's own brightness
+    dominates the frame while the field is a small additive term.  So the shape was wrong and the picture concealed it,
+    which is why the geometry is measured here rather than recognised.
 
-    Distance is taken from the picture position, which is the model's convention elsewhere: the camera is the origin and
-    a point lower in the frame or further from its centre is further away.  That is a perspective approximation and it
-    is stated rather than hidden -- the model has no scene depth, so the depth cue has to come from the image geometry.
+    **The light itself**: inverse-square with distance, clamped in the near field so that a surface close to the lamp
+    does not go to infinity.  `beam_x` and `beam_y` place the origin; `beam_angle` sets how quickly it falls away.
     """
-    if spec.illuminator <= 1e-4:
-        return np.zeros((height, width), np.float32)
-    yy = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
-    xx = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :]
-    # **The ground plane recedes upward, so distance grows toward the TOP of the frame.**  The first version had this
-    # inverted -- `(0.5 - yy)` is smallest at the top -- which put the field's maximum in the middle of the frame
-    # instead of in the near field: measured, `illuminator=1.0` gave near 2.78, mid 16.67, far 0.49, which is not a
-    # falloff.  With the camera at the bottom and the horizon at the top, `1 - yy` is the distance.
-    dy = (1.0 - yy) * 1.6 + 0.25
-    dx = (xx - 0.5) * (width / max(1.0, float(height)))
-    dist = np.sqrt(dx * dx + dy * dy)
-    # the beam: a cone about the aim point, with its width set by the lamp's angle
-    bx = (xx - spec.beam_x) * (width / max(1.0, float(height)))
-    by = spec.beam_y - yy
-    cosang = np.clip(1.0 / np.sqrt(1.0 + (bx * bx + by * by) / max(1e-6, spec.beam_angle ** 2)), 0.0, 1.0)
-    cone = np.clip((cosang - 0.35) / 0.45, 0.0, 1.0)
-    # **Inverse square, normalised to a reference distance and bounded at the near field.**  The raw `1/dist**2`
-    # diverges as the estimate approaches zero -- measured, `illuminator=0.35` gave a field of 6.68 near the camera
-    # against 0.87 far from it, which drives the picture to white instead of lighting it.  A real lamp does not blow out
-    # the floor it is aimed at either: its brightness is finite at any distance and it is the *ratio* between near and
-    # far that reads as the characteristic falloff.  So the field is scaled so that a mid distance receives
-    # `illuminator`, and the near field saturates at a bounded multiple of it.
-    # **The field reads 1.0 at the reference distance and falls from there.**  The first version normalised in a way
-    # that gave 16.67 at the near field, so `illuminator = 0.10` added 1.67 of light instead of 0.10 -- every mode blew
-    # out (blown fraction 27%, 55%, 98.5%).  The bound at the near field is a modest multiple of unity, because a lamp
-    # whose light is unity at the reference distance is a few times that on the floor in front of it, not sixteen.
-    ref = 0.75
+    h = max(1, int(h))
+    w = max(1, int(w))
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    xn = xx / max(1.0, w - 1.0)
+    yn = yy / max(1.0, h - 1.0)
+    bx = float(np.clip(spec.beam_x, 0.0, 1.0))
+    by = float(np.clip(spec.beam_y, 0.0, 1.0))
+    # a distance in the frame's own units, with the aspect kept so the cone stays circular rather than elliptical
+    dx = (xn - bx) * (w / max(1.0, h))
+    dy = yn - by
+    angle = float(np.clip(spec.beam_angle, 0.05, 4.0))
+    # **the angular scale sets the cone's width**: a narrow beam reaches the same brightness at a smaller distance
+    d = np.sqrt(dx * dx + dy * dy) / max(1e-3, angle)
+    # the inverse-square law with a near-field clamp, so a surface at the lamp does not go to infinity
     near_bound = 3.0
-    field = np.minimum(ref * ref / np.maximum(dist * dist, 1e-4), near_bound)
-    return (spec.illuminator * cone * field).astype(np.float32)
-
-
+    ref = 0.75
+    field = np.minimum(ref * ref / np.maximum(d, 1e-3) ** 2, near_bound)
+    return field.astype(np.float32)
 def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     """
     The near-infrared contribution the sensor admits once the cut filter is out.
