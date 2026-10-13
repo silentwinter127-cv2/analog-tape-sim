@@ -285,6 +285,13 @@ def build_schema() -> ParamSchema:
                     "（0.06-0.18 对彩色照片的 0.37），这正是单色取景器接到彩色录像机的结果。")
     cam.define("nv_green_gain", "绿通道增益", 1.0, 0.5, 1.6, unit="x", group=g,
                phys_min=0.7, phys_max=1.4, help="绿单色显示里绿通道的增益。")
+    cam.define("nv_chroma_residue", "绿显示残留色度", 0.35, 0.0, 1.0, group=g,
+               phys_min=0.0, phys_max=1.0,
+               help="**移除 IR-cut 后色彩并没有完全消失**，透过来的一部分原图色度。\n"
+                    "实测同一段素材的三个 NightShot 段，红占比为 0.2892 / 0.2339 / 0.2011"
+                    "（相差 1.44 倍），而蓝占比几乎不变（0.341 / 0.353 / 0.354）。"
+                    "**固定投影只能给出一个比例**，所以必须有一部分原图色度透过来。"
+                    "0 是刚性投影，1 是色度完全保留。**亮度精确不变**，与取值无关。")
     cam.define("nv_exposure_steps", "夜视曝光补偿", 0.00, 0.0, 3.0, unit="EV", group=g,
                phys_min=0.0, phys_max=2.5,
                help="**模式自己的曝光提升，走相机正常的曝光通路**——"

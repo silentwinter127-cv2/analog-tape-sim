@@ -75,6 +75,12 @@ class NightVisionSpec:
     #: how strongly near-IR albedo replaces visible albedo when the filter is out
     ir_albedo_mix: float = 0.0
     #: the green channel's gain in the monochrome display, and the red and blue leakage beside it
+    #: **How much of the picture's own chroma survives the mono display.**  Removing the IR-cut filter does not
+    #: delete colour, and the display's R:G:B ratio is measurably *not* fixed: across three NightShot segments of
+    #: one clip the red share reads **0.2892, 0.2339 and 0.2011** -- a factor of **1.44** -- while the blue share
+    #: stays at **0.341-0.354**.  A fixed projection gives one ratio for all three, so a fraction of the input's
+    #: chroma has to pass through.  0 is the rigid projection, 1 leaves the chroma untouched.
+    chroma_residue: float = 0.35
     green_gain: float = 1.0
     green_mix: float = 1.0
     #: the exposure multiplier -- Super NightShot's long shutter, Color Slow Shutter's slow one
@@ -97,6 +103,7 @@ class NightVisionSpec:
             ir_response=float(cfg.get("nv_ir_response", 0.0)),
             ir_albedo_mix=float(cfg.get("nv_ir_albedo", 0.0)),
             green_gain=float(cfg.get("nv_green_gain", 1.0)),
+            chroma_residue=float(cfg.get("nv_chroma_residue", 0.35)),
             green_mix=float(cfg.get("nv_green_mix", 0.0)),
             exposure_steps=float(cfg.get("nv_exposure_steps", 0.0)),
             accumulate=float(cfg.get("nv_accumulate", 1.0)),
@@ -261,7 +268,27 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     weights = weights * np.array([1.0, g, 1.0], dtype=np.float32)
     weights = weights / float(weights @ LUMA)
     mono = np.clip(lum[..., None] * weights, 0.0, 1.0)
-    return (rgb * (1.0 - m) + mono * m).astype(np.float32)
+    out = rgb * (1.0 - m) + mono * m
+    # **The residual chroma: the picture's own chroma added back onto the projection's luminance.**  The first version
+    # of this block carried the chroma of `out` rather than of `rgb`, so at `green_mix = 1.0` the term was
+    # approximately zero and the output was identical for three entirely different inputs -- **a mechanism present,
+    # declared, and inert**, which is the fault class this project keeps meeting.  The luminance stays exactly carried
+    # because the picture's chroma sums to zero against LUMA.
+    #
+    # **Why it exists**: the display's own R:G:B ratio is measurably not fixed.  Across three NightShot segments of one
+    # clip the red share reads 0.2892, 0.2339 and 0.2011 -- a factor of 1.44 -- while blue stays at 0.341-0.354.  A
+    # fixed projection gives one ratio for all three; carrying a fraction of the input's chroma makes it follow the
+    # subject, which is what removing the IR-cut filter physically does.
+    # **`out` is the picture's own CHROMA, added to the projection's luminance.**  The first version carried
+    # `out - (out @ LUMA)`, which at `green_mix = 1.0` is the chroma of `mono` and therefore approximately zero -- the
+    # term did nothing, and gave the identical result for three entirely different inputs, which is how the fault was
+    # found.  `rgb - lum` is the picture's chroma, and it sums to zero against LUMA by construction
+    # (`(rgb - lum) @ LUMA = lum - lum = 0`), so adding any multiple of it leaves `out @ LUMA = mono @ LUMA = lum`:
+    # **the luminance is carried exactly at every value of the residue.**
+    r = float(np.clip(getattr(spec, "chroma_residue", 0.0), 0.0, 1.0))
+    if r > 1e-4:
+        out = np.clip(mono + (rgb - np.clip(rgb @ LUMA, 0.0, 1.0)[..., None]) * r, 0.0, 1.0)
+    return out.astype(np.float32)
 
 
 def accumulate(frames: list[np.ndarray], spec: NightVisionSpec) -> np.ndarray:

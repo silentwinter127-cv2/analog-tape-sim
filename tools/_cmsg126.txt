@@ -1,0 +1,52 @@
+model the mono display's residual chroma, calibrated to the three NightShot segments
+
+**The fault the segment measurements exposed.** The monochrome display projected every picture onto **one fixed
+R:G:B triple**, so its output ratio was a property of the display and not of the subject. The three NightShot segments
+of the clip contradict that:
+
+    segment                         R        G        B        red share
+    first mode / NightShot (23-45)  0.2892   0.3690   0.3410   0.2892
+    NIGHTSHOT 1 (54-68 s)           0.2339   0.4125   0.3529   0.2339
+    NIGHTSHOT 2 (68-83 s)           0.2011   0.4439   0.3543   0.2011
+
+**The red share spans a factor of 1.44 while the blue share stays at 0.341-0.354.** A rigid projection cannot do that.
+**So a fraction of the picture's own chroma survives the display** -- which is what removing the IR-cut filter physically
+does: it widens the band rather than deleting colour. The earlier rounds recorded this as an unreproduced "residue" on
+the strength of one data point; there are now three.
+
+**Implemented as a luminance-preserving chroma pass-through**:
+
+    mono = lum * weights                 the fixed projection
+    out  = mono + r * (rgb - lum)        the picture's own chroma, added back
+
+**And the first implementation was wrong, in a way worth recording.** It carried `out - (out @ LUMA)` -- the chroma of
+the *monochrome output*, which at `green_mix = 1.0` is approximately **zero**. The measurement that exposed it was that
+**three entirely different inputs gave the identical result**: red share 0.2168 at residue 0, 0.2771 at 0.5, and
+**0.2168 again at 1.0** -- non-monotonic, and input-independent. **A mechanism declared, reachable, and inert**, the
+fault class this project keeps meeting. The corrected form carries the *picture's* chroma, which sums to zero against
+LUMA by construction, so `out @ LUMA = mono @ LUMA = lum` exactly.
+
+**Verified after the fix**: three inputs at the same luminance and different colour now move the output in the right
+direction and monotonically -- blue-ish red share **0.2168 → 0.1950 → 0.1737 → 0.1323**, neutral **unchanged at
+0.2168**, red-ish **0.2168 → 0.2471 → 0.2777 → 0.3398**.
+
+**The luminance property is re-checked, and the one apparent failure is not one.** On flat fields the gain is
+**1.00000** at every residue from 0.1 to 0.8. Above the clipping onset it falls -- and **identically for every residue**
+(0.94660 at level 0.9, 0.91227 at 0.95, the same three values for residues 0.0, 0.35 and 1.0), which is what shows the
+residue is not the cause. Below the onset the largest error over fifteen fields is **1.5e-07**. **A rendered frame's
+mean does rise with the residue (0.7798 → 0.8331) but that is downstream non-linearity** -- gamma and the saturation
+curve respond to the channel *distribution*, not only to its luminance -- and not the display failing to carry brightness.
+
+**And the calibration's own limit is stated rather than hidden.** The default is **0.35**, which produces a spread of
+**1.200** against the segments' **1.440**. Fitting it exactly is impossible from this material: **the three NightShot
+shots were all recorded in the mode, so the colour source material does not exist**, and using each segment's *output*
+ratio as the model's input is circular. So 0.35 is a reasoned midpoint whose purpose is that the display **follows the
+input at all** -- it went from a scatter ratio of exactly 1.000 (no follow) to 1.200 -- with the projection kept
+dominant. `nv_chroma_residue` is exposed in the schema (default 0.35, range 0-1) so the value is the user's, and the
+parameter is **verified not inert through the renderer**: red share **0.2424 → 0.2681 → 0.3294** at 0, 0.35 and 1.0.
+
+**Three anchor failures were needed to find the right way in**, and the pattern is recorded: comments are not part of an
+anchor, since they are the thing most often edited; a `define(...)` call must be located by walking its brackets, not by
+the first `)` on the next line, which landed inside a multi-line help string and produced an `IndentationError`.
+
+163 checks pass, selftest clean.
