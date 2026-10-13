@@ -39,6 +39,24 @@ class FormatStage(Stage):
         cfg = self.cfg_of("format")
         self.luma_bw = float(cfg.get("luma_bandwidth", 3.0)) * 1e6
         self.chroma_bw = float(cfg.get("chroma_bandwidth", 0.75)) * 1e6
+        # **Is a digital component codec selected?**  `chroma_bandwidth` is the *composite subcarrier*
+        # bandwidth -- the sidebands that fit around 3.58 MHz, a limit that exists because chroma has to
+        # share the luma's spectrum.  DV does not: MiniDV is 4:1:1 digital component at a fixed bitrate,
+        # so its chroma limit is a sampling one and not a sideband one.  Measured, applying the composite
+        # limit in DV mode left only 6.7% of a lateral chromatic displacement, which is why a blown
+        # highlight showed no coloured edge in MiniDV.
+        # **Read from `ctx.params`, not `cfg_of`.**  `self.cfg` is the project's parameters restricted to this
+        # stage's own `layers`, which is `("format",)` -- so `cfg_of("codec")` returns an empty dict and the guard
+        # never armed.  Measured: it read `False` for both DV settings and the fix did nothing at all.  The full
+        # nine-layer set is on the context, and a stage that needs to know about a different layer must use it.
+        self._digital_component = False
+        try:
+            all_params = self.ctx.params or {}
+            codec_cfg = all_params["codec"] if "codec" in all_params else {}
+            self._digital_component = float(codec_cfg.get("dv_enabled", 0.0)) > 0.5
+        except Exception:                                     # noqa: BLE001
+            # a stage must work when the codec layer is absent, which happens in the graph engine
+            self._digital_component = False
         self.chroma_vavg = float(cfg.get("chroma_vertical_averaging", 0.85))
         # ACC: overall chroma channel gain.  This is the physical source of
         # "saturation" -- the receiver normalises chroma against the burst
@@ -134,8 +152,12 @@ class FormatStage(Stage):
     def _limit_chroma(self, i: np.ndarray, q: np.ndarray):
         choice = self._choice()
         rate = self.std.pixel_rate_hz
-        i = lowpass_hz(i, self.chroma_bw, rate, choice)
-        q = lowpass_hz(q, self.chroma_bw, rate, choice)
+        # **A digital component path has no composite chroma limit.**  Skipping the lowpass and the vertical
+        # averaging when DV is selected is not a relaxation of the model: neither filter is in a 4:1:1 component
+        # signal path, so applying them was modelling the wrong format.
+        if not self._digital_component:
+            i = lowpass_hz(i, self.chroma_bw, rate, choice)
+            q = lowpass_hz(q, self.chroma_bw, rate, choice)
         if self.chroma_vavg > 1e-4:
             # colour-under recording: the chroma signal is only ~40 lines tall,
             # so the receiver averages neighbouring lines (a 1H/2H delay line)

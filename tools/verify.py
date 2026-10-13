@@ -3914,5 +3914,68 @@ def check_lens_reachable_and_ordered() -> None:
            "a duplicated call is a mechanism applied twice, which no parameter can correct",
            "the sequence has %d calls: %s" % (len(order), order),
            every_once and len(order) == 7)
+def check_digital_component_chroma() -> None:
+    """
+    A digital component codec must not inherit the composite subcarrier's chroma bandwidth.
+
+    **The fault this guards.** The format stage lowpassed I and Q at `format.chroma_bandwidth`, default 0.75 MHz --
+    the VHS composite **subcarrier** sideband width -- and it read nothing from the codec layer, so it applied that
+    limit to DV as well. MiniDV is 4:1:1 digital component at a fixed bitrate; its chroma is not on a subcarrier, so
+    its limit is a sampling one and not a sideband one. Measured on the user's own unprocessed photograph, the
+    effect was that a blown highlight's coloured edge was **2-4x too weak**, and widening the bandwidth changed
+    nothing because the filter should not have been in the path at all.
+
+    **Why no check caught it.** Everything measured was correct in isolation: `chroma_bandwidth` did exactly what it
+    said, the DV codec did exactly what it said, and the two were never compared. A limit that applies to one format
+    being applied to another is invisible to any check that examines one stage at a time.
+
+    **The two assertions are deliberately complementary.** With DV on, the bandwidth must make no difference --
+    because the filter is skipped. With DV off, it must make a difference -- so the check cannot be satisfied by
+    removing the filter for everybody, which would be a different bug that passes.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    COEF = np.array([0.299, 0.587, 0.114], np.float32)
+    H, W = 240, 320
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+
+    class Fringes:
+        """Red and blue bars, which the chroma path either carries or does not."""
+
+        def __init__(self, frames=4):
+            self.width, self.height, self.fps, self.frame_count = W, H, 25.0, frames
+
+        def frame(self, index):
+            a = np.zeros((H, W, 3), np.float32)
+            a[:, :W // 2] = [0.8, 0.1, 0.1]
+            a[:, W // 2:] = [0.1, 0.1, 0.8]
+            return a
+
+    def chroma_amount(dv: float, bw: float) -> float:
+        p = merge_values(BASE, {"camera": {"exposure": 0.0},
+                                "format": {"chroma_bandwidth": bw},
+                                "player": {"chroma_bandwidth": bw},
+                                "codec": {"dv_enabled": dv}})
+        img = np.clip(Renderer(Fringes(), W, H, 25.0, p, seed=5).render_frame(1), 0, 1)
+        return float(np.abs(img[..., 0] - img[..., 2]).mean())
+
+    narrow_dv = chroma_amount(1.0, 0.30)
+    wide_dv = chroma_amount(1.0, 2.00)
+    narrow_analog = chroma_amount(0.0, 0.30)
+    wide_analog = chroma_amount(0.0, 2.00)
+
+    record("a digital component codec does not get the composite chroma limit",
+           "0.75 MHz is the width of the sidebands around a 3.58 MHz subcarrier, a limit that exists because chroma "
+           "shares the luma's spectrum; DV's chroma is not on a subcarrier, so the limit does not apply and applying "
+           "it deletes the coloured edge that shows the lens's own aberration",
+           "with DV on, 0.30 -> 2.00 MHz changes the colour by %.5f; with DV off it changes it by %.5f"
+           % (abs(wide_dv - narrow_dv), abs(wide_analog - narrow_analog)),
+           abs(wide_dv - narrow_dv) < 1e-6 and abs(wide_analog - narrow_analog) > 1e-3,
+           "the second half is what stops this passing by removing the filter for every format, which would be a "
+           "different fault")
 if __name__ == "__main__":
     raise SystemExit(main())

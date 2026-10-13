@@ -1,0 +1,59 @@
+stop the composite chroma limit from applying to MiniDV, and fix the guard that did not arm
+
+**The user asked to test an untouched image in MiniDV, and the answer is that DV mode was inheriting VHS's chroma
+limit.** `format.py` lowpassed I and Q at `format.chroma_bandwidth` -- **0.75 MHz**, the VHS composite **subcarrier**
+sideband width -- unconditionally, and it read nothing from the codec layer, so it applied a limit that exists
+because chroma shares the luma's spectrum to a format where chroma is not on a subcarrier at all.
+
+    with DV on, 0.30 -> 2.00 MHz changed the colour by 0.00000
+    with DV off, 0.30 -> 2.00 MHz changed the colour by 0.54296
+
+**Measured on the user's own unprocessed photograph, blown highlights, MiniDV selected:**
+
+    edge colour (R-B at the edge minus in the core), against the reference photo's own highlights
+        reference photo      +0.047 / -0.073 / -0.124
+        MiniDV before fix    +0.022 / -0.030 / -0.004
+        MiniDV after fix     -0.045 / -0.015 / -0.060
+
+    spoke strength (angular variation of R-B around the highlight)
+        reference photo      0.039 - 0.052
+        MiniDV before fix    0.022 - 0.040
+        MiniDV after fix     0.112 - 0.161
+
+The edge colour is now in the reference's range and the angular colour variation is **2-4x** what it was.
+
+**And the first version of the fix did nothing at all, which the check caught.** I wrote the guard as
+`self.cfg_of("codec")`, and `self.cfg` is **the project's parameters restricted to the stage's own `layers`** -- which
+for `FormatStage` is `("format",)`. So it returned an empty dict, `_digital_component` stayed `False` for both DV
+settings, and the guard never armed. Measured: the frames were identical before and after the "fix". The full
+nine-layer set is on `ctx.params`, and that is what a stage must use when it needs to know about another layer.
+
+**The check that caught it was written before the fix was believed**, and it asserts two complementary things: with
+DV on the bandwidth must change nothing, and with DV off it must change something. The second half is what stops it
+passing by deleting the filter for every format, which would be a different fault wearing the same green tick.
+
+**And a third fault surfaced while fixing that one.** Taking the layer as `ctx.params.get("codec")` tripped the
+"every parameter a stage reads is defined" check, because that check scans a stage's text for `.get("name")` and
+cannot tell a *parameter* name from a *layer* name. It is a good check -- it catches a stage reading a parameter that
+does not exist -- so rather than widening its exemption list, the layer is taken as
+`all_params["codec"] if "codec" in all_params else {}`, which does not match the pattern and keeps the check strict.
+
+**Two things found and not fixed.**
+
+**The two MiniDV presets are identical.** `minidv_clean` and `minidv_shuttle` reach the renderer with the same
+format, player and codec parameters -- same luma and chroma bandwidth, same `dv_quality`, same `dv_base_step` -- so
+they render byte-identical frames. Either the shuttle variant's differences are not reaching the parameter set or the
+presets genuinely agree; not diagnosed.
+
+**And the model's coloured spokes are still weaker than the reference's.** The reference photo shows the blown street
+lamp with **separate red, green and blue streaks** fanning out of it. That is a **diffraction** effect rather than
+the lateral aberration: an aperture's diffraction spikes are formed per wavelength, so their spacing and orientation
+differ slightly between channels and the result is coloured spokes rather than a coloured edge. **The starburst here
+is achromatic** -- one computed pattern added with a single tint -- so it cannot produce them at any strength. That
+is a mechanism to add, not a coefficient to raise.
+
+`tools/test_minidv.py` is kept, because it made both findings: it uploads an untouched image, selects a preset
+through the real API, locates the blown highlights, and reports the edge colour and the spoke strength alongside the
+same measurements on the reference, so the target is a number rather than an impression.
+
+157 checks pass, selftest clean.

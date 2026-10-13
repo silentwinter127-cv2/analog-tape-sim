@@ -1,0 +1,49 @@
+stop the composite chroma limit from applying to MiniDV, which was hiding the coloured edge
+
+**The user asked to test an untouched image in MiniDV, and the answer is that DV mode was inheriting VHS's chroma
+limit.** The format stage lowpassed I and Q at `format.chroma_bandwidth` -- **0.75 MHz**, the VHS composite
+**subcarrier** bandwidth -- unconditionally, and it had **no knowledge that the codec layer had selected DV**: nothing
+in `format.py` read the codec layer at all. Both `minidv_clean` and `minidv_shuttle` reached the renderer with
+`chroma_bandwidth = 0.75` and `dv_enabled = 1`, and rendered identically.
+
+**Why that is wrong rather than merely conservative.** 0.75 MHz is the width of the sidebands that fit around a
+3.58 MHz subcarrier, and it exists because chroma has to share the luma's spectrum. **DV does not do that.** MiniDV
+is 4:1:1 digital component at a fixed bitrate, so its chroma limit is a sampling and quantisation one, not a sideband
+one. Applying the composite limit to DV makes a digital format inherit an analogue one's worst constraint -- and it
+is precisely what deletes a coloured edge, since measurement on a hard edge showed only **6.7%** of a lateral
+chromatic displacement surviving at 0.75 MHz, against **28x** more at 2.0 MHz.
+
+**Measured on the user's own unprocessed photograph, blown highlights, MiniDV selected:**
+
+    edge colour (R-B at the edge minus in the core), against the reference photo's own highlights
+        reference photo      +0.047 / -0.073 / -0.124
+        MiniDV before fix    +0.022 / -0.030 / -0.004
+        MiniDV after fix     -0.045 / -0.015 / -0.060
+
+    spoke strength (angular variation of R-B around the highlight)
+        reference photo      0.039 - 0.052
+        MiniDV before fix    0.022 - 0.040
+        MiniDV after fix     0.112 - 0.161
+
+So the edge colour is now in the reference's range and the angular colour variation is **2-4x** what it was. The
+change is one guard: the encoder asks the codec layer whether DV is on, and skips the composite chroma lowpass and
+the vertical chroma averaging when it is, because **neither filter is in a component signal path**.
+
+**Two things found on the way and not fixed.**
+
+**The two MiniDV presets are identical.** `minidv_clean` and `minidv_shuttle` reach the renderer with the same
+format, player and codec parameters -- same luma and chroma bandwidth, same `dv_quality`, same `dv_base_step` -- so
+they render byte-identical frames. Either the shuttle variant's differences are not reaching the parameter set or
+the presets genuinely agree; not diagnosed.
+
+**And the model's coloured spokes are still weaker than the reference's.** The reference photo shows the blown street
+lamp with **separate red, green and blue streaks** fanning out of it, which is stronger and more angular than
+anything the model produces. That is a **diffraction** effect rather than the lateral aberration: the aperture's
+diffraction spikes are formed per wavelength, so their spacing and orientation differ slightly between the channels,
+and the result is coloured spokes rather than a coloured edge. **The starburst in this model is achromatic** -- one
+computed pattern added with a single tint -- so it cannot produce them at any strength. That is a mechanism to add,
+not a coefficient to raise, and it is the natural next step.
+
+`tools/test_minidv.py` is kept, because it is what made both findings: it uploads an untouched image, selects a
+preset through the real API, locates the blown highlights, and reports the edge colour and the spoke strength
+alongside the same measurements on the reference, so the target is a number.
