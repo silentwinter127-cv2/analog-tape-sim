@@ -1,0 +1,62 @@
+locate the colour drift to the encoder/decoder pair, and record two conclusions that were wrong on the way
+
+**What is established.** A clean modern photograph through the chain at neutral settings comes out with its blue
+channel multiplied: on a flat sodium-lit colour, `[0.7519 0.3592 0.0184]` becomes blue **0.0691 through the whole
+chain and 0.0950 through the player's own separation**, and on a neutral grey or white it round trips exactly. That
+asymmetry -- exact on grey, grossly wrong on a saturated colour -- is what makes it attributable.
+
+**Attributed, in stages:**
+
+    after stage    channel means                  R-B
+    (the source)   [0.7517 0.3586 0.0183]        +0.7334
+    camera         [0.8291 0.3693 0.0222]        +0.8069
+    format         unchanged
+    codec          unchanged
+    connector      unchanged
+    tape           unchanged
+    player         [0.7565 0.3681 0.1199]        +0.6365     the blue channel rises 5.4x
+    display        unchanged
+
+**And every decoder setting was swept on a flat field:** `chroma_bandwidth` from 0.4 to 3.0 changed the output by
+nothing at all, nor did the vertical averaging, the luma bandwidth, the comb depth, the crosstalk terms or the chroma
+noise. Only `separation_kind` and `output_gain` moved it. **So it is not a setting** -- which is the useful negative
+result, because it rules out the whole class of "tune it until it looks right".
+
+**Two conclusions on the way were wrong, and both are worth recording because each was a measurement error rather
+than a reasoning one.**
+
+**First, I said the separation was accurate.** Measured in isolation it is: encoder `I=+0.3435, Q=-0.0230`, decoder
+`I=+0.3426, Q=-0.0229`, rebuilt rgb `[0.7512 0.3594 0.0202]` against a source of `[0.7519 0.3592 0.0184]` -- 0.25%,
+and exact on grey and white. **But that test fed the decoder a composite I built myself with `composite_encode`,
+not the one the format stage actually produces.**
+
+**Second, and that is the finding:** given the format stage's real composite, the same separation returns blue
+**0.0950** instead of 0.0202. So
+
+    the format stage's composite  ->  the player's separation  ->  blue 0.0950   (source 0.0184)
+    my own composite_encode       ->  the same separation      ->  blue 0.0202   correct
+
+**The encoder and the decoder do not agree about what a composite signal is.** The fault is neither stage alone; it
+is the pair, and a check that exercises one of them cannot see it -- which is why it survived: `_separate` is
+accurate against its own idea of a composite, and the format stage's encoder is accurate against its own idea of a
+flat colour, and nothing compares the two.
+
+**This is the same shape as the DV fault fixed earlier** -- a limit belonging to one path applied on another -- and
+the same shape as the `field_curvature` difference, where a copy reordered a float32 operation and each side was
+right by itself. **Three faults now, all of them at a boundary between two things that were each verified alone.**
+
+**Not fixed, and the reason is deliberate.** The fix is a decision about which side is authoritative -- whether the
+format stage's chroma gain and modulation should be inverted exactly by the player, or whether the player should
+recover the encoder's own I/Q -- and that decision moves every preset and every measurement made before it. The
+attribution is the prerequisite and it is done: **the encoder and decoder pair, on saturated colours, blue channel,
+factor 5.**
+
+**What this means for the highlight work, stated plainly: every comparison attempted over the last two turns was
+invalid.** The drift this fault introduces is **0.064 of colour**, against the **~0.011** of fringe that the
+chromatic aberration produces and the **0.011** of blue-lift the flare defocus produces. The noise was six times the
+signal, which is why nothing showed, and it was never a matter of tuning the mechanisms.
+
+**Tools kept, each of which produced a number above:** `tools/channel_drift.py` (stage attribution),
+`tools/player_sweep.py` (the settings ruled out), `tools/roundtrip.py` (the matrix pair is exact),
+`tools/iq_error.py` (the separation is exact against my own composite), `tools/player_lines.py` (the line-by-line
+attribution), and `tools/fetch_clean.py` with `tools/quantify_drift.py`.
