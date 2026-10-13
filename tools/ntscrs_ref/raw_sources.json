@@ -1,0 +1,50 @@
+[
+ {
+  "name": "raw_lamp_snow.jpg",
+  "title": "File:Snow under a street lamp in Tuntorp.jpg",
+  "licence": "CC BY-SA 4.0",
+  "artist": "<a href=\"//commons.wikimedia.org/wiki/User:W.carter\" title=\"User:W.carter\">W.carter</a>",
+  "w": 3840,
+  "h": 2603,
+  "blown": 0.004810855263157895,
+  "glow": 0.028531482103982583,
+  "mean": 0.20749512314796448,
+  "ok": true
+ },
+ {
+  "name": "raw_lamp_arena.jpg",
+  "title": "File:Lamp at night at Brastad Arena.jpg",
+  "licence": "CC BY-SA 4.0",
+  "artist": "<a href=\"//commons.wikimedia.org/wiki/User:W.carter\" title=\"User:W.carter\">W.carter</a>",
+  "w": 3840,
+  "h": 2560,
+  "blown": 0.00976593017578125,
+  "glow": 0.02068135579427083,
+  "mean": 0.09456741064786911,
+  "ok": true
+ },
+ {
+  "name": "raw_lights_road.jpg",
+  "title": "File:Street lights along a road in Tuntorp.jpg",
+  "licence": "CC BY-SA 4.0",
+  "artist": "<a href=\"//commons.wikimedia.org/wiki/User:W.carter\" title=\"User:W.carter\">W.carter</a>",
+  "w": 3456,
+  "h": 5184,
+  "blown": 0.0013980316036522635,
+  "glow": 0.0051629546574931415,
+  "mean": 0.22004897892475128,
+  "ok": true
+ },
+ {
+  "name": "raw_siena.jpg",
+  "title": "File:Siena Streets at Night.jpg",
+  "licence": "CC BY 4.0",
+  "artist": "Andrew Parlette",
+  "w": 3840,
+  "h": 2560,
+  "blown": 0.00652099609375,
+  "glow": 0.022724609375,
+  "mean": 0.2284221649169922,
+  "ok": true
+ }
+]

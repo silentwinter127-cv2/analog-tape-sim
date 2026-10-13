@@ -1,7 +1,7 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-13T14:25:35",
+  "exported": "2026-10-13T14:35:43",
   "name": "新工程",
   "standard": "ntsc",
   "seed": 20240101,
@@ -9,28 +9,28 @@
   "environment": {},
   "keyframes": [],
   "unit_identities": {},
-  "source": "runs\\uploads\\repro_source.png",
+  "source": "runs\\uploads\\raw_lamp_arena.jpg",
   "source_info": {
-    "path": "runs\\uploads\\repro_source.png",
-    "width": 960,
-    "height": 720,
+    "path": "runs\\uploads\\raw_lamp_arena.jpg",
+    "width": 3840,
+    "height": 2560,
     "fps": 25.0,
-    "frame_count": 0,
-    "duration": 0.0,
+    "frame_count": 1,
+    "duration": 0.04,
     "has_audio": false,
-    "codec": "png",
-    "aspect": 1.3333
+    "codec": "mjpeg",
+    "aspect": 1.5
   },
   "params": {
     "camera": {
       "halation": 0.9,
       "ccd_smear": 0.85,
-      "chroma_aberration": 0.85,
-      "lens_flare": 0.55,
+      "chroma_aberration": 0.2,
+      "lens_flare": 0.5,
       "spike_spread": 0.85,
       "flare_defocus": 1.0,
-      "longitudinal_ca": 0.65,
-      "axis_offset": 0.45,
+      "longitudinal_ca": 0.12,
+      "axis_offset": 0.2,
       "overflow_drain": 0.35
     },
     "format": {
@@ -56,7 +56,7 @@
     },
     "display": {
       "gamma": 1.0,
-      "saturation": 0.62
+      "saturation": 0.6
     }
   },
   "param_count": 24
