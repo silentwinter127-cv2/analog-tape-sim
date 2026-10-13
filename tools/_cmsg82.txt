@@ -1,0 +1,40 @@
+"""
+Withdraw the ramp as a criterion: `horizontal_shift` is exact, and the ramp could never satisfy it.
+
+**Two results from testing the operation directly**, which is not what the earlier time-base test did -- that one
+zeroed the *source* of the displacement and left the *operation* in place.
+
+**First, `horizontal_shift` is exact.** A constant plane comes back unchanged to `0.000000` at displacements of
+0.0, 0.001, 0.01, 0.1, 0.25, 0.5, -0.5, 1.0, 1.5 **and** under a per-row displacement of standard deviation up to 2
+samples. It is not a source of error.
+
+**Second, and this retracts a criterion I had been using.** On a **ramp**, the same operation changes each row's
+mean by `d * slope`. **That is what displacing a row does, not a fault.** And `_separate` contains a per-row
+displacement, so a signal designed to be **row-constant** cannot remain row-constant through it. **The known-answer
+signal was impossible to keep, by construction, and every ripple figure taken from it is confounded** -- the ladder
+0.001159 -> 0.002104 -> 0.004689 is part displacement doing its job and part error, in a proportion the statistic
+cannot separate.
+
+**It also explains three earlier anomalies at once.**
+
+  * forcing `_timebase_offset` to zero moved the photograph's ripple by only 3%, which read as the displacement being
+    innocent -- it was neither; zeroing one term of a sum the statistic cannot break apart;
+  * the withdrawn attribution to `_separate` came from a pass-through that also removed the displacement, so that
+    observation could never have identified `_separate`'s internals;
+  * and the five refuted hypotheses each removed one term of that same sum and each left the rest.
+
+**The signal that avoids the entanglement is a constant**, and it is strictly simpler than the ramp: a constant must
+come back constant under a shift, a filter, a demodulation and a re-modulation alike, so **any variation in the
+output is error and there is nothing else it could be.** That is the criterion to carry forward.
+
+**And the clean reading it gives, for the record**, at the two strengths worth distinguishing:
+
+    a constant I and Q through the recovery        ripple 0.000649, mean 0.299717 against a designed 0.30
+    the photograph through the recovery            ripple 0.006990
+
+so the photograph is **10.8x** the floor that a constant establishes, and that comparison is the first one in this
+series where both sides are measured the same way and neither is entangled with a legitimate per-row effect.
+
+Nothing changed: `signal.py`, `player.py` and `standards.py` are byte-identical to their committed state, 163 checks
+pass, and the instruments (`tools/known_answer.py`, `tools/instrument_separate.py`, `tools/test_hshift.py`) are kept
+with the ramp's role corrected in this record.

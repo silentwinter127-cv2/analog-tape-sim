@@ -1,0 +1,41 @@
+settle what the banding is: chroma-specific, real, and measured the right way
+
+**The measurement problem, finally removed.** Six hypotheses were examined and every one of them was compared against
+something incomparable: the encoder's own ripple, a ramp that a per-row displacement legitimately changes, or a
+perfectly flat field. **A flat field is not a floor** -- a real photograph has scene structure, so the ratio to it is
+meaningless and the multipliers it produced (2.5 million times) are meaningless with it.
+
+**The criterion that works is the chain's own before-and-after**, on the same picture, split into luma and chroma:
+
+                            row-to-row row-mean variation
+    the source              luma 0.002631      R-B 0.003417
+    through the neutral     luma 0.002569      R-B 0.011570
+    chain (display off)
+                            -2%, unchanged     3.4x
+
+**So the banding is real, and it is chroma-specific.** The luma path is **unchanged** by the chain -- 0.002631 to
+0.002569 -- while R-B rises by a factor of 3.4. That is the first statement in this whole investigation where both
+sides are measured the same way, on the same subject, with nothing entangled.
+
+**And it narrows the fault sharply, in combination with what was established last turn:** the chroma recovery is
+**accurate for constant chroma** -- a designed constant I returns within 0.1%, ripple 0.000654 at I = 0.30. So:
+
+    constant chroma through the chain        accurate to 0.1%
+    spatially varying chroma through it      R-B row-to-row rises 3.4x
+
+**The fault is in how the chain handles chroma that varies across the picture, not chroma as such.** That is
+consistent with every result gathered -- the constant-signal tests passing, the real-picture tests failing, and the
+five refuted hypotheses each removing a piece that a constant signal does not exercise.
+
+**And the source's own figures are worth recording**, because they bound what can be asked of the chain rather than
+blaming it:
+
+    the file at its native 4363x3279     luma 0.000974     R-B 0.001005
+    the same downsampled to 320x240      luma 0.002631     R-B 0.003417
+
+so **the working resolution's own resampling already multiplies the statistic by 2.7x on luma and 3.4x on chroma**
+before any stage acts. Part of what was being attributed to the chain is the input path's cost.
+
+**Nothing changed**: `signal.py`, `player.py` and `standards.py` are byte-identical to their committed state, and
+163 checks pass. The instruments are kept, and this record corrects the flat-field comparison they were being read
+against.
