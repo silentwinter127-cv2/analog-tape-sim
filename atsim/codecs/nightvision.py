@@ -157,9 +157,23 @@ def illuminator_field(h: int, w: int, spec: NightVisionSpec) -> np.ndarray:
     # **the angular scale sets the cone's width**: a narrow beam reaches the same brightness at a smaller distance
     d = np.sqrt(dx * dx + dy * dy) / max(1e-3, angle)
     # the inverse-square law with a near-field clamp, so a surface at the lamp does not go to infinity
+    # **Normalised to a physical magnitude, because the radial rebuild exposed an error that the old field hid.**
+    # The rebuilt field reached about **1.18 at its centre** and is added directly to a picture in [0, 1] -- **118% of
+    # full scale at the brightest point**, with the near-field clamp allowing up to 300%.  Measured alone,
+    # `add_illuminator` at the schema's 0.15 took a source of 0.1973 to **0.6707**, a factor of **3.40**, and it was the
+    # whole of the chain's brightness excess.  The old top-down field happened to be small (0.02 to 0.27), so the same
+    # mistake was invisible.
+    #
+    # **The correct magnitude is measurable**: the real NIGHTSHOT 0 is 1.19x its own source -- 0.2349 against 0.1973 --
+    # so the entire difference to be accounted for, lamp, IR response and display together, is **0.0376 of luma**.  A
+    # lamp cannot contribute more than that.  **So `illuminator = 1.0` is defined as "the lamp's peak contribution
+    # equals the scene's own mean brightness"**, and the default 0.15 then lands at about a seventh of that -- near the
+    # measured difference rather than thirty times above it.
     near_bound = 3.0
     ref = 0.75
     field = np.minimum(ref * ref / np.maximum(d, 1e-3) ** 2, near_bound)
+    # scaled so the peak is 1.0, which makes the units the picture's own
+    field = field / max(1e-6, float(field.max()))
     return field.astype(np.float32)
 def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     """
