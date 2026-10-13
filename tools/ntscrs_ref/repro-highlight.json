@@ -1,31 +1,24 @@
 {
-  "kind": "atsim.config",
-  "version": 1,
-  "exported": "2026-10-13T15:31:17",
-  "name": "新工程",
-  "standard": "ntsc",
-  "seed": 20240101,
-  "fps": 29.97002997002997,
-  "environment": {},
-  "keyframes": [],
-  "unit_identities": {},
-  "source": null,
-  "source_info": null,
   "params": {
+    "camera": {
+      "chroma_aberration": 0.6,
+      "axis_offset": 0.5,
+      "longitudinal_ca": 0.4,
+      "ccd_smear": 0.2,
+      "halation": 0.25,
+      "source_glow": 0.05,
+      "overflow_drain": 0.6,
+      "lens_flare": 0.3,
+      "spike_spread": 0.4,
+      "flare_defocus": 0.35
+    },
     "format": {
-      "chroma_bandwidth": 2.0,
       "luma_bandwidth": 5.0,
-      "color_noise": 0.0,
+      "chroma_bandwidth": 2.0,
       "cross_color": 0.0,
       "cross_luma": 0.0,
-      "edge_boost": 0.0
-    },
-    "player": {
-      "chroma_bandwidth": 2.0,
-      "luma_bandwidth": 5.0,
-      "color_noise": 0.0,
-      "cross_color": 0.0,
-      "cross_luma": 0.0
+      "edge_boost": 0.0,
+      "color_noise": 0.0
     },
     "codec": {
       "dv_enabled": 1.0
@@ -33,33 +26,31 @@
     "tape": {
       "head_switching": 0.0
     },
-    "camera": {
-      "halation": 0.25,
-      "ccd_smear": 0.2,
-      "chroma_aberration": 0.6,
-      "lens_flare": 0.3,
-      "spike_spread": 0.4,
-      "flare_defocus": 0.35,
-      "longitudinal_ca": 0.4,
-      "axis_offset": 0.5,
-      "overflow_drain": 0.6,
-      "source_glow": 0.05
+    "player": {
+      "luma_bandwidth": 5.0,
+      "chroma_bandwidth": 2.0,
+      "cross_color": 0.0,
+      "cross_luma": 0.0,
+      "color_noise": 0.0
     },
     "display": {
-      "scanlines": 0.0,
-      "mask_depth": 0.0,
-      "interlace_flicker": 0.0,
-      "scan_pitch": 0.0,
-      "spot_sigma": 0.0,
-      "defocus": 0.0,
-      "vignette": 0.0,
-      "reflection": 0.0,
-      "bloom": 0.0,
-      "geometry_warp": 0.0,
-      "crt_age": 0.0,
+      "enabled": 1.0,
       "gamma": 1.0,
-      "saturation": 0.62
+      "saturation": 0.62,
+      "scanlines": 0.0,
+      "interlace_flicker": 0.0,
+      "geometry_warp": 0.0,
+      "spot_sigma": 0.0,
+      "scan_pitch": 0.0,
+      "mask_depth": 0.0,
+      "vignette": 0.0,
+      "bloom": 0.0,
+      "defocus": 0.0,
+      "reflection": 0.0,
+      "crt_age": 0.0
     }
   },
-  "param_count": 36
+  "param_count": 37,
+  "seed": 20240101,
+  "standard": "ntsc"
 }

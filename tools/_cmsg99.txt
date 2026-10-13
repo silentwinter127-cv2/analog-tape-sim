@@ -1,0 +1,55 @@
+make `halation` carry the source's colour -- the mechanism is right, and its effect on the pole measures as zero
+
+**The fault, found by reading the line that caused it.** `CameraStage._halation` finished with a **fixed** tint:
+
+    tint = np.array([1.05, 0.88, 1.05])
+    return rgb + (a * 0.52) * halo[..., None] * tint[None, None, :]
+
+The halo is built from a **luminance** mask, so it is colourless by construction, and the fixed tint then gives every
+pixel it touches neutral-to-magenta light. **That is what divides a small chroma difference away**: a bright thin line
+whose own colour is a small blue keeps its brightness and its contrast and loses its hue.
+
+**So `halation` now takes its tint from the blown region itself** -- `rgb * hot`, averaged per channel and normalised
+so its **luminance is unchanged** -- which means a scene with no blown source, or a neutral one, behaves exactly as
+before and only a coloured source moves. A new parameter `halation_source_colour` (default **0.0**) blends between the
+fixed lens tint and the source's own.
+
+**The change is opt-in and that is verified, not asserted.** At 0.0 the output is **bit-identical** to the old body by
+`np.array_equal`, on four sources -- blue-white, white, warm-bright, sodium. At 1.0 the added colour follows the source
+in both directions (blue-white +0.00359, sodium -0.00940, white stays 0.00000). And on the real scene the mechanism
+**reads the right values**: the blown region's mean colour is `[0.9388 0.9476 0.8449]`, so the source tint becomes
+`[0.9907 1.0000 0.8916]` and the blended tint is exactly that -- the inheritance works.
+
+**And its effect on the pole's hue measures as zero, through both paths.**
+
+    the raw scene             pole contrast 0.3104   hue +0.0235
+    halation_source_colour 0.00   0.2183   +0.0000   blown 0.04051
+                          0.50   0.2198   +0.0000   blown 0.04048
+                          1.00   0.2198   +0.0000   blown 0.04045
+
+**So the mechanism is correct and does not solve the reported problem**, and saying so is the honest outcome. The
+reason is visible in the numbers: the halo reaches a **small fraction** of the line's own pixels -- the mechanism adds
+only **+0.00279** of mean luma to the whole scene -- so its tint cannot move the line's measured hue, which is set by
+the pole's own colour and by the wall and sky around it. **`halation_source_colour` fixes a real dilution on a large
+coloured source; it is not a lever on a thin line's hue**, and the earlier expectation that it would be is refuted by
+this measurement.
+
+**Two harness faults were found getting here, and the second one matters beyond this turn.**
+
+  * the earlier end-to-end script reported a **20% blown frame** and a pole contrast of **0.0000**, which the debug
+    run refuted: the parameter arrives (`1.000`), `_halation` adds **+0.00279**, and every stage of the chain holds the
+    blown fraction at **0.0148**. **That script was wrong, not the model**, and it is why its reading was withheld
+    rather than reported;
+  * and the debug run also showed that **the chain's own blown fraction reads 0.0148 where the server's read 0.04 to
+    0.20 on the same settings** -- so those are not the same quantity, and the `blown` figures quoted in the earlier
+    sweeps of this session came from the server path. The renderer's figures are used here instead, and the earlier
+    ones should be re-taken before they are relied on.
+
+**Where that leaves the pole's blue.** It is diluted by the **total** light added around the line, not by the halo's
+tint -- so the lever is the amount of neutral light, which is `halation` and `source_glow` together, and turning them
+down costs the line's contrast (measured: reducing them moved the contrast from 0.2185 to 0.2069, the wrong way). **The
+pole keeps its line and its contrast and loses its blue, and the value sweep and now the tint mechanism both fail to
+recover it.** That is the measured state, not a setting left untuned.
+
+163 checks pass, selftest clean. Two mechanisms were added this session -- `source_glow` and
+`halation_source_colour` -- both inert at their defaults, the second verified bit-identical.
