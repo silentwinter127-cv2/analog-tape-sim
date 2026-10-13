@@ -106,7 +106,10 @@ async function main() {
       const st = await evalJs(`(async () => {
         const r = await fetch("/api/project");
         const d = await r.json();
-        const c = d.project.params.camera;
+        // **the panel reads d.params -- the RESOLVED values**, which is where project_dict() puts them; d.project.params
+                 // is the project's own stored set. Reading the wrong one is what made an earlier probe report a fault
+                 // that was not there.
+                 const c = d.params.camera;
         return { nv_mode: c.nv_mode, nv_green_mix: c.nv_green_mix,
                  nv_accumulate: c.nv_accumulate, src: (d.project.source||"").split(/[\\\\/]/).pop() };
       })()`);

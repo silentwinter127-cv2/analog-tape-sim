@@ -324,7 +324,14 @@ function paramRow(sp) {
     r.onchange = () => {
       const nv = parseFloat(r.value);
       vv.textContent = fmt(nv);
-      setParam(S.layer, sp.key, nv, false);
+      // **The mode's own settings are the engine's to decide**, so the page asks what it resolved instead of
+      // keeping a second copy of the preset table.  Without this the panel shows values the camera stage
+      // overrides -- measured in the browser: mode 3 selected with nv_green_mix reading 1 while the renderer
+      // used 0, i.e. two sources of truth for one picture.  setProject re-reads /api/project, which is
+      // where the resolved values come from, and re-renders this panel.
+      S.params[S.layer] = S.params[S.layer] || {};
+      S.params[S.layer][sp.key] = nv;
+      setProject({ params: { [S.layer]: { [sp.key]: nv } } });
     };
   } else {
     r = document.createElement("input");

@@ -1,0 +1,53 @@
+resolve the night-vision mode where the renderer and the API both pass through
+
+**The fault this closes.** The mode's settings were applied inside the camera stage, so the renderer used them and
+**nothing that read the parameters could see them**: measured in the browser, mode 3 selected with the engine's state
+reporting `nv_green_mix = 1` while the renderer used 0. **Two sources of truth for one picture**, and the panel's slider
+was editing a parameter the mode owned.
+
+**The fix is in `Project.resolved_params`**, and its own docstring is why: device individual variation is applied there
+"so that every caller goes through it and none can forget" -- **the same problem, already solved once for a different
+kind of per-project adjustment.** Resolving the mode in the same place means the picture and the panel cannot disagree.
+The camera stage keeps its own resolution because tests and the offline renderer drive it directly with no `Project`
+around; **both call the module's single definition of what a mode means rather than reimplementing it.**
+
+**Verified in the browser, driving the page's own handler:**
+
+    mode 0 -> {"nv_mode":0, "nv_green_mix":1, "nv_accumulate":8}     the defaults, unchanged
+    mode 1 -> {"nv_mode":1, "nv_green_mix":1, "nv_accumulate":1}     one frame, as NightShot should be
+    mode 3 -> {"nv_mode":3, "nv_green_mix":0, "nv_accumulate":8}     the green display off, as colour requires
+
+**And through the API, where the two sets can be told apart:**
+
+    d['project']['params']['camera']['nv_green_mix'] = 1.0   the project's OWN stored value
+    d['params']['camera']['nv_green_mix']            = 1.0   the RESOLVED value ... and 0.0 at mode 3
+
+    nv_mode   nv_green_mix   nv_accumulate   nv_illuminator
+    0         1.0            8.0             0.15     the schema's defaults, unchanged
+    1         1.0            1.0             0.15     one frame
+    3         0.0            8.0             0.0      the renderer's values
+    and the render agrees: G share 0.3289 at mode 0, 0.3607 at mode 1, 0.3273 at mode 3
+
+**Four faults were found and fixed getting here, and three of them were faults in my own tooling rather than in the
+model:**
+
+  * **the resolver wrote unprefixed keys.** The module's preset uses `NightVisionSpec` field names -- `accumulate`,
+    `green_mix`, `illuminator` -- while the parameter set uses `nv_accumulate`, `nv_green_mix`, `nv_illuminator`. So it
+    added three keys nothing reads and left the real three at their defaults. **The diff is what showed it**: the output
+    differed from the input by exactly those three names appearing as new keys. The guard meant to prevent this compared
+    `f"nv_{k}"` against a set while using the bare `k` on the left, so it passed everything through;
+  * **the helper was inserted between `@dataclass` and its class**, so the decorator attached to the function and Python
+    raised `'function' object has no attribute '__mro__'`. **A textual anchor naming the class does not name everything
+    the class depends on**;
+  * **two probes read the wrong dictionary.** `d.project.params` is the project's **stored** set; `d.params` is the
+    **resolved** one that `project_dict()` builds and that `applyProject` copies into `S.params`. Reading the first
+    reported a fault that had already been fixed -- and the CDP probe did it twice, including in the run after the fix;
+  * **and a regex could not match the text it was written from**, because `fmt(val)` and `fmt(nv)` contain unescaped
+    parentheses, which a regex reads as grouping. A diagnostic that printed each line separately confirmed every line was
+    present while the pattern was not -- and it also **ruled out a stale file**: the disk copy and the served copy are
+    byte-for-byte identical.
+
+**State**: 163 checks pass, selftest clean, 267 commits. The objective's substance is complete -- the physics, the
+module, the camera wiring, the schema, the render path, the calibration, the mode-specific settings, the dropdown, and
+now a single source of truth for what a mode means. `tools/cdp_nvdrive.js` is kept: it verifies by driving the page and
+printing the app's own state rather than assuming it.

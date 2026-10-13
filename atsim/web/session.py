@@ -82,7 +82,51 @@ def _preset_baseline() -> dict:
     return merge_values(base, _PRESET_BASELINE_LAYERS)
 
 
+def _resolve_night_vision(params: dict) -> dict:
+    """
+    Apply the night-vision mode's own settings to a resolved parameter set, in place of nothing.
+
+    **Why it lives here.**  The renderer and the API both call `resolved_params`, so resolving the mode here means the
+    picture and the panel cannot disagree -- which they did: the camera stage applied the mode's values and the
+    parameters the page read still held the schema defaults.
+
+    **And it is a no-op when no mode is selected**, so nothing about any existing preset changes: with `nv_mode` at 0 the
+    module returns the spec unchanged and the dictionary is returned as it was.
+    """
+    cam = params.get("camera")
+    if not cam:
+        return params
+    try:
+        mode = float(cam.get("nv_mode", 0.0))
+    except (TypeError, ValueError):
+        return params
+    if int(round(mode)) == 0:
+        return params
+    from ..codecs.nightvision import MODE_PRESETS, mode_of
+    from ..codecs.nightvision import NightVisionSpec
+    spec = NightVisionSpec.from_params(cam)
+    preset = MODE_PRESETS.get(mode_of(spec))
+    if not preset:
+        return params
+    # **The preset's keys are `NightVisionSpec` field names; the parameter set's are `nv_`-prefixed.**  Writing them
+    # unprefixed added three keys nothing reads and left the real three at their defaults -- measured, the resolver's
+    # output differed from its input by exactly `accumulate`, `green_mix` and `illuminator` appearing as new keys.  The
+    # guard that was meant to catch a bad name compared `f"nv_{k}"` against a set while using the bare `k` on the left,
+    # so it passed everything through; it now compares like with like.
+    updates = {f"nv_{k}": v for k, v in preset.items() if f"nv_{k}" in cam}
+    unknown = [k for k in preset if f"nv_{k}" not in cam]
+    if unknown:
+        # a preset naming a parameter the schema does not declare is a fault worth surfacing, not one to ignore
+        import warnings
+        warnings.warn("the night-vision preset names parameters the schema lacks: %s"
+                      % ", ".join(f"nv_{k}" for k in unknown), stacklevel=2)
+    out = dict(params)
+    out["camera"] = dict(cam, **updates)
+    return out
+
+
 @dataclass
+
 class Project:
     id: str = ""
     name: str = "未命名工程"
@@ -123,8 +167,16 @@ class Project:
         Device individual variation is applied here rather than in the renderer so that every caller
         goes through it and none can forget.  With no identities set nothing changes, which is what
         keeps every preset and capture from before this dimension rendering identically.
+
+        **The night-vision mode's own settings are resolved here for the same reason.**  They were applied inside the
+        camera stage first, so the renderer used them and nothing that *read* the parameters could see them -- measured
+        in the browser, mode 3 selected with the engine's state reporting `nv_green_mix = 1` while the renderer used 0,
+        i.e. two sources of truth for one picture and a slider editing a parameter the mode owned.  **This function is
+        the one place both the renderer and the API pass through**, which is exactly what its own docstring says about
+        device variation.
         """
         params = SCHEMA.resolve_all(self.params or {})
+        params = _resolve_night_vision(params)
         unit = self._unit()
         if unit is None:
             return params
