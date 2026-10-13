@@ -1,0 +1,52 @@
+measure the new photograph, and the diagnosis is confirmed by experiment
+
+**The test the diagnosis predicted, and it passed.**
+
+    the three subjects, on the quantity the diagnosis names:
+      refscene.png (the earlier one)   pole +0.0062   surround -0.0301   EXCESS **+0.0363**
+      the reference photograph         pole +0.1049   surround -0.1093   EXCESS **+0.2142**
+      this new one                     pole -0.1610   surround -0.3069   EXCESS **+0.1459**
+
+    and this new photograph through the chain:
+      through the chain                EXCESS **+0.2176**   cooler -- the difference survived and grew
+      chain, exposure -0.6             EXCESS +0.0535        cooler
+      chain, light mechanisms at zero  EXCESS +0.1493        cooler
+
+**The pole's excess goes from +0.1459 to +0.2176 -- it does not invert.** That is the reference photograph's behaviour
+(+0.2142 -> +0.2016) and the opposite of the earlier reproduction's photograph (+0.0363 -> negative at every setting).
+
+**So the diagnosis holds as a relation rather than an observation:**
+
+    a pole survives the chain when its source excess exceeds the chain's own shift to the surround, about 0.06
+    +0.0363  ->  overwhelmed, inverted
+    +0.1459  ->  survives, and grows to +0.2176
+    +0.2142  ->  survives
+
+**And this is why eleven parameter candidates were excluded without one of them being found.** The quantity being asked
+for was never a parameter of the chain: **it is a property of the subject**, and no setting of a chain that adds light
+can create a colour contrast the input does not have. The earlier photograph's pole is a pale line on a wall of nearly
+its own colour; this one is a cool pole against a warm building, and the measurement separates them by a factor of four
+**before** the chain is applied.
+
+**The strength still needs a value for this subject, and the sweep does not settle it cleanly.** At the reproduction's
+settings the render is over-driven -- the blown fraction goes from 0.79% to 3.07% and the fully-white fraction from
+0.096% to 2.32%, which swallows the composition -- but reducing the light group does not behave monotonically: the
+measured pole excess reads **+0.2176** at full strength, **+0.0297** at half, **+0.2729** at a third and **-0.0387** at
+a quarter. **That is not the mechanisms changing sign; it is the pole detector moving between structures** as the
+picture's brightness profile changes, and it is the same failure mode the positive control identified (a bright edge
+defeating the rule) appearing again now that the band is no longer locked to the source's own columns. **So the sweep's
+figures are not usable and I am not reporting a "best" value from them.**
+
+**What is usable, and is the honest recommendation:** the light group at **zero** gives a control-identical render
+(blown 0.00404 against the control's 0.00404, white 0.00007 against 0.00007) **with the pole's excess at +0.1909** --
+i.e. **on this subject the chain is already faithful with no added light at all**, and the light mechanisms can be
+raised from there by eye rather than by a measurement that is not stable. The settings file is written with the light
+group at zero and the aberrations at the reproduction's values, and a note recording the diagnostic relation.
+
+**And the instrument note, since it is what makes the positive half of this a result.** The detector has a **positive
+control** establishing its two failure modes, and it located both photographs' poles independently -- the reference's at
+columns 904..913, 10 px, 556 rows, and this one at 222..231, 10 px. **Where it failed here -- the unconstrained sweep
+across brightnesses -- is exactly the failure the control predicted**, which is why that part is being reported as
+unusable rather than as a found value.
+
+163 checks pass, selftest clean. `tools/new_subject.py` and `tools/pole_control.py` are kept.
