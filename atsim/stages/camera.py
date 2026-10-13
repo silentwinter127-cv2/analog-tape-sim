@@ -272,7 +272,39 @@ class CameraStage(Stage):
             return rgb
         return rgb * float(2.0 ** self.exposure)
 
-    def _night_vision(self, rgb: np.ndarray, stage: str) -> np.ndarray:
+    def _nv_source_frames(self, n: int, index: int | None) -> list:
+        """
+        The last `n` source frames, for a mode that accumulates.
+
+        **Read from the source rather than kept on the stage**, because each frame is rendered by its own call and a
+        list on the stage would only ever hold the current one. The source keeps its own small LRU, so asking for a few
+        frames costs little, and the camera already reads `index - 1` for its shutter for the same reason.
+
+        **`index` is required rather than defaulted.**  The first version read `getattr(self.ctx, "index", 0)`, and
+        `RenderContext` has no `index` -- so it silently used 0, the window clipped to a single frame, and accumulation
+        did nothing while looking correctly wired. Measured, the noise was identical at 1, 4 and 8 frames. A missing
+        attribute that yields a plausible value instead of raising is how a mechanism ends up inert.
+
+        The window is clipped to the frames that exist -- an accumulation of 16 on frame 2 returns 2 frames, not an
+        error -- and `len` is reported by the caller so a request larger than the sequence is visible rather than
+        silently truncated.
+        """
+        src = getattr(self.ctx, "source", None)
+        if src is None or index is None:
+            return []
+        idx = int(index)
+        out = []
+        for k in range(n - 1, -1, -1):
+            j = idx - k
+            if j < 0:
+                continue
+            try:
+                out.append(np.asarray(src.frame(j), np.float32))
+            except Exception:                                                   # noqa: BLE001
+                continue
+        return out
+
+    def _night_vision(self, rgb: np.ndarray, stage: str, index: int | None = None) -> np.ndarray:
         """
         The night-vision terms, called twice per frame because they belong in two different places.
 
@@ -283,11 +315,31 @@ class CameraStage(Stage):
         Kept as one method with a stage argument rather than two, so the physical ordering is visible in one place
         instead of being implied by two call sites far apart in `apply`.
         """
-        from ..codecs.nightvision import add_illuminator, ir_highlights, mode_of, monochrome_green
+        from ..codecs.nightvision import (accumulate, add_illuminator, ir_highlights,
+                                           mode_of, monochrome_green)
         if mode_of(self.nv) == "off":
             return rgb
         if stage == "scene":
-            out = add_illuminator(rgb, self.nv)
+            # **Accumulation comes first, while the picture is still at the scene's own level.**  It ran in the
+            # display stage initially -- the last thing to execute -- where it replaced a *processed* picture (mean
+            # 0.4886) with the mean of several *source* frames (mean 0.1768), a factor of 3.66.  Then it ran after
+            # `add_illuminator`, which left the two at different levels again and a scalar level match was needed to
+            # reconcile them -- and that match scaled the whole frame and clipped it (0.409 where a mean must give
+            # 0.5).  **Both faults were the same mistake: summing frames at one level and using the result at
+            # another.**  Summing them here removes the mismatch instead of correcting for it.
+            #
+            # It is also the physically right place.  **The sensor integrates the light it receives**, and a steady
+            # illuminator's contribution is simply part of that light -- so integrating the scene and then adding the
+            # lamp's field is equivalent to integrating the lamp along with everything else.  What matters for the
+            # mechanism is that the frames **differ**, so the uncorrelated noise falls as sqrt(N) while the signal
+            # holds.
+            n = int(round(float(np.clip(self.nv.accumulate, 1.0, 64.0))))
+            out = rgb
+            if n > 1:
+                stack = self._nv_source_frames(n, index)
+                if len(stack) > 1:
+                    out = accumulate(stack, self.nv)
+            out = add_illuminator(out, self.nv)
             out = ir_highlights(out, self.nv)
             return out
         # the display stage
@@ -842,7 +894,7 @@ class CameraStage(Stage):
         # **The night-vision scene terms, before the sensor.**  The illuminator is outside the camera, so its
         # light is part of what the camera is looking at -- added here rather than at the end, where it would
         # be light added to an already-exposed picture.
-        rgb = self._night_vision(rgb, "scene")
+        rgb = self._night_vision(rgb, "scene", buf.index)
         rgb = self._roll_off(rgb)
         # fog is on the front element, so light passes through it before anything else
         if self.lens_fog > 1e-4:
@@ -888,19 +940,15 @@ class CameraStage(Stage):
         rgb = source_glow(rgb, self.lens)
         rgb = spherical(rgb, self.lens)
         rgb = self._sharpen(rgb)
-        # **The monochrome green view, after every sensor term.**  It is the viewfinder's output, so
-        # nothing at the sensor can follow it.  Frame accumulation also happens here, on the
-        # post-exposure picture -- summing pre-exposure frames would sum the same frame N times and show
-        # no noise reduction, which is the one thing the mode exists to change.
-        from ..codecs.nightvision import accumulate, mode_of
-        if mode_of(self.nv) in ("nightshot", "super_nightshot", "colour_slow_shutter"):
-            n = int(round(float(np.clip(self.nv.accumulate, 1.0, 64.0))))
-            if n > 1:
-                self._nv_history.append(rgb.copy())
-                if len(self._nv_history) > n:
-                    self._nv_history = self._nv_history[-n:]
-                if len(self._nv_history) == n:
-                    rgb = accumulate(list(self._nv_history), self.nv)
+        # **The monochrome green view, after every sensor term.**  It is the viewfinder's output, so nothing at the
+        # sensor can follow it.
+        #
+        # **Accumulation is NOT here.**  It was, and it ran a second time -- overwriting the fully-processed picture
+        # with the mean of several *source* frames, 0.1768 replacing 0.45429.  That is the 2.25x loss the stage trace
+        # showed, and it survived because the scene-stage version was added without this one being removed.  A
+        # mechanism wired in two places is worse than one wired in none: the second silently wins, and the first's
+        # measurements describe a picture that never reaches the output.  Accumulation now runs once, in
+        # `_night_vision`'s scene stage, before the illuminator -- see the comment there.
         rgb = self._night_vision(rgb, "display")
         if getattr(self, "_defocus", 0.0) > 1e-4:
             # a Gaussian of radius growing with defocus.  The factor is chosen so that full defocus

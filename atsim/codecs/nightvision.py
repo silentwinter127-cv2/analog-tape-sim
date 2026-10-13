@@ -231,8 +231,15 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     if m <= 1e-4:
         return rgb
     lum = np.clip(rgb @ LUMA, 0.0, 1.0)
-    # the monochrome view: one luminance carried on the green axis, in the proportions the clip shows
-    mono = np.clip(lum[..., None] * np.array([0.29, 0.46, 0.25], dtype=np.float32) * 3.0, 0.0, 1.0)
+    # **The proportions are normalised by their own luma sum, so the view carries the picture's brightness.**  The
+    # clip's own R:G:B is 0.29:0.46:0.25, which sums to exactly 1.0 -- so the `* 3.0` that used to be here was the
+    # whole of a **15.6% luminance gain**: measured on flat fields, a 0.20 input came out at 0.23114, a 0.40 at
+    # 0.46228, a 0.70 at 0.80898, all at a gain of 1.15569.  A monochrome view does not brighten the scene it is
+    # displaying.  Dividing by `weights @ LUMA` leaves the **hue exactly as the clip shows it** while making the
+    # measured gain **1.0000** on every level below clipping.
+    weights = np.array([0.29, 0.46, 0.25], dtype=np.float32)
+    weights = weights / float(weights @ LUMA)
+    mono = np.clip(lum[..., None] * weights, 0.0, 1.0)
     return (rgb * (1.0 - m) + mono * m).astype(np.float32)
 
 
