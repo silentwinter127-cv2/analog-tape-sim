@@ -1,0 +1,48 @@
+fix the contrast compression: `cross_luma` was scaled eight times too large
+
+**The result.**  A black-to-white ramp through the chain now comes out at **1.188 of its own contrast**, where it came
+out at **0.800** before -- so the **38% loss is gone**.  It now slightly *exceeds* unity rather than falling well short,
+so the acceptance test (near 1.0) is **not yet met** and the remaining 19% is the next item.
+
+**The measurement that named it, taken inside the real function.**  Two attempts to locate this by *reproducing* the
+arithmetic both gave figures the code does not produce, so a gated probe was added inside `_separate` itself.  On a ramp:
+
+    yc_separate #1                     0.31227    1.078 of the ramp
+    after horizontal_shift             0.31201
+    the round trip's composite         0.31203
+    yc_separate #2                     0.37654    1.300
+    after the chroma rescale            0.37654
+    after cross_color                   0.37654    (chroma only -- correct)
+    the residue's own spread            1.05817    **2.8x the luma itself**
+    the correction at 0.15              0.16239    **43% of the luma**
+    after cross_luma                    0.23234    **38% of the luma subtracted**
+    RETURN                              0.23234
+
+**So `y_band = y_band + cross_luma * 0.5 * resid * mod` was adding a quantity 43% the size of the luma, out of phase.**
+The residue is `chroma_band - remod_chroma(i, q)`, and **both of its terms carry the whole signal** -- the band as the
+split produced it and the re-modulation as this code built it -- so their difference is not the small crosstalk term the
+comment describes but a large quantity dominated by how the two differ.  **What the term models is the moving dot
+pattern, which is a few percent of a picture, not half of it**, so the scale is set to put the correction at about **5%
+of the luma's spread** for `cross_luma` at its default.
+
+**And the earlier "cross_luma = 0 changes nothing" reading was measured in the wrong place**: it read the chain's *final
+output*, where the term's effect is absorbed, rather than `_separate`'s *return value*, where it is 38%.  **That is the
+third time this session a parameter has been called inert because it was measured at a point where its effect does not
+appear.**
+
+**Two things are recorded as still open, both measured rather than guessed:**
+
+  * **the second split's own gain.**  `yc_separate` with `comb_depth=0.55` returns a column-constant picture's luma at
+    **1.206** of its input, and over the depth's range it goes from **0.272 to 5.456** -- where a separator that divides
+    the spectrum should return **1.000** at every setting.  **And `vert_blend` changes nothing at either value.**  A
+    correct separator cannot have a depth-dependent gain on a signal with no vertical detail, so this is a formula
+    fault rather than a calibration;
+  * **and `comb_depth` does not reach the chain.**  Swept from 0.00 to 0.85, the chain's output is **bit-identical**
+    (1.188 ramp, 1.322 split) -- while the isolated call to `yc_separate` with the same values moves the luma by a
+    factor of twenty.  **A parameter that works in isolation and not through the chain is the fault class this project
+    records most often**, and it is why no setting of it can close the remaining 19%.
+
+**The probe is gated by `ATSIM_SEP_PROBE` and verified inert without it** -- a render with the variable unset prints
+nothing -- **so it can be used again without editing the source, which is what the two failed reconstructions cost.**
+
+163 checks pass, selftest clean.

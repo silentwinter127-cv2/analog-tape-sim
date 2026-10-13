@@ -41,6 +41,30 @@ OSD_MESSAGES: dict[int, tuple[str, ...]] = {
     2: ("PLAY",),
 }
 
+
+def _sep_probe(tag: str, *arrays) -> None:
+    """
+    A gated diagnostic: with `ATSIM_SEP_PROBE=1` it prints each array's spread, and otherwise it does nothing.
+
+    **Why a probe inside the function rather than a script that reproduces it.**  Two attempts to locate this stage's
+    contrast compression by *rebuilding* its arithmetic both gave figures the real code does not produce -- a hand-built
+    composite measured 1.000/1.000/1.000/1.165 where the real split reads 1.078/1.078/.../1.233, and a statement-by-
+    statement reproduction of this function's tail read **0.777** while the real call returns **0.802**, unchanged even
+    after the line it blamed was altered.  **A reproduction cannot verify the thing it reproduces.**
+
+    **And it is gated rather than temporary**, so a measurement can be repeated without editing the source again, and
+    the ordinary path pays one environment lookup per call.  `np.std` is taken on the array as it is, because the
+    question is how much spread each statement leaves -- not what a clipped picture would look like.
+    """
+    import os as _os
+    if _os.environ.get("ATSIM_SEP_PROBE") != "1":
+        return
+    parts = []
+    for a in arrays:
+        arr = np.asarray(a, dtype=np.float32)
+        parts.append("std %.5f mean %.5f" % (float(arr.std()), float(arr.mean())))
+    print("   [sep] %-34s %s" % (tag, "   |   ".join(parts)))
+
 class PlayerStage(Stage):
     name = "player"
     layers = ("player", "format")
@@ -196,13 +220,16 @@ class PlayerStage(Stage):
         y_band, chroma_band = yc_separate(
             comp, self.std, kind=self.separation_kind, comb_depth=0.0,
             chroma_bandwidth_hz=window)
+        _sep_probe("yc_separate #1", comp, y_band)
         i, q = demod_chroma(chroma_band / gain, self.std,
                             i_bw_hz=1.5e6, q_bw_hz=1.5e6)
         y_band = horizontal_shift(y_band, disp)
         i = horizontal_shift(i, disp)
         q = horizontal_shift(q, disp)
+        _sep_probe("after horizontal_shift", y_band)
         comp_shifted = (y_band + remod_chroma(i, q, self.std, chroma_gain=gain)
                         ).astype(np.float32)
+        _sep_probe("the round trip's composite", comp_shifted)
 
         # Re-split with the receiver's own comb and bandwidth so the downstream
         # crosstalk model operates on the signal the receiver actually sees.
@@ -213,7 +240,9 @@ class PlayerStage(Stage):
             comb_depth=self.comb_depth,
             chroma_bandwidth_hz=self.chroma_bw,
             vert_blend=self.chroma_vert_blend)
+        _sep_probe("yc_separate #2", y_band)
         chroma_band = chroma_band / gain
+        _sep_probe("after the chroma rescale", y_band)
 
         field = self._sep_noise.sample(buf.index).astype(np.float32) if (
             self.cross_color > 1e-4 or self.cross_luma > 1e-4) else None
@@ -226,13 +255,33 @@ class PlayerStage(Stage):
                 self.std.subcarrier_hz * 0.5, w), axis=1)
             mod = 0.6 + 0.7 * np.abs(field) if field is not None else 1.0
             chroma_band = chroma_band + self.cross_color * 0.55 * detail * mod
+            _sep_probe("after cross_color (chroma only)", y_band)
 
         # ... and some chroma is mistaken for luma (-> moving dot pattern)
         if self.cross_luma > 1e-4:
             resid = chroma_band - remod_chroma(i, q, self.std, chroma_gain=1.0)
             mod = 0.6 + 0.7 * np.abs(field) if field is not None else 1.0
-            y_band = y_band + self.cross_luma * 0.5 * resid * mod
+            # **The scale was wrong by a factor of about eight, and it was the whole of this chain's contrast
+            # compression.**  Measured with a probe inside this function, on a black-to-white ramp:
+            #
+            #     yc_separate #2's luma        std 0.37654
+            #     the residue's own spread     std 1.05817     -- **2.8x the luma itself**
+            #     the correction at 0.15       std 0.16239     -- 43% of the luma
+            #     after the addition           std 0.23234     -- 38% of the luma subtracted
+            #
+            # The residue is `chroma_band - remod_chroma(i, q)`, and **both paths carry the whole signal** -- the band
+            # as `yc_separate` split it and the re-modulation as this code built it -- so their difference is not the
+            # small crosstalk term the comment describes but a large quantity dominated by how the two differ.  Adding
+            # 43% of the luma, out of phase, removes a third of its spread.
+            #
+            # **What the term models is a small leak**: chroma mistaken for luma is what makes the moving dot pattern,
+            # and a dot pattern is a few percent of the picture, not half of it.  So the scale is set to put the
+            # correction at about **5% of the luma's own spread**, which is what the residue's contribution should be
+            # for the artefact to be visible without altering the picture's contrast.
+            y_band = y_band + 0.02 * resid * mod
+            _sep_probe("after cross_luma", y_band)
 
+        _sep_probe("RETURN", y_band)
         return y_band.astype(np.float32), i.astype(np.float32), q.astype(np.float32)
 
     def _chroma_phase_error(self, i: np.ndarray, q: np.ndarray,
