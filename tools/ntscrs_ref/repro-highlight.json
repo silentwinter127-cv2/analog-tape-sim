@@ -6,7 +6,7 @@
       "longitudinal_ca": 0.4,
       "ccd_smear": 0.2,
       "halation": 0.25,
-      "source_glow": 0.05,
+      "source_glow": 0.15,
       "overflow_drain": 0.6,
       "lens_flare": 0.3,
       "spike_spread": 0.4,
