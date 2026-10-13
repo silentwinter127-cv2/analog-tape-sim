@@ -1,0 +1,32 @@
+report the brightness fault without claiming a fix, and revert rather than leave a wrong one in
+
+**What was attempted and why it was abandoned.**  Chasing the chain's brightness mismatch led to the green display's
+weights, whose normalisation guarantees `weights @ LUMA == 1` while a picture's brightness is the **sum** of the three
+channels.  Replacing that division with a sum division was tried and **broke the display outright** -- a grey input came
+out at **0.33333** of its brightness, identically on every input.
+
+**The constant was the diagnostic and I still could not converge.**  A property that fails by the *same factor on every
+input* is a scaling fault rather than a colour one, and the function was found to contain the normalisation **more than
+once** -- a duplicate removed, another still present, and **after five attempts I could not state with confidence what
+the function contained**.  **A mechanism applied twice, with a surviving copy, is the fault shape this project has met
+repeatedly**, and the honest response when the instrument cannot be trusted is to stop rather than to keep editing.
+**`nightvision.py` was restored to the last verified commit (8d8b42f)**, and **163 checks pass**.
+
+**And the measurement that motivated all of it does not support the explanation I was working from.**  On the restored
+function the **luma gain is exactly 1.00000 on every input** -- grey, blue-ish, strongly green and the photograph's own
+-- which is a genuine property.  What varies is the **sum** gain: 0.93315 grey, 0.93615 blue-ish, 1.09331 strongly
+green, **0.86499 for the photograph's own colour**.  **So the display is luminance-preserving and its sum gain is below
+1 on this subject**, which means it **cannot** account for the model reading **0.4443 against the real frame's 0.2349**.
+**I had inferred the cause from the 1.89 factor and a plausible mechanism, without checking their signs against each
+other** -- the sum gain is *less* than one, so it moves the picture the wrong way to explain a value that is too high.
+
+**So the brightness mismatch remains open and its cause is elsewhere in the chain.**  The candidates are the exposure
+and illuminator terms and the mode's own gain, none of which this round examined.  **The value of the round is the
+measurement, not a change**: the display carries luminance exactly, and the sum/luminance distinction matters only at
+the 0.87-1.09 level, which is a **0-13% effect** rather than the 89% that needs explaining.
+
+**Both calibrated features are intact and re-measured**: the colour noise gives per-channel sigma
+**0.08845 / 0.07882 / 0.09739**, a spread of **1.2356** against the real frames' **1.27**, with the sum across channels
+at +0.000119; and the residue still moves the red share (0.2168 at 0.0).
+
+163 checks pass, selftest clean.
