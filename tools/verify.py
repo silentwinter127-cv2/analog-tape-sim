@@ -4018,8 +4018,11 @@ def check_spikes_are_per_channel() -> None:
             return a
 
     def flare_of(spread):
+        # **`flare_defocus` is set to zero on purpose.**  It defocuses the flare per channel as well, so leaving
+        # it at its default of 0.5 made this check read the *other* mechanism: at `spike_spread = 0` the separation
+        # came out at 0.130 instead of 0.  Each check measures one mechanism by switching the others off.
         p = merge_values(BASE, {"camera": {"exposure": 0.0, "lens_flare": 0.9,
-                                           "spike_spread": spread}})
+                                           "spike_spread": spread, "flare_defocus": 0.0}})
         rr = Renderer(Point(), W, H, 25.0, p, seed=5)
         rr._build_chain()
         src_a = np.asarray(Point().frame(0), np.float32)
@@ -4059,5 +4062,82 @@ def check_spikes_are_per_channel() -> None:
            "reading would mean the statistic is measuring something else",
            "separation at zero spread %.8f" % s0,
            s0 < 1e-6)
+def check_flare_defocus_per_channel() -> None:
+    """
+    The flare must defocus per channel, with **blue widest and red narrowest**.
+
+    **The physics.** Longitudinal chromatic aberration puts the three channels at different focal distances, so the
+    out-of-focus image of the aperture is larger in blue than in red. On a bright source that is a coloured halo
+    *around and below* the light, not a colour painted on it -- which is what the reference material shows: a blue
+    streak under a street lamp, a blue trail down a lamp post under an orange glow, and hard rings around a blown
+    lamp.
+
+    **Measured as a width, not as a colour**, and that is the substance of this check. Three earlier attempts
+    measured colour on rendered frames and every one was dominated by the chroma path, which carries I/Q at 0.75 MHz
+    against luma's 3 MHz, so a rendered frame's channels differ by construction. A **width** cannot be confounded
+    that way.
+
+    **And two faults had to be fixed to make it measurable.** Applied to the whole flare field the ratio was 1.00,
+    because the field's second moment is about 61 px and dominated by the achromatic ghost polygon at 56 px; and
+    that placement was wrong physically as well, since defocus acts on the image of the aperture rather than on a
+    spike or a polygon. The defocus is now applied to the flare's compact core.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    H, W = 300, 400
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    rr = np.sqrt((yy - H / 2) ** 2 + (xx - W / 2) ** 2)
+
+    class Point:
+        def __init__(self, frames=4):
+            self.width, self.height, self.fps, self.frame_count = W, H, 25.0, frames
+
+        def frame(self, index):
+            a = np.zeros((H, W, 3), np.float32)
+            a[H // 2 - 2:H // 2 + 2, W // 2 - 2:W // 2 + 2] = 2.8
+            return a
+
+    def flare_only(defocus):
+        # and `spike_spread` to zero, for the same reason in the other direction
+        p = merge_values(BASE, {"camera": {"exposure": 0.0, "lens_flare": 0.8,
+                                           "flare_defocus": defocus, "spike_spread": 0.0}})
+        r = Renderer(Point(), W, H, 25.0, p, seed=5)
+        r._build_chain()
+        src_a = np.asarray(Point().frame(0), np.float32)
+        out = np.asarray(r.stage["camera"]._lens_flare(src_a), np.float32)
+        return np.clip(out - src_a, 0.0, None)
+
+    def core_width(field, ch, rmax=26):
+        m = (rr > 2) & (rr < rmax)
+        v = field[..., ch][m]
+        tot = float(v.sum())
+        return float(np.sqrt((v * rr[m] * rr[m]).sum() / tot)) if tot > 1e-9 else 0.0
+
+    zero = flare_only(0.0)
+    full = flare_only(1.0)
+    w0 = [core_width(zero, c) for c in range(3)]
+    w1 = [core_width(full, c) for c in range(3)]
+
+    record("the flare defocuses per channel, blue widest and red narrowest",
+           "longitudinal chromatic aberration puts the channels at different focal distances, so the out-of-focus "
+           "image of the aperture is larger in blue than in red -- a coloured halo around and below the source",
+           "core width at full strength: red %.3f, green %.3f, blue %.3f (blue/red %.3f)"
+           % (w1[0], w1[1], w1[2], w1[2] / max(1e-9, w1[0])),
+           w1[2] > w1[1] > w1[0] and w1[2] > w1[0] * 1.05,
+           "applied to the whole flare field the ratio was 1.00, because the second moment is about 61 px and "
+           "dominated by the achromatic ghost polygon at 56 px; and that placement was wrong physically, since "
+           "defocus acts on the image of the aperture rather than on a spike or a polygon")
+
+    record("at zero defocus the flare's core is the same width in every channel",
+           "the control: with the parameter at zero the channels share one aperture image, so a nonzero spread "
+           "would mean the measurement is describing something else",
+           "core widths at zero: red %.4f, green %.4f, blue %.4f (spread %.4f)"
+           % (w0[0], w0[1], w0[2], max(w0) - min(w0)),
+           max(w0) - min(w0) < 0.2)
 if __name__ == "__main__":
     raise SystemExit(main())

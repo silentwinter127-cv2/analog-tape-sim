@@ -149,6 +149,9 @@ class CameraStage(Stage):
         self.lens_wear = float(cfg.get("lens_wear", 0.0))
         self.lens_flare = float(cfg.get("lens_flare", 0.0))
         self.spike_spread = float(cfg.get("spike_spread", 0.6))
+        # per-channel focus error of the *flare*: the out-of-focus aperture image is larger in
+        # blue than in red, so a bright source wears a coloured halo rather than a coloured core
+        self.flare_defocus = float(cfg.get("flare_defocus", 0.5))
         self.flare_blades = float(cfg.get("flare_blades", 6.0))
         self.sensor_type = str(cfg.get("sensor_type", 0.0))
         self.is_3ccd = self.sensor_type in ("1", "1.0", "3ccd", "3CCD")
@@ -329,10 +332,16 @@ class CameraStage(Stage):
         hot = np.clip(rgb - clips, 0.0, None)
         if not np.any(hot > 0.0):
             return rgb
-        # each channel keeps its own column profile: sharper than a lens flare, because it is charge transfer
+        # **Each channel keeps its own column profile.**  The line here used to be `hot.mean(axis=0)`, which
+        # reduced the three channels back to one -- so the comment above claimed per-channel behaviour that the
+        # code did not have, which is the fault this project keeps finding.  Sharper than a lens flare, because
+        # this is charge transfer rather than scattering.
         cols = hot.mean(axis=0, keepdims=True)
         cols = lowpass(cols, 3.0, axis=1)
-        return (rgb + (0.85 * self.smear) * cols).astype(np.float32)
+        # a wavelength-dependent transfer efficiency, because blue is transferred less efficiently along the
+        # readout and lingers: the reason a night smear reads cyan rather than the grey a pure threshold gives
+        lead = np.array([0.80, 1.00, 1.30], dtype=np.float32)[None, None, :]
+        return (rgb + (0.85 * self.smear) * cols * lead).astype(np.float32)
 
     def _halation(self, rgb: np.ndarray) -> np.ndarray:
         """
@@ -561,7 +570,29 @@ class CameraStage(Stage):
         tint = np.array([0.85, 0.90, 1.25], dtype=np.float32)
         ghost_part = (0.55 * ghost * a)[..., None] * tint[None, None, :]
         ray_part = (0.65 * a) * rays_rgb * tint[None, None, :]
-        return (rgb + (ghost_part + ray_part) * 0.55).astype(np.float32)
+        flare = (ghost_part + ray_part) * 0.55
+        # **Per-channel defocus, which is what makes a halo coloured.**  The channels focus at different distances,
+        # so the out-of-focus image of the aperture is larger in blue than in red: the halo is a blue ring *around
+        # and below* the source rather than a colour painted on it.  This is the same physics as the lens module's
+        # `longitudinal_ca`, applied to the flare instead of the picture -- and it needs its own parameter because
+        # the flare is light that has already left the aperture's focus.
+        defocus = float(getattr(self, "flare_defocus", 0.5))
+        if defocus > 1e-4:
+            # **The defocus belongs on the compact core, not on the whole field.**  Defocus acts on the image of
+            # the aperture -- a small disc around the source -- and it does not act on a long spike or on the ghost
+            # polygon, which is drawn at a fixed radius.  Measured with it applied to everything, the blue/red
+            # width ratio was **1.00** across the whole range, because the flare's second moment is about 61 px and
+            # dominated by the polygon at 56 px, so a 5-17 px kernel moved it by well under a percent.
+            #
+            # So the field is split: the core is what a narrow blur keeps, and only that is defocused per channel.
+            # That is also the only place a coloured halo can form -- around the source, where the aperture's own
+            # disc is imaged.
+            core = lowpass(flare, 3.5)
+            rest = flare - core
+            radii = (1.0 + 4.0 * defocus, 1.0 + 9.0 * defocus, 1.0 + 16.0 * defocus)
+            planes = [lowpass(core[..., c], radii[c]) for c in range(3)]
+            flare = np.stack(planes, axis=-1) + rest
+        return (rgb + flare).astype(np.float32)
 
     def _sharpen(self, rgb: np.ndarray) -> np.ndarray:
         """
