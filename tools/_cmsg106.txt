@@ -1,0 +1,49 @@
+find which display term carries the inversion, and it is the tone curve, not the colour terms
+
+**The narrowing, established by neutralising each term alone.** The pole's excess is inverted by the **display stage** --
+disabling it restores the sign and nothing else does. This run asked **which term inside it**, and the answer separates
+the display's controls into two groups:
+
+    the source                            EXCESS +0.0363
+    as it stands                          -0.0994   inverted
+
+    **brightness = 1.00                   +0.0207   SIGN RESTORED**, nearest the source of anything tried
+    brightness = 0.00                     -0.0244
+    contrast = 0.00                       -0.0009   nearly restored
+    contrast = 1.00                       -0.1496   strongly inverted
+    color_temp = 0.00 / 0.40              -0.0683 / -0.0925   moves it, but not across zero
+    crt_age 0.00 / 1.00                   identical
+    convergence 0.00 / 1.00               identical
+    mask_depth 0.00 / 1.00                identical
+
+**So `brightness` and `contrast` -- the tone curve -- carry the fault, and `color_temp` does not**, which refutes the
+guess that the per-channel colour multiplier was responsible. `brightness = 1.0` puts the excess at **+0.0207** against
+the source's **+0.0363**: the sign is right and the magnitude is the closest of any single-term change measured.
+
+**And three display parameters are inert to four decimals**: `crt_age`, `convergence` and `mask_depth` produce
+**identical** figures at 0.0 and 1.0. That is a separate finding and it is recorded rather than passed over -- a
+parameter whose full range does not move a measurement of this kind is worth checking for reachability on its own
+terms, the same way `player.chroma_vert_blend` and `tape.row_chroma_*` were found to be.
+
+**The mechanism is consistent with what was measured before.** The display moves the **dark surround by more than it
+moves the brighter pole** (+0.062 against +0.058), and a tone curve is exactly a brightness-dependent transfer -- so a
+curve that lifts dark values in blue more than in red will cross two hues whose difference is small. **That is why no
+chroma parameter could fix it**: the fault is in the tone curve, and the pole's blue is a small chroma difference sitting
+on top of it.
+
+**What is established, precisely:**
+
+  * the fault is in the **display stage**, and within it in **`brightness` and `contrast`**;
+  * it is **not** `color_temp`, not the chroma bandwidth, not the crosstalk, not the codec, not any of the ten light
+    mechanisms, and not `saturation`;
+  * **`crt_age`, `convergence` and `mask_depth` are inert** over their whole ranges for this measurement;
+  * and **`brightness = 1.0` restores the sign**, which is the first setting found anywhere in this session that does.
+
+**One gap worth stating.** The reproduction's display dictionary never mentions `brightness`, `contrast` or
+`color_temp`, so all three sit at the **base preset's defaults** (0.50, 0.55, 0.50) rather than at considered values --
+which is how a tone curve that inverts the pole's contrast came along unexamined. **The next step is to set the tone
+curve deliberately**, with `brightness` and `contrast` chosen against the pole's excess rather than inherited, and to
+test the three inert terms separately.
+
+163 checks pass, selftest clean. Three mechanisms were added this session (`source_glow`,
+`halation_source_colour`, `shadow_depth`), all inert at their defaults and the second verified bit-identical.
