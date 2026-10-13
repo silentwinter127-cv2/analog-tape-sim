@@ -3977,5 +3977,87 @@ def check_digital_component_chroma() -> None:
            abs(wide_dv - narrow_dv) < 1e-6 and abs(wide_analog - narrow_analog) > 1e-3,
            "the second half is what stops this passing by removing the filter for every format, which would be a "
            "different fault")
+def check_spikes_are_per_channel() -> None:
+    """
+    The diffraction spikes must be formed per channel, so they separate into red, green and blue.
+
+    **Why this is a mechanism and not a tint.** An aperture's diffraction spikes scale with wavelength, so the three
+    channels form theirs at slightly different angles and lengths, and the result is *coloured streaks* rather than
+    one pattern with a colour on it. A single achromatic pattern multiplied by a tint **cannot** produce them at any
+    strength, because all three channels get the same geometry -- which is what the model did.
+
+    **And the measurement is the substance here.** Three attempts read the separation off rendered frames and all
+    three reported 0.22-0.27 at **zero** spread, where the geometry is shared by definition. The renderer carries I
+    and Q at 0.75 MHz against luma's 3 MHz, so a rendered frame's channels differ by construction. Called directly on
+    the flare's output, zero spread reads exactly 0.00000. That is the control this check asserts, and it is what
+    makes the effect measurement meaningful rather than a description of the pipeline.
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.pipeline import FrameBuffer
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.render.renderer import Renderer
+
+    H, W = 300, 400
+    BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    r = np.sqrt((yy - H / 2) ** 2 + (xx - W / 2) ** 2)
+    ang = np.arctan2(yy - H / 2, xx - W / 2)
+    # the spike band: below the ghost polygon at 0.14 * max(h, w) = 56 px, so the achromatic ghost is excluded
+    band = (r > 20) & (r < 48)
+    idx = ((ang + np.pi) / (2 * np.pi) * 360).astype(int) % 360
+
+    class Point:
+        def __init__(self, frames=4):
+            self.width, self.height, self.fps, self.frame_count = W, H, 25.0, frames
+
+        def frame(self, index):
+            a = np.zeros((H, W, 3), np.float32)
+            a[H // 2 - 2:H // 2 + 2, W // 2 - 2:W // 2 + 2] = 2.8
+            return a
+
+    def flare_of(spread):
+        p = merge_values(BASE, {"camera": {"exposure": 0.0, "lens_flare": 0.9,
+                                           "spike_spread": spread}})
+        rr = Renderer(Point(), W, H, 25.0, p, seed=5)
+        rr._build_chain()
+        src_a = np.asarray(Point().frame(0), np.float32)
+        return np.asarray(rr.stage["camera"]._lens_flare(src_a), np.float32)
+
+    def separation(img):
+        profs = []
+        for ch in range(3):
+            v = img[..., ch][band]
+            b = idx[band]
+            p = np.zeros(360)
+            for k in range(360):
+                sel = b == k
+                p[k] = v[sel].mean() if sel.any() else 0.0
+            p = p - p.mean()
+            s = p.std()
+            profs.append(p / s if s > 1e-9 else p)
+        return float(np.abs(profs[2] - profs[1]).mean())
+
+    zero = flare_of(0.0)
+    full = flare_of(1.0)
+    s0, s1 = separation(zero), separation(full)
+
+    record("the diffraction spikes are formed per channel",
+           "the fringe spacing scales with wavelength, so red and blue form their spikes at different angles and "
+           "lengths -- coloured streaks, which one achromatic pattern times a tint cannot produce at any strength",
+           "channel separation at r=20..48: spread 0 -> %.5f, spread 1 -> %.5f (x%.0f)"
+           % (s0, s1, s1 / max(1e-12, s0)),
+           s1 > 0.05 and s1 > s0 * 10.0,
+           "measured on the flare's own output, because three attempts read it off rendered frames and every one "
+           "reported 0.22-0.27 at zero spread -- the renderer's chroma path carries I/Q at 0.75 MHz against luma's "
+           "3 MHz, so a rendered frame's channels differ by construction and the statistic was describing the "
+           "pipeline")
+
+    record("at zero spread the three channels share one spike geometry",
+           "this is the control: with the parameter at zero the ray geometry is shared by definition, so a nonzero "
+           "reading would mean the statistic is measuring something else",
+           "separation at zero spread %.8f" % s0,
+           s0 < 1e-6)
 if __name__ == "__main__":
     raise SystemExit(main())

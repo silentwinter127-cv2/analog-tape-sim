@@ -148,6 +148,7 @@ class CameraStage(Stage):
         # --- lens and sensor type -------------------------------------
         self.lens_wear = float(cfg.get("lens_wear", 0.0))
         self.lens_flare = float(cfg.get("lens_flare", 0.0))
+        self.spike_spread = float(cfg.get("spike_spread", 0.6))
         self.flare_blades = float(cfg.get("flare_blades", 6.0))
         self.sensor_type = str(cfg.get("sensor_type", 0.0))
         self.is_3ccd = self.sensor_type in ("1", "1.0", "3ccd", "3CCD")
@@ -504,27 +505,54 @@ class CameraStage(Stage):
         # parameter is supposed to control.  The ray count is `blades` rather than `2 * blades` -- an even-bladed
         # iris gives rays along each blade and the opposite blade's ray is the same line, which is why a six-blade
         # iris shows six points and not twelve.
-        rays = np.zeros((h, w), dtype=np.float32)
+        # **One ray field per channel, because diffraction separates by wavelength.**  Each channel gets its own
+        # angular offset and its own length, so the spikes of the three channels do not coincide and the result is
+        # coloured streaks rather than one grey pattern with a colour on top.  `spread` is the parameter; the signs
+        # are fixed and the red and blue are placed on opposite sides of green, which is the first-order form of
+        # `fringe spacing ~ lambda * f / D`.
+        #
+        # The achromatic version could not do this at any strength, because a single geometry multiplied by a
+        # colour gives all three channels the same rays.  Measured against the user's reference photographs, which
+        # show separate red, green and blue streaks out of a blown street lamp.
+        spread = float(getattr(self, "spike_spread", 0.0))
+        base_theta = 0.15
         ray_len = max(6.0, 0.34 * max(h, w) * (0.45 + 1.35 * a))
         dy_ax = yy - cy
         dx_ax = xx - cx
         rad = np.sqrt(dy_ax * dy_ax + dx_ax * dx_ax)
-        # a thin ray, with a very slight widening outward so it reads as a streak rather than a hairline
-        for k in range(blades):
-            theta = 2.0 * np.pi * k / blades + 0.15
-            uy, ux = float(np.sin(theta)), float(np.cos(theta))
-            proj = np.abs(dy_ax * uy + dx_ax * ux)
-            perp = np.abs(-dy_ax * ux + dx_ax * uy)
-            width = 0.9 + 0.010 * proj
-            along = np.clip(1.0 - proj / ray_len, 0.0, 1.0) ** 1.6
-            across = np.clip(1.0 - perp / np.maximum(width, 1e-3), 0.0, 1.0)
-            rays = np.maximum(rays, along * across)
-        rays = lowpass(rays, 0.8)
+        # per channel: (angular offset, length factor).  Green is the reference the eye focuses on.
+        # The offsets are in **pixels of the spike's own width**, not degrees: two degrees against the 60 degrees
+        # between blades moved a spike by a fraction of its width, which measured as almost no separation at all
+        # (R-G 0.228 -> 0.259 over the whole range).  A shear of `spread * 0.9` px is comparable to the spike's own
+        # width, so the channels' spikes land in different places.
+        channel_offsets = ((-1.0, 1.0 + 0.22 * spread),
+                           (0.0, 1.0),
+                           (1.0, 1.0 - 0.22 * spread))
+        ray_stack = []
+        for ch_sign, len_factor in channel_offsets:
+            rays_ch = np.zeros((h, w), dtype=np.float32)
+            # a **lateral** shift of the spike rather than a rotation about the source, which is what a
+            # wavelength-dependent fringe spacing does to a long thin spike
+            shear_px = ch_sign * spread * 0.9
+            for k in range(blades):
+                theta = 2.0 * np.pi * k / blades + base_theta
+                uy, ux = float(np.sin(theta)), float(np.cos(theta))
+                proj = np.abs(dy_ax * uy + dx_ax * ux)
+                # the chromatic shift is across the spike, so each channel's spike is displaced sideways
+                perp = np.abs(-dy_ax * ux + dx_ax * uy - shear_px)
+                width = 0.9 + 0.010 * proj
+                along = np.clip(1.0 - proj / max(2.0, ray_len * len_factor), 0.0, 1.0) ** 1.6
+                across = np.clip(1.0 - perp / np.maximum(width, 1e-3), 0.0, 1.0)
+                rays_ch = np.maximum(rays_ch, along * across)
+            ray_stack.append(lowpass(rays_ch, 0.8))
+        rays_rgb = np.stack(ray_stack, axis=-1)
 
-        # flare is tinted by the coating stack: a cool blue-violet cast
+        # the coating's cool blue-violet cast still applies, but the **rays carry their own per-channel
+        # geometry** -- so the spikes separate into red, green and blue instead of being one tinted pattern.
         tint = np.array([0.85, 0.90, 1.25], dtype=np.float32)
-        flare = (0.55 * ghost + 0.65 * rays) * a
-        return (rgb + flare[..., None] * tint[None, None, :] * 0.55).astype(np.float32)
+        ghost_part = (0.55 * ghost * a)[..., None] * tint[None, None, :]
+        ray_part = (0.65 * a) * rays_rgb * tint[None, None, :]
+        return (rgb + (ghost_part + ray_part) * 0.55).astype(np.float32)
 
     def _sharpen(self, rgb: np.ndarray) -> np.ndarray:
         """

@@ -1,0 +1,47 @@
+form the diffraction spikes per channel, so they separate into red, green and blue
+
+**The mechanism.** An aperture's diffraction spikes scale with wavelength, so the three channels form theirs at
+slightly different angles and lengths and the result is **coloured streaks** -- separate red, green and blue rays
+fanning out of a blown highlight. That is what the user's TRV310E reference photographs show, most clearly as a blue
+vertical streak running down a lamp post under an orange glow in the fifth one.
+
+**The starburst was achromatic**, which is why no strength could produce it: one ray field computed once and added
+with a single blue-violet tint from the coating stack. A single geometry multiplied by a colour gives all three
+channels the same rays, so the spikes cannot separate **at any parameter value**. It is now formed per channel, with
+each channel getting its own lateral displacement across the spike and its own length, and the parameter is
+`spike_spread`.
+
+**Measured on the flare's own output**, at the spike band r = 20..48:
+
+    spike_spread    channel separation
+    0.00            0.00000     the control: the geometry is shared by definition
+    0.25            0.02384
+    0.50            0.05615
+    0.75            0.10012
+    1.00            0.15597
+
+Red and blue come out almost equally displaced from green, which is the symmetry the physics predicts.
+
+**Two measurements failed before this one, and both are the same mistake.** Three attempts read the separation off
+**rendered** frames, and every one of them reported **0.22-0.27 at zero spread** -- where the ray geometry is shared
+by definition. The cause is that the renderer carries I and Q at 0.75 MHz against luma's 3 MHz, so the three
+channels of a rendered frame differ **by construction**, whatever the flare did. **The statistic was describing the
+pipeline.** Called directly on the mechanism's own output, zero spread reads exactly 0.00000.
+
+That is the eleventh instance of measuring the wrong thing in this work and it belongs to the same family as the rest:
+the four-pixel grid the format had already softened, the window narrower than the edge it measured, the mask
+requiring a value the lens had already tapered, the disabled stage, the ghost polygon at exactly the sampled radius,
+and the measurement that translated with its own subject. **The check now asserts the control as well as the effect**
+-- bit-identical channels at zero spread -- because that is what proves the statistic is measuring the mechanism.
+
+**And the first version of the effect was too weak, which the control exposed.** The initial shear was
+`spread * 0.035` radians, **two degrees**, against 60 degrees between blades on a six-blade iris: two degrees moves a
+spike by a fraction of its own width. It is now a lateral displacement across the spike of up to 0.9 px, comparable
+to the spike's own width, plus a length difference of up to 22% between red and blue.
+
+**Cost is about 30%** on a frame with the flare enabled, since the ray field is formed three times rather than once;
+`lens_flare` at zero skips all of it. 159 checks pass, selftest clean.
+
+**What is not done:** the five reference photographs also show a **vertical blue streak** and hard-edged ring
+structures that are not diffraction spikes -- that is per-channel focus, which is the existing `longitudinal_ca` but
+applied to the flare rather than the picture, and it is the next mechanism rather than a parameter of this one.

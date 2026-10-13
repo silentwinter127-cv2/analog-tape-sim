@@ -262,6 +262,13 @@ def build_schema() -> ParamSchema:
     cam.define("flare_blades", "光圈叶片数", 6.0, 3.0, 10.0, unit="片", group=g,
                phys_min=5.0, phys_max=9.0, step=1.0, source="常见 6/7/8/9 片光圈",
                help="星芒的射线数。6 片给出六角星芒。")
+    cam.define("spike_spread", "衍射星芒分色", 0.6, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.5,
+               help="**孔径的衍射星芒不是一张图样**：条纹间距随波长变化，"
+                    "所以红、绿、蓝形成星芒的**角度和长度都略有不同**，"
+                    "结果是**彩色的射线**——高光向外散出分立的红绿蓝条纹。"
+                    "消色差的星芒无论调多大都做不出它：一个几何图形乘上一个颜色，"
+                    "三个通道拿到的是同一组射线。0 = 消色差，1 = 明显的分色。")
     g = "传感器类型"
     cam.define("sensor_type", "3CCD 传感器", 0.0, 0.0, 1.0, unit="bool", group=g,
                phys_min=0.0, phys_max=1.0, step=1.0, source="3CCD 机型（如 Panasonic NV-GS78）",
