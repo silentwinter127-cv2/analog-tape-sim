@@ -1,7 +1,7 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-13T15:11:55",
+  "exported": "2026-10-13T15:25:36",
   "name": "新工程",
   "standard": "ntsc",
   "seed": 20240101,
@@ -9,17 +9,17 @@
   "environment": {},
   "keyframes": [],
   "unit_identities": {},
-  "source": "runs\\uploads\\supplied.jpg",
+  "source": "runs\\uploads\\refscene.png",
   "source_info": {
-    "path": "runs\\uploads\\supplied.jpg",
-    "width": 2048,
-    "height": 1536,
+    "path": "runs\\uploads\\refscene.png",
+    "width": 452,
+    "height": 382,
     "fps": 25.0,
-    "frame_count": 1,
-    "duration": 0.04,
+    "frame_count": 0,
+    "duration": 0.0,
     "has_audio": false,
-    "codec": "mjpeg",
-    "aspect": 1.3333
+    "codec": "png",
+    "aspect": 1.1832
   },
   "params": {
     "format": {
@@ -43,9 +43,19 @@
     "tape": {
       "head_switching": 0.0
     },
+    "camera": {
+      "halation": 0.25,
+      "ccd_smear": 0.2,
+      "chroma_aberration": 0.6,
+      "lens_flare": 0.3,
+      "spike_spread": 0.4,
+      "flare_defocus": 0.35,
+      "longitudinal_ca": 0.4,
+      "axis_offset": 0.5,
+      "overflow_drain": 0.6,
+      "source_glow": 0.05
+    },
     "display": {
-      "gamma": 1.0,
-      "saturation": 0.62,
       "scanlines": 0.0,
       "mask_depth": 0.0,
       "interlace_flicker": 0.0,
@@ -56,19 +66,9 @@
       "reflection": 0.0,
       "bloom": 0.0,
       "geometry_warp": 0.0,
-      "crt_age": 0.0
-    },
-    "camera": {
-      "halation": 0.18,
-      "ccd_smear": 0.18,
-      "chroma_aberration": 1.0,
-      "lens_flare": 0.12,
-      "spike_spread": 0.18,
-      "flare_defocus": 0.3,
-      "longitudinal_ca": 0.6,
-      "axis_offset": 1.0,
-      "overflow_drain": 0.7,
-      "source_glow": 0.02
+      "crt_age": 0.0,
+      "gamma": 1.0,
+      "saturation": 0.62
     }
   },
   "param_count": 36
