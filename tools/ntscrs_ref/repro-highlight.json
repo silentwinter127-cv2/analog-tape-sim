@@ -1,7 +1,7 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-13T13:33:10",
+  "exported": "2026-10-13T14:15:22",
   "name": "新工程",
   "standard": "ntsc",
   "seed": 20240101,
@@ -23,39 +23,36 @@
   },
   "params": {
     "format": {
+      "chroma_bandwidth": 1.6,
+      "luma_bandwidth": 4.5,
       "color_noise": 0.0,
       "cross_color": 0.0,
       "cross_luma": 0.0,
-      "edge_boost": 0.0,
-      "comb_depth": 0.0,
-      "chroma_vertical_averaging": 0.0,
-      "chroma_bandwidth": 1.6,
-      "luma_bandwidth": 4.5
+      "edge_boost": 0.0
     },
     "player": {
+      "chroma_bandwidth": 1.6,
+      "luma_bandwidth": 4.5,
       "color_noise": 0.0,
       "cross_color": 0.0,
-      "cross_luma": 0.0,
-      "comb_depth": 0.0,
-      "chroma_vertical_averaging": 0.0,
-      "chroma_bandwidth": 1.6,
-      "luma_bandwidth": 4.5
+      "cross_luma": 0.0
     },
     "display": {
       "gamma": 1.0,
       "saturation": 0.6
     },
     "camera": {
-      "halation": 0.5,
-      "ccd_smear": 0.45,
-      "flare_defocus": 0.85,
-      "lens_flare": 0.22,
-      "spike_spread": 0.65,
-      "chroma_aberration": 0.6,
-      "axis_offset": 0.35,
-      "longitudinal_ca": 0.3,
-      "overflow_drain": 0.18
+      "exposure": -0.45,
+      "halation": 0.85,
+      "ccd_smear": 0.85,
+      "flare_defocus": 1.0,
+      "lens_flare": 0.55,
+      "spike_spread": 0.85,
+      "chroma_aberration": 0.85,
+      "axis_offset": 0.45,
+      "longitudinal_ca": 0.55,
+      "overflow_drain": 0.35
     }
   },
-  "param_count": 26
+  "param_count": 23
 }
