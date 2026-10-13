@@ -1,0 +1,46 @@
+set the tone curve by measurement, and find three display parameters that change nothing at all
+
+**The grid, and it is a negative result.** `brightness` and `contrast` each sweep 0..1 with the source's **+0.0363** as
+the target:
+
+    brightness \ contrast   0.00      0.25      0.50      0.75      1.00
+    0.00                   -0.0013   -0.0388   -0.0439   -0.0889   -0.0797
+    0.25                   -0.0013   -0.0037   -0.0151   -0.0384   -0.0867
+    0.50                   **+0.0051** -0.0042   -0.0044   -0.0329   -0.0453
+    0.75                   +0.0022   -0.0184   -0.0439   -0.0347   -0.0441
+    1.00                   -0.0011   -0.0546   -0.0575   -0.0803   -0.0664
+
+**The best the tone curve can do is +0.0051, against the source's +0.0363.** So the tone curve is **necessary** -- it
+carries the sign, and without it the excess is around -0.10 -- but **not sufficient**: no pair of `brightness` and
+`contrast` reaches the reference. **That closes the question of whether this was a tuning problem, and the answer is
+no.**
+
+**And three display parameters produce frames that are identical to floating-point precision:**
+
+    crt_age      0.00 / 1.00     frame identical
+    convergence  0.00 / 1.00     frame identical
+    mask_depth   0.00 / 1.00     frame identical
+
+**Tested on a global statistic as well as on the pole, because a term can be inert for one measurement and act
+elsewhere** -- and they change **nothing**: same frame mean to five decimals, same excess, `np.allclose` at 1e-6. So
+these are not "inert for the pole" but **absent from the output entirely** under this configuration. That is the same
+class of defect found earlier in `player.line_delay`, `tape.row_chroma_*` and `player.chroma_vert_blend`, and it is
+recorded here rather than passed over.
+
+**What is established now, and it is the end of this line of enquiry:**
+
+  * the pole's inversion is caused by the **display stage**, specifically by the **`brightness`/`contrast` tone curve**;
+  * **no setting of the tone curve reaches the reference's excess** (best +0.0051 against +0.0363), so the difference is
+    not a matter of values;
+  * **`crt_age`, `convergence` and `mask_depth` do not reach the output at all** in this configuration;
+  * and the earlier per-term sweeps hold: not `color_temp`, the chroma bandwidth, the crosstalk, the codec, any of the
+    ten light mechanisms, or `saturation`.
+
+**So the reproduction's pole differs from the reference's for a reason that is now located but not removable by
+configuration**: the display's tone curve inverts a small chroma difference between a bright thin line and the dark wall
+around it, and the curve has no setting that does not. **Fixing it means changing what the tone curve does** -- it is
+applied per channel in a way that lifts blue in the darks more than in the brights -- **and that is a change to the
+model rather than to the settings, on the same footing as `source_glow` and `halation_source_colour`.**
+
+163 checks pass, selftest clean. Three mechanisms were added this session (`source_glow`,
+`halation_source_colour`, `shadow_depth`), all inert at their defaults and the second verified bit-identical.
