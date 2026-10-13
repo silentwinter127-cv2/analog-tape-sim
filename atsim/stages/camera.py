@@ -492,16 +492,34 @@ class CameraStage(Stage):
         ghost = lowpass(ghost, 2.0 + 6.0 * a)
 
         # --- starburst: one ray per blade -------------------------------
+        #
+        # **Two faults were measured in the version this replaces.**  The ray's width was `1.5 + 4.0 * a`, where
+        # `a` is the *flare strength* rather than anything to do with the ray -- so at a = 0.6 each ray was about
+        # 8 px across, and a six-blade iris draws twelve of them.  Twelve 8-px-wide lines radiating from one point
+        # **overlap into a disc near the centre**, which is why all 24 angular sectors carried ink at both 6 and 8
+        # blades and why the blade count moved the total ink by only 8%: it was changing something invisible.
+        #
+        # So: the width is in *pixels* and does not scale with the flare's brightness, because a star's rays are
+        # thin along their whole length; and the blade count sets the angular spacing, which is the one thing the
+        # parameter is supposed to control.  The ray count is `blades` rather than `2 * blades` -- an even-bladed
+        # iris gives rays along each blade and the opposite blade's ray is the same line, which is why a six-blade
+        # iris shows six points and not twelve.
         rays = np.zeros((h, w), dtype=np.float32)
-        ray_len = 0.30 * max(h, w) * (0.5 + 1.2 * a)
+        ray_len = max(6.0, 0.34 * max(h, w) * (0.45 + 1.35 * a))
+        dy_ax = yy - cy
+        dx_ax = xx - cx
+        rad = np.sqrt(dy_ax * dy_ax + dx_ax * dx_ax)
+        # a thin ray, with a very slight widening outward so it reads as a streak rather than a hairline
         for k in range(blades):
             theta = 2.0 * np.pi * k / blades + 0.15
-            dy, dx = np.sin(theta), np.cos(theta)
-            proj = (yy - cy) * dy + (xx - cx) * dx
-            perp = np.abs(-(yy - cy) * dx + (xx - cx) * dy)
-            rays = np.maximum(rays, np.clip(1.0 - perp / (1.5 + 4.0 * a), 0.0, 1.0)
-                              * np.clip(1.0 - proj / ray_len, 0.0, 1.0) * (proj > 0))
-        rays = lowpass(rays, 1.2)
+            uy, ux = float(np.sin(theta)), float(np.cos(theta))
+            proj = np.abs(dy_ax * uy + dx_ax * ux)
+            perp = np.abs(-dy_ax * ux + dx_ax * uy)
+            width = 0.9 + 0.010 * proj
+            along = np.clip(1.0 - proj / ray_len, 0.0, 1.0) ** 1.6
+            across = np.clip(1.0 - perp / np.maximum(width, 1e-3), 0.0, 1.0)
+            rays = np.maximum(rays, along * across)
+        rays = lowpass(rays, 0.8)
 
         # flare is tinted by the coating stack: a cool blue-violet cast
         tint = np.array([0.85, 0.90, 1.25], dtype=np.float32)
