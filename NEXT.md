@@ -40,178 +40,55 @@
 
 ## 下一步动作（具体到文件）
 
-**对比度损失的来源已完全分解（真实照片，同尺寸同配置）：**
+**"反色"找到了，而且它一直是一条【两个信号】的问题——我量了三个会话的标量，而标量看不见符号。**
 
 ```
-源照片                  luma 0.1973   contrast 0.1894
-真实 NV0 帧             luma 0.2346   contrast 0.2032   ← 真实帧比源图【对比度高 1.073 倍】
-链路，模式关闭           luma 0.1975   contrast 0.1678   ← 链路自身 【−11.4%】
-链路，模式开、只绿显示    luma 0.1983   contrast 0.1674   ← 绿显示本身几乎不代价
-链路，模式全开           luma 0.2376   contrast 0.1297   ← 【−22.5% 在模式自己身上】
+链路输出与【它自己的输入】的相关：
+   camera   +0.999      format/codec/connector/tape   +1.000
+   player   【−0.352】  ← 【反色在这里】
+   display  +1.000
+
+而每个夜视模块单独作用在源图上：
+   ir_highlights +0.993    monochrome_green +1.000    add_illuminator +1.000
 ```
 
-**所以是两个独立损失：链路 −11.4%，夜视模式 −22.5%。** 合起来 0.1297/0.2032 = 0.64 倍，就是观感上的"发白"。
+**所以夜视功能是正的，是【渲染器的 player 阶段把画面翻转了】——我一个会话都在调错的对象。**
 
-**而亮度已经精确匹配**（0.2376 对 0.2346，+1%），所以问题纯粹在分布。
+### 机制（已读代码，确定）
 
-**已修并验证的一处**（`atsim/stages/player.py` 的 `_separate`）：`cross_luma` 标度大约 8 倍过大，
-在函数内部实测把 luma 的 spread 从 1.234 减到 0.777。修后链路对斜坡从 **0.800 → 1.188**。
-
-**已排除**（都实测）：
-- AE / AWB 环路未收敛 —— 渲染 frame 1 / 10 / 40 / 100 全部 0.64 倍，完全平稳
-- `player` 全部参数逐个中性化 —— 最大 0.0002
-- 带宽、DV、`connector`、`tape`、display —— 全部 0.0000
-- `yc_separate` 的 `comb_depth` **隔离有效但过不了链路**（0.00–0.85 链路逐位相同）；
-  而它隔离时对【逐列常数】信号给出 0.272 → 5.456 的增益，正确值应为 1.000
-  —— **公式缺陷，但我试的"按实测增益归一化"把色度整个废掉**（链路 0.298，1 项检查失败），已回退
-
-**下一步（明确）**：在 `atsim/stages/camera.py` 里找出**模式带给画面的 −22.5%** ——
-嫌疑是 `ir_highlights` 那一段（它被改成"保亮度混合"后，**保的是均值，不是分布**——
-而把画面往均值拉正是压缩对比度）。**用 `ATSIM_SEP_PROBE` 的同样思路：在 `_night_vision` 里插受控探针。**
-
-**验收标准**：黑到白斜坡通过链路接近 1.0（现在 1.188）；真实照片的对比度接近真实帧的 0.2032（现在 0.1297）。
-
-**压缩的第一处已修：`atsim/stages/player.py` 的 `_separate()` 里 `cross_luma` 标度大了约 8 倍。**
-
-**修了之后：黑到白斜坡通过链路 = 【1.188】**（原来 0.800）。**所以 38% 的压缩没了，但现在超过 1.0，
-验收（接近 1.0）【还没达到】，剩下 19%。**
-
-**证据来自【函数内部】的探针**（`ATSIM_SEP_PROBE=1` 时打印，不设该变量则完全静默——已验证）：
-
-```
-yc_separate #1                     0.31227    1.078 of ramp
-after horizontal_shift             0.31201
-the round trip's composite         0.31203
-yc_separate #2                     0.37654    1.300
-after the chroma rescale           0.37654
-after cross_color                  0.37654    （只动 chroma，正确）
-the resid's own spread             1.05817    ← 【是 luma 的 2.8 倍】
-the correction at 0.15             0.16239    ← luma 的 43%
-after cross_luma                   0.23234    ← 【减去 luma 的 38%】
-RETURN                             0.23234
-```
-
-`resid = chroma_band - remod_chroma(i, q)` 的**两项都携带整个信号**，所以它们的差不是注释里说的"少量串扰"，
-而是一个大项。**已把标度改成让修正约为 luma 的 5%。**
-
-**还剩两处，都已实测、都未修：**
-
-1. **二次分离自身的增益**：`yc_separate` 在 `comb_depth=0.55` 下对【逐列常数】的斜坡返回其输入 luma 的
-   **1.206 倍**；在整个 depth 范围上是 **0.272 → 5.456**，而正确的分离器应当**恒为 1.000**
-   （逐列常数没有垂直细节，梳状深度不该影响它）。**`vert_blend` 在两个取值下都无作用。**
-   → **这是【公式】缺陷，不是标度问题。**
-2. **`comb_depth` 到不了链路**：从 0.00 到 0.85 扫，链路输出【逐位相同】（1.188 / 1.322），
-   而隔离调用 `yc_separate` 在同样取值下让 luma 变化 20 倍。
-   **"隔离有效、过不了链路"——本项目记录最多的一类缺陷。**
-
-**下一步**：读 `atsim/core/signal.py` 的 `yc_separate`，看 `comb_depth` 如何参与——**既然它对逐列常数信号
-产生了与深度相关的增益，公式里就有一处在缩放 Y 而不是在分离频带。**
-
-**验收标准**：黑到白斜坡通过链路后接近 1.0（现在 1.188）。
-
-## 方法上的铁律（这一轮验证的）
-
-**不要重建，要调用。** 三次栽在这上面：
-1. 手工用 YIQ 往返重建 composite → 1.000/1.000/1.000/1.165，而真实是 1.078/1.078/…/1.233
-2. 逐语句复现 `_separate` 尾部 → 0.777，而真实函数返回 0.802（改前改后都一样）
-3. `comb_depth` 隔离有效但过不了链路
-
-**凡是"我照着代码写一遍再测"，结论都不成立。** 用 `_sep_probe` 这种**插在真实函数里的、受环境变量控制的探针**。
-
-**而且"参数无效"必须在【正确的测量点】上判定**：`cross_luma=0` 在链路最终输出上"无变化"，
-而在 `_separate` 的返回值上是 38%。**这是本会话第三次因为测错位置而把有效参数判成惰性。**
-
-**压缩已定位到 `atsim/stages/player.py` 的 `_separate()`，边界缩到它末尾的 6 行。**
-
-逐层实测（全部在【同一配置】下：schema 默认，`dynamic_range` 保持 8.0）：
-
-| 接缝 | 斜坡 |
-|---|---|
-| 源的对比度 | 0.2896（1.000） |
-| `camera` → **1.082** | **S 曲线，放大**（不是压缩，上一版记错了） |
-| `format`→`tape` | 不变（signal 通道 0.3136 → 逐位相同） |
-| 到达 `player` 的 signal | **1.083** |
-| **`_separate` 返回** | **0.802** ← 【压缩 26% 在这里】 |
-| `_frequency_response` | 只贡献 **0.0006** |
-| 离开 player | 0.800 |
-
-**进 `_separate` 内部再测一层**（用 `tools/separate_inside.py`，它包住 `yc_separate` / `demod_chroma` /
-`remod_chroma` 这三个真实调用）：
-
-```
-真实 composite                std 0.3121   (1.078)
-after yc_separate #1          std 0.3121   (1.078)   ← 无损
-after demod_chroma (i)        std 0.0030            ← chroma 很小，正确
-after remod_chroma            std 0.0018
-after yc_separate #2          std 0.3570   (1.233)   ← 分离本身【放大】到 1.233
-而 _separate 返回              0.802
-```
-
-**所以压缩发生在【第二次 `yc_separate` 之后、函数 return 之前】的那一段**，即 `cross_color` / `cross_luma`
-残余项与增益：
+`atsim/core/signal.py` 的 `split_composite`：
 
 ```python
-comp_shifted = (y_band + remod_chroma(i, q, self.std, chroma_gain=gain))     # gain = 0.63
-y_band, chroma_band = yc_separate(comp_shifted, ..., comb_depth=self.comb_depth, ...)   # → 1.233
-chroma_band = chroma_band / gain
-if self.cross_color > 1e-4:
-    detail = highpass(y_band, ...)                       # 默认 cross_color = 0.45，【会执行】
-    chroma_band = chroma_band + self.cross_color * 0.55 * detail * mod
-if self.cross_luma > 1e-4:
-    resid = chroma_band - remod_chroma(i, q, self.std, chroma_gain=1.0)
-    y_band = y_band + self.cross_luma * 0.5 * resid * mod     # 默认 cross_luma = 0.3，【会执行】
-return y_band.astype(np.float32), i.astype(np.float32), q.astype(np.float32)
+combed = 0.5 * (chroma + delayed)          # delayed = 上移一行的色度
+mixed  = (1 - comb_depth) * chroma + comb_depth * combed
+gain   = 1.0 - comb_depth
+chroma = mixed / gain                       # ← 无条件除以 (1 − 0.55) = 放大 2.22 倍
+luma   = comp - chroma                      # ← 所以 luma 被【多减】了色度 = 反色
 ```
 
-**下一步：把 `cross_luma` 和 `cross_color` 设 0 再测 `_separate` 的返回。** 预期 `cross_luma`
-那一行是嫌疑（它**加**一个残差到 `y_band`，而残差含 `y_band` 自己的高频——那可能是一个【自反馈】项）。
+注释的理由是"梳状滤波是匹配滤波器，恰好损失 (1 − 2·depth) 的载波幅度"——**那只在 `delayed` 与 `chroma` 反相时成立**（副载波逐行反转的内容）。**其余情况下 `combed ≈ chroma`，梳状滤波什么都没损失，而除法照样除以 0.55。**
 
-**注意**：之前"player 全部参数逐个中性化最大只变 0.0002"的结论与此**不矛盾**——那次是在【整条链的最终输出】上量的，
-而这次是在 `_separate` 的**返回值**上量的。**验收标准：斜坡通过链路后接近 1.0。**
+### 而我试了三次修复，三次都把对比度弄坏
 
-**下一步：在【真实函数内部】插探针，不用任何重建。**
+| 尝试 | 反色 | 对比度 | 套件 |
+|---|---|---|---|
+| 原状 | −0.358 | 0.1678 | 163 ✓ |
+| 按实测 RMS 增益归一化 | +0.551 | 0.1027 | 1 项失败 |
+| 按相位相关门控 | +0.589 | 0.1035 | 1 项失败 |
 
-**这一轮把两个猜想都证伪了，方法上的教训比结论更值钱。**
+**反色每次都被修好，对比度每次都被破坏——所以我的补偿模型是错的，而不是调参不够。**
 
-**猜想 A（cross_luma 自反馈）——已证伪。** 一个"逐语句复现 `_separate` 尾部"的脚本显示
-`y_band = y_band + cross_luma*0.5*resid` 把 1.234 变成 0.777（−37%）。**但那个脚本是自己重建尾部、自己算 `resid` 的**，
-它模拟的是【旧代码】。把真实函数改成读 `chroma_band_pre` 之后，**真实函数的返回值【一位不变】，仍是 0.802**
-——所以 0.777 是那个重建的产物，不是真实调用。**改动已回退，`git diff` 为空。**
+**关键线索**：**去掉除法后 `luma = comp − chroma` 的 spread 只剩输入的 0.27**——说明 `fft_bandpass` 在这次调用里从【逐列常数】的斜坡上取走了大量能量，**而那不该发生**。所以问题可能不止除法：**`fft_bandpass` 与 `comp − chroma` 这对搭配本身对这个信号就不自洽。**
 
-**猜想 B（读 `chroma_band` 而非 `chroma_band_pre` 才是原因）——同一实验否证。** 在真实调用里两者相等。
+**下一步（明确）**：先量 `fft_bandpass(comp)` 在斜坡上的输出——**如果它对逐列常数信号不是接近零，那除法就只是在补偿一个更大的错误。** 用与 `_sep_probe` 同样的受控探针思路，插在 `split_composite` 里。
 
-**所以现在的确定事实只有边界，没有机制**：
+**验收标准（两条，都必须过）**：
+- **极性**：链路输出与其输入的相关 **> +0.9**（夜视模块已经是 +0.99）
+- **对比度**：黑到白斜坡通过链路接近 1.0；真实照片接近真实帧的 **0.2032**（现在 0.1297）
+- **套件**：`python tools/verify.py` 必须 163 全过（上面三次尝试都因破坏某项检查而回退）
 
-```
-到达 _separate 的 composite   1.078   （真实，用 patch 抓的）
-_separate 的返回值            0.802   （真实，用 patch 抓的）
-其内部 yc_separate #1         1.078   （真实调用，hook 抓的）
-内部 yc_separate #2           1.234   （真实调用，hook 抓的）
-内部 demod/remod               很小    （正确，斜坡无彩度）
-```
-
-**而 1.234 → 0.802 这一段横跨【交叉项那几行】，可是把每一项单独或一起关掉都测不出变化。**
-**唯一能解释的是：hook 记录的 `yc_separate #2` 返回值与真实函数在该点拿到的 `y_band` 不是同一个东西**
-（`horizontal_shift` 用的 `disp` 在重建里被我强制成 0，而真实值来自 `_timebase_offset`）。
-
-**下一步（唯一没做过的一步）：在【真实函数内部】把 `y_band` 的标准差打出来**——不是重建，
-而是临时在 `player.py` 的 `_separate` 里加 `print(np.clip(y_band,0,1).std())` 于每个语句之后，跑一次斜坡，然后删掉。
-**这不会有重建误差。**
-
-**验收标准**：黑到白斜坡通过链路后接近 1.0（现在 0.800）。
-
-## 方法上的铁律（这一轮又验证了一条）
-
-**不要重建，要调用。** 我两次栽在这上面：
-1. 手工用 YIQ 往返重建 composite → 得到 1.000/1.000/1.000/1.165，而真实是 1.078/1.078/…/1.233
-2. 逐语句复现 `_separate` 尾部 → 得到 0.777，而真实函数返回 0.802（改前改后都一样）
-
-**凡是"我照着代码写一遍再测"，结论都不成立。** 要么包真实调用（patch/hook），要么临时插入探针再删。
-
-1. **链路实际传递的是 `meta["signal"]`，不是 `.rgb`**。`tools/composite_trace.py` 同时记三栏。
-2. **`buf.composite` 全程是 `None`**（实测）——别追 composite。
-3. **不要手工重建 composite**：我用 YIQ 往返重建后跑出的数是 1.000/1.000/1.000/1.165，而真实的是
-   1.078/1.078/…/1.233。**重建描述的是另一个实验。** 用 `tools/separate_inside.py` 包真实调用。
+**仪器**：`tools/polarity.py` —— **量极性，这是本会话唯一能看见符号的工具**。
+均值与标准差对反色完全不敏感（图与其负片共享两者），这就是为什么三次"反色"的报告都被我读成了"有点平"。
 
 ## 不要重复的弯路（每条都花过一整轮）
 
