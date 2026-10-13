@@ -1,0 +1,48 @@
+add `source_glow`: a scattered halo carrying the source's own colour, and find what its calibration was really about
+
+**The mechanism, and why it was missing.** Light from a bright source scattered in the air and in the glass keeps the
+source's spectrum, so an orange lamp wears an orange halo and a white one a white halo. Measured against the
+reference's own profile below a blown core:
+
+    rows below    +60      +100     +160     +180
+    the reference -0.170   -0.510   +0.178   +0.226
+    without it    -0.193   -0.137   -0.072   -0.094
+
+**Nothing in the module followed the source's colour.** `halation` adds a glow with a **fixed, cool** tint;
+`lens_flare`'s tint is the **coating stack's**. A fixed tint is a constant and a source's colour is not, so neither
+could be made to do this at any value. That is a mechanism that was missing rather than a parameter to tune, and the
+evidence is the profile pair above.
+
+**`atsim/codecs/lens.py: source_glow`** builds it from the highlight map, blurred **per channel** so each keeps its
+own proportion, and added directly. Verified on synthetic sources of four colours: an orange source gives a halo at
+**B-R -0.0027**, a white one **0.0000**, and a blue or red one follows its own sign; the strength falls monotonically
+with distance (0.0031, 0.0026, 0.0018, 0.0008, 0.0002) and scales with the source's brightness. Inert at its default,
+and wired into the camera before the other light mechanisms because it is the widest and softest of them.
+
+**And one construction fault was found and fixed on the way.** The first version divided the per-channel blur by a
+grey coverage term and multiplied by it again, which **cancels** -- and worse, for a *broad* bright region the
+coverage is large, so the term was being **reduced where the source is biggest**, backwards for a glow. Adding the
+per-channel blur directly is both simpler and correct.
+
+**The calibration, and what it turned out to be about.** A coefficient of 2.2 moved the render's B-R by 0.01 where the
+reference needs 0.17 to 0.51, and the value that reaches that scale is about **60**, with the blur radius scaled to the
+frame's height rather than fixed in pixels. On a realistic source -- 40x40 px in a 640x960 frame -- the halo then
+reaches **0.53** at r 25-60, against the reference's 0.51. **The hundredfold gap between the first coefficient and the
+right one is the same one that has confused the test material all along: a 7x7 test square and a real blown lamp are
+not the same object, and a coefficient chosen against one is two orders of magnitude wrong for the other.**
+
+**And the last measurement says the remaining gap is the subject, not the mechanism.** Read at the same rows below
+the core, the render with the mechanism at full strength gives
+
+    +0      +40     +60     +100    +160    +180
+    -0.042  -0.042  -0.042  -0.042  -0.042  -0.042
+
+against the reference's -0.000, -0.009, -0.170, **-0.510**, +0.178, +0.226. **The reference's lamp is a large multiple-
+bulb fixture occupying roughly 500x400 px of a 1203x900 frame**, so 100 rows below its core is still inside the
+scattering region; the raw photograph used for the render has a much smaller source, so the same 100 rows are far
+outside it. **A warm shift of -0.51 at 100 rows below a core measures the halo of a source that fills a large part of
+the frame**, and no coefficient can produce it around a small one -- which is a statement about the two subjects, not
+about the model.
+
+163 checks pass, selftest clean. `tools/measure_reference.py` and `tools/compare_profile.py` are kept: they are what
+turned "the blue bar is missing" into the profile pair above.

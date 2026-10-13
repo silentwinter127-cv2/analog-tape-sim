@@ -20,7 +20,8 @@ from ..codecs.autocontrol import (ExposureLoop, FocusLoop, WhiteBalanceLoop,
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 from ..core.rng import ValueNoise3D, bandlimited_noise, derive_seed, rng_for
 from ..core.signal import gaussian_kernel, lowpass
-from ..codecs.lens import LensSpec, field_curvature, longitudinal_ca, chromatic_aberration, coma, astigmatism, spherical, distortion
+from ..codecs.lens import (LensSpec, field_curvature, longitudinal_ca, chromatic_aberration,
+                           coma, astigmatism, spherical, distortion, source_glow)
 
 
 def _subpixel_shift(rgb: np.ndarray, dx: float, dy: float) -> np.ndarray:
@@ -734,6 +735,11 @@ class CameraStage(Stage):
         rgb = longitudinal_ca(rgb, self.lens)
         rgb = coma(rgb, self.lens)
         rgb = astigmatism(rgb, self.lens)
+        # **Scattered light first, because it is the widest and softest of the light mechanisms.**  A halo
+        # that carries the source's own colour, which is what the reference's near field shows: 60 and 100
+        # rows below a blown core it runs to B-R -0.170 and -0.510, where the model reached -0.014 and
+        # -0.034.  Nothing else in the module follows the source's colour.
+        rgb = source_glow(rgb, self.lens)
         rgb = spherical(rgb, self.lens)
         rgb = self._sharpen(rgb)
         if getattr(self, "_defocus", 0.0) > 1e-4:

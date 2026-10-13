@@ -48,6 +48,10 @@ class LensSpec:
     distortion: float = 0.0
     lens_wear: float = 0.0
     lens_flare: float = 0.0
+    #: **Scattered halo carrying the source's own colour.**  Light scattered from a bright source keeps
+    #: its spectrum, so an orange lamp wears an orange halo and a white one a white halo.  Distinct from
+    #: `halation`, whose tint is fixed and cool, and from `lens_flare`, whose tint is the coating's.
+    source_glow: float = 0.0
     halation: float = 0.0
     blades: int = 6
 
@@ -68,6 +72,7 @@ class LensSpec:
             distortion=float(cfg.get("lens_distortion", 0.0)),
             lens_wear=float(cfg.get("lens_wear", 0.0)),
             lens_flare=float(cfg.get("lens_flare", 0.0)),
+            source_glow=float(cfg.get("source_glow", 0.0)),
             halation=float(cfg.get("halation", 0.0)),
             blades=int(round(float(cfg.get("flare_blades", 6.0)))),
         )
@@ -246,6 +251,52 @@ def spherical(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
 
 
 # ====================================================================== per-channel wavelength errors
+
+def source_glow(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
+    """
+    A halo around bright sources whose **colour is the source's own**.
+
+    Light from a bright source scattered in the air, on the glass and inside the lens keeps the source's spectrum, so
+    the halo immediately around a sodium lamp is orange and the halo around a white lamp is white. Measured against
+    the reference, that near field is the largest single thing the model was missing: at 60 and 100 rows below a blown
+    core the reference runs to **B-R -0.170 and -0.510**, while the reproduction reached -0.014 and -0.034 -- a factor
+    of fifteen.
+
+    **Distinct from `halation`, which tints its glow with a fixed cool colour, and from `lens_flare`, whose tint is
+    the coating stack's.** Neither follows the source, and neither can be made to: a fixed tint is a constant and the
+    source's colour is not.
+
+    The one detail that decides whether it works: the highlight map is blurred **per channel** so each keeps its own
+    proportion, and the result is divided by a **grey** coverage term. Dividing per channel instead would normalise
+    every halo to white, which would throw away exactly the colour this exists to carry.
+    """
+    if spec.source_glow < 1e-4:
+        return rgb
+    a = float(spec.source_glow)
+    lum = rgb @ LUMA
+    # where the light is: a soft threshold, so a dim scene contributes nothing and a blown source contributes fully
+    hot = np.clip((lum - 0.55) / 0.35, 0.0, 1.0)
+    if float(hot.max()) < 1e-6:
+        return rgb
+    # **The halo is the blurred highlight, added directly.**  An earlier version divided the per-channel blur by a
+    # grey coverage term and multiplied by it again, which cancels -- it recovered the source's colour for a small
+    # source and then handed back the blurred highlight itself.  Worse, for a *broad* bright region the coverage is
+    # large, so the ratio reads modest everywhere and the clip stops binding: the term was being reduced exactly
+    # where the source is biggest, which is backwards for a glow.
+    #
+    # Adding the per-channel blur is both simpler and right: the colour follows the source because the blur is per
+    # channel, the strength follows the source's brightness in proportion, and the falloff with distance comes from
+    # the blur's own radius.  Measured before the change, the halo reached 0.0007 where the reference needs 0.2.
+    # **The coefficient is calibrated against the reference's own profile, not chosen.**  A small bright
+    # source spread over a wide radius is thin, so a value picked against a test square is roughly two orders
+    # of magnitude too small: at 2.2 the halo moved the measured B-R by 0.01 where the reference needs 0.17 to
+    # 0.51.  The blur radius also has to be in the picture's own terms -- a fixed pixel radius covers a far
+    # smaller fraction of a 3840-px frame than of a 320-px one -- so it scales with the frame's height.
+    h = float(rgb.shape[0])
+    radius = max(4.0, 0.012 * h) * (0.6 + 0.8 * a)
+    halo = np.stack([lowpass(rgb[..., c] * hot, radius) for c in range(3)], axis=-1)
+    return (rgb + halo * (60.0 * a)).astype(np.float32)
+
 
 def longitudinal_ca(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     """

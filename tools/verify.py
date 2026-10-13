@@ -3926,7 +3926,9 @@ def check_lens_reachable_and_ordered() -> None:
     record("the camera calls each lens mechanism exactly once",
            "a duplicated call is a mechanism applied twice, which no parameter can correct",
            "the sequence has %d calls: %s" % (len(order), order),
-           every_once and len(order) == 7)
+           every_once and len(order) == 8,
+           "the count is the number of mechanisms and it was 7 before source_glow was added; the "
+           "assertion that matters is that no mechanism is called twice")
 def check_digital_component_chroma() -> None:
     """
     A digital component codec must not inherit the composite subcarrier's chroma bandwidth.
