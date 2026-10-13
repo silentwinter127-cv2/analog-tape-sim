@@ -150,30 +150,42 @@ def illuminator_field(h: int, w: int, spec: NightVisionSpec) -> np.ndarray:
     yn = yy / max(1.0, h - 1.0)
     bx = float(np.clip(spec.beam_x, 0.0, 1.0))
     by = float(np.clip(spec.beam_y, 0.0, 1.0))
-    # a distance in the frame's own units, with the aspect kept so the cone stays circular rather than elliptical
-    dx = (xn - bx) * (w / max(1.0, h))
-    dy = yn - by
-    angle = float(np.clip(spec.beam_angle, 0.05, 4.0))
-    # **the angular scale sets the cone's width**: a narrow beam reaches the same brightness at a smaller distance
-    d = np.sqrt(dx * dx + dy * dy) / max(1e-3, angle)
-    # the inverse-square law with a near-field clamp, so a surface at the lamp does not go to infinity
-    # **Normalised to a physical magnitude, because the radial rebuild exposed an error that the old field hid.**
-    # The rebuilt field reached about **1.18 at its centre** and is added directly to a picture in [0, 1] -- **118% of
-    # full scale at the brightest point**, with the near-field clamp allowing up to 300%.  Measured alone,
-    # `add_illuminator` at the schema's 0.15 took a source of 0.1973 to **0.6707**, a factor of **3.40**, and it was the
-    # whole of the chain's brightness excess.  The old top-down field happened to be small (0.02 to 0.27), so the same
-    # mistake was invisible.
+    # **the offset from the beam's axis in the picture plane**, in units of the frame's shorter side so the
+    # cone stays circular rather than elliptical -- and measured from the beam's own origin, **not from the top
+    # edge**, which is the geometry the rewrite below corrects.
+    scale = float(max(1, min(h, w)))
+    dx = (xn - bx) * (w / scale)
+    dy = (yn - by) * (h / scale)
+    # **A smooth falloff from a lamp at the lens, normalised by its own MEAN.**
     #
-    # **The correct magnitude is measurable**: the real NIGHTSHOT 0 is 1.19x its own source -- 0.2349 against 0.1973 --
-    # so the entire difference to be accounted for, lamp, IR response and display together, is **0.0376 of luma**.  A
-    # lamp cannot contribute more than that.  **So `illuminator = 1.0` is defined as "the lamp's peak contribution
-    # equals the scene's own mean brightness"**, and the default 0.15 then lands at about a seventh of that -- near the
-    # measured difference rather than thirty times above it.
-    near_bound = 3.0
-    ref = 0.75
-    field = np.minimum(ref * ref / np.maximum(d, 1e-3) ** 2, near_bound)
-    # scaled so the peak is 1.0, which makes the units the picture's own
-    field = field / max(1e-6, float(field.max()))
+    # The previous tail measured the distance **from the top edge downward** -- the geometry of a lamp mounted
+    # *above* the lens -- then clamped it with `near_bound`, then normalised by the field's peak.  The parts
+    # contradicted each other: the clamp equals the true ratio (562500 against 3.0) over the whole near field, so
+    # the peak-normalisation divided by the clamp rather than by a beam centre; and measuring from the top made
+    # the field **12.7x brighter at the bottom than the top**, correlating +0.766 with distance from the top where
+    # the footage correlates -0.353 to -0.501.
+    #
+    # **For a lamp at the lens and a picture that is a plane at distance `L`, a pixel's distance to the lamp is**
+    # `sqrt(L^2 + r^2)`, which is maximal on the beam's axis and falls away smoothly with no plateau.  So the
+    # field is `L^2 / (L^2 + r^2)`, and `beam_angle` sets `L` -- a wide beam is a close plane.
+    angle = float(np.clip(spec.beam_angle, 0.05, 4.0))
+    L = 1.0 / max(1e-3, angle)
+    r2 = dx * dx + dy * dy
+    field = (L * L) / (L * L + r2)
+    # **Normalised by the MEAN, not the peak.**  Peak-normalising left the mean at 0.3953, so a field whose peak
+    # was 1.0 added **+0.2416** at `illuminator = 0.02` -- 6.4x everything the mode may add (0.0376) -- and the
+    # clipping then absorbed every larger setting, which is why the level read a flat 0.3888 from 0.02 to 0.40.
+    # With the mean at 1.0, `illuminator` is read directly in the picture's own units.
+    # **Normalised by the mean, then reduced by a reference constant derived from the measurement.**  A mean of 1.0
+    # alone would mean the lamp adds an amount equal to the picture's whole brightness: measured, `+0.5072` at every
+    # setting from 0.02 to 0.25, which is **13.5x** the 0.0376 the mode is allowed.  The bound is measurable -- the real
+    # NIGHTSHOT 0 is 0.2349 against its own source's 0.1973, so **everything the mode adds, lamp and IR response and
+    # display together, is 0.0376 of luma** -- and the response and tint terms average 0.6038 and 1.0060 on this
+    # picture, so the product the field is multiplied by is about 0.607.  **The lamp is the dominant term in a
+    # night-vision shot, so `illuminator = 1.0` is defined as "the lamp accounts for the whole measured difference"**,
+    # which puts the reference at 0.0376 / 0.607 = 0.062.
+    field = field / max(1e-6, float(field.mean()))
+    field = field * 0.062
     return field.astype(np.float32)
 def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     """

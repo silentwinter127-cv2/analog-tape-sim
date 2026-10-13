@@ -1,0 +1,48 @@
+fix the illuminator's field, and calibrate a scale that had never been defined
+
+**The result, measured: the chain's level is now 0.2371 against the real frame's 0.2349 -- within 0.9%**, where it had
+been 2.25x too bright and, before that, 2.37x.
+
+**Two faults were behind it, and they had been hiding each other.**
+
+**1. The field's shape was wrong three ways at once** -- and this is why the last several rounds kept contradicting
+themselves.  The function
+  * measured its distance **from the top edge downward** (`dy = yn - by` against a `yy` running from the top), the
+    geometry of a lamp mounted *above* the lens, which made the field **12.7x brighter at the bottom than the top** and
+    correlate **+0.766** with distance from the top where the footage correlates **-0.353 to -0.501**;
+  * **clamped** it with `near_bound = 3.0`, while the true ratio at the beam's centre is **562500** -- so the clamp
+    flattened the entire near field into a plateau;
+  * and then **normalised by that plateau's peak**, which is not a beam centre.
+**Measured on the rebuilt field**: mean **1.0000**, a smooth maximum with **0.0009%** of pixels at it, and
+**corr(top) = -0.000** -- so the vertical tilt is now set by `beam_y` rather than baked in, and it is exactly the
+quantity the footage is the judge of.
+
+**2. And the parameter's scale had never been defined.**  With the field normalised to a mean of 1.0, the lamp added an
+amount equal to the picture's whole brightness -- **+0.5072 at every setting**, **13.5x** the **0.0376** the mode is
+allowed.  **That bound is measurable**, which is what makes the fix a calibration rather than a preference: the real
+NIGHTSHOT 0 is **0.2349** against its own source's **0.1973**, so *everything* the mode adds -- lamp, IR response and
+display together -- is **0.0376 of luma**, and the response and tint terms average **0.6038** and **1.0060** on this
+picture.  So the lamp's reference is **0.0376 / 0.607 = 0.062**, and `illuminator = 1.0` now means "the lamp accounts
+for the whole measured difference":
+
+    illuminator = 0.00   +0.0000
+    illuminator = 0.15   +0.0358      against the 0.0376 allowed -- inside it
+    illuminator = 1.00   +0.0358
+
+**And the flatness above 0.15 is now the physics rather than a fault.**  The whole mode may add **0.0376**, so the lamp's
+entire travel spans about **0.035** of luma on this picture, which at eight-bit quantisation is barely a step.  **What
+the previous rounds read as "the control is inert" was a real fault while the field was 13.5x too large and is a
+consequence of the bound once it is right** -- and the difference between the two is that the first was flat at *any*
+setting while this one is flat only above the point where the whole mode's budget is spent.
+
+**Three process faults are recorded, because each cost a round:**
+
+  * **figures were taken across different versions of the file** -- one chain read 0.1953, then 0.5552, then 0.4167,
+    then 0.3888, then 0.8198, and **a set of numbers taken across different programs cannot be attributed to any one of
+    them**.  The measurement that finally pinned the fault was taken on the committed file in a single pass;
+  * **an anchor started one comment too late**, so the replacement removed the offset definitions its own new code
+    depended on -- `NameError: name 'dx' is not defined`;
+  * and **the preset override** from the previous round, where `illuminator = 0.15` in the mode presets meant the
+    parameter never reached `add_illuminator` at all.
+
+163 checks pass, selftest clean.
