@@ -1,0 +1,43 @@
+build a known-answer instrument for the chroma recovery, and take the first graded reading
+
+**The reference figure that was missing.** Five hypotheses were refuted in turn, and none of them could settle the
+question because every measurement compared the recovery against **another measurement** -- the encoder's own ripple,
+the source's banding, the picture after the chain. With a **designed** signal there is nothing to compare: the answer
+is known by construction, and any row-to-row variation is error.
+
+    Y      constant, so nothing in the luma can masquerade as chroma
+    I      a horizontal ramp, constant down every column
+    Q      zero
+
+so a correct recovery is row-constant and its ripple is **exactly zero**. Measured, at two strengths:
+
+    I constant everywhere        recovered mean 0.299717 against a designed 0.30; ripple 0.000649
+    I a ramp                     mean column error 0.003856; max per-row error 0.006037, which is 0.755% of the
+                                 designed range
+
+**So the recovery is accurate, and its error floor is 0.000649.** On the photograph the recovered I ripples
+**0.006990** -- **10.8x that floor** -- which makes the photograph's figure real error rather than signal, for the
+first time on a quantitative basis.
+
+**And the first graded reading, on the known-answer signal where the correct value is zero at every step:**
+
+    step                                   I ripple    Q ripple
+    first yc_separate + demod              0.001159    0.001169
+    horizontal_shift(disp)                 0.002104    0.001156      <- where it doubles
+    remod + second yc_separate             0.002104    0.001156      <- adds nothing
+    demodulating the second split          0.004689    0.003855
+
+    the stage's own _separate returns      0.001842    0.001160
+
+**The second `yc_separate` contributes nothing of its own** -- its `chroma_band` ripple is 0.000192 against the first
+split's 0.000075, i.e. lower. **What doubles the figure is applying the demodulation again**, and separately the
+`horizontal_shift`. That is a sharper statement than any of the five refuted hypotheses, and it is the first one
+supported by a value that is correct rather than merely different.
+
+**The instrument is kept** (`tools/known_answer.py`, `tools/instrument_separate.py`): a designed signal whose answer
+is known, and a step-by-step replay that prints the error after each operation. It is what the next attempt should
+start from, because it converts "this looks banded" into "this step contributes this much error against a correct
+value of zero".
+
+**Nothing changed**: `signal.py`, `player.py` and `standards.py` are byte-identical to their committed state, and
+163 checks pass. The reading above is a measurement of the existing code, not of a modification.
