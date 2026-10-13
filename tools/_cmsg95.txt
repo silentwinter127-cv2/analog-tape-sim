@@ -1,0 +1,59 @@
+answer the two reports by measurement, and find that one of them was a capability switched off
+
+**The two features are not the same thing, and they had different causes.**
+
+**The vertical line is not too shallow -- its colour was being washed out.** Measured as the contrast of the brightest
+column below the core, and its hue there:
+
+                        contrast median   peak     rows above 0.05   B-R on the line
+    the reference       0.1887            0.4923   182 of 250         +0.000
+    the supplied photo  0.0934            0.3365   216 of 250         +0.153   (blue)
+    the render          0.1882            0.4325   229 of 250         +0.000
+
+**The render's line is the same contrast as the reference's (0.1882 against 0.1887), and persists longer.** What it
+lacks is the colour: the photograph's own line runs to **+0.153 in B-R** and the render brings it to **+0.000**. So the
+report of a line that "looks shallow" is really a line whose **blue has been neutralised**, and the contrast is not
+the problem.
+
+**And the structural reason it can never match the reference, stated plainly**: the reference's blue line is the
+**lamp's own pole**, a physical object lit from above. The supplied photograph is a fixture on a **blank wall**, with
+**no pole in the scene**. A mechanism carries a scene's light; it cannot manufacture an object the scene does not
+contain. Making this match would need a photograph containing a pole, or the pole added to the source.
+
+**The coloured streaks were a capability that was switched off, and that is the substantive finding.**
+
+A designed source -- a blown lamp with a hard-edged bar below it -- was used to test whether the model can produce a
+fan at all, and the answer is yes, decisively:
+
+    everything zero                     hue spread 0.0429 0.0222 0.0138 0.0100
+    chroma_aberration 1.0 alone         0.0890 0.0469 0.0307 0.0224    (2.1x)
+    longitudinal_ca 1.0 alone           0.0806 0.0372 0.0253 0.0194    (1.9x)
+    spike_spread 1.0 alone              0.0429 0.0222 0.0138 0.0100    (**no effect**)
+    all the separating mechanisms       0.5396 0.4194 0.2309 0.1637    (**12.6x**)
+
+**So a coloured fan is producible, and the reproduction had the mechanisms that produce it cut to a quarter of the
+range** -- `chroma_aberration 0.20, longitudinal_ca 0.12, axis_offset 0.20` -- because an earlier pass on a 3840-px
+frame produced heavy red-green edge fringing and they were reduced to remove it. **That reduction was too far; it is
+what removed the rainbow.** Retuned against the photograph:
+
+    chroma_aberration 1.0, longitudinal_ca 0.6, axis_offset 1.0
+    angular hue spread  0.0245 -> 0.2509   (10x)
+    frame-wide |R-B|    0.00084 -> 0.00544  (still small)
+
+so the separation is **local to the highlights** rather than a wash over the picture -- which is exactly the
+distinction the earlier reduction was trying to make and overshot.
+
+**And one earlier guess is retracted by this**: `spike_spread` has **no effect whatever** on the angular hue spread, at
+any value. It was suspected of lengthening the flare's coloured arms and it does not.
+
+**What the final render shows and does not.** With the raster off, the light group at the values calibrated last turn,
+and the separation retuned, the result is clean and free of scanlines (row-to-row variation 0.00141 against 0.04268
+before), with the fixture's glow and faint red-cyan edges at the frame's high-contrast borders -- the correct
+signature of a chromatic separation. **It does not show the reference's radial fan, and the reason is the subject**:
+this fixture is a compact cluster with no spokes and no pole, whereas the reference's is a large multi-bulb chandelier
+whose arms are precisely the structures that a radial separation fans out along. The capability is present and now
+tuned; the structures it needs are not in this photograph.
+
+`tools/ntscrs_ref/repro-highlight.json` carries the retuned settings: 36 parameters across 6 layers, the raster group
+at zero, the light group at the calibrated values, and the separation at `chroma_aberration 1.0`, `longitudinal_ca 0.6`,
+`axis_offset 1.0`. 163 checks pass; the only code change this session is the `source_glow` mechanism.
