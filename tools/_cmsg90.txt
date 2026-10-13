@@ -1,0 +1,44 @@
+measure the two features the reference shows and the render does not, as a pair of profiles
+
+**The user reported two shape differences and both are now numbers.** The reference's profile down from a blown lamp
+core, against the current reproduction's, at the same relative distances:
+
+    rows below   the reference                          the render
+    +0           [1.000 1.000 1.000]  B-R  +0.000      [0.981 0.972 0.939]  B-R  -0.042
+    +40          [1.000 0.997 0.991]  B-R  -0.009      [0.979 0.971 0.936]  B-R  -0.043
+    +60          [0.993 0.976 0.823]  B-R  -0.170      [0.872 0.836 0.858]  B-R  -0.014
+    +100         [0.952 0.735 0.441]  B-R  -0.510      [0.926 0.883 0.892]  B-R  -0.034
+    +160         [0.580 0.737 0.758]  B-R  +0.178      [0.073 0.050 0.062]  B-R  -0.011
+    +180         [0.559 0.611 0.786]  B-R  +0.226      [0.612 0.591 0.636]  B-R  +0.023
+
+    right/left luma    r=100   reference 0.963   render 0.222
+                       r=200   reference 1.305   render 0.520
+
+**So the reference is a strong gradient -- white core, then warm, then cool, spanning 0.74 in B-R -- and the render is
+nearly flat at 0.057.** That is a factor of about **thirteen** in the feature that was reported as missing, and it is
+not a coefficient being slightly off: **the render has no such gradient at all.**
+
+**Three specific things the numbers say, and none of them is what I had assumed.**
+
+**The near field is warm, not cool.** At +60 and +100 the reference runs to **B-R -0.51** -- a strong orange -- while
+the render reaches only -0.034. **The glow immediately under a lamp is a warm halo, and that is a different mechanism
+from a cool streak**: it is the light of the source scattered in the air and in the lens, which carries the source's
+own colour, whereas the earlier work has been adding a *cool* trail.
+
+**The cool shift is far down and weak in the render.** At +180 the reference is at **+0.226** and the render at
++0.023 -- the same sign, ten times smaller, and at a distance where the render's own values have gone dark (0.073 at
++160) so the colour there is nearly meaningless. **So the render's cool trail is both too weak and in the wrong
+place**: it sits immediately under the core, whereas the reference's cool region is 180 rows down.
+
+**And the right-hand streaks are an outer feature.** The reference's right/left balance is 0.96 at r=100 and **1.31**
+at r=200; the render is **darker on the right at both radii**. So the fan to the right is a large-radius asymmetry,
+and the render does not have it in either direction.
+
+**What that means for the model, stated as a requirement rather than a guess.** A warm halo whose colour follows the
+source and whose strength falls with distance, plus a cool shift that grows *further* down rather than immediately,
+plus an outer angular asymmetry. **The first of those is the largest single gap (a factor of fifteen) and it is not
+something any existing parameter addresses** -- `halation` adds a glow but its tint is fixed and cool, and
+`lens_flare`'s tint is a coating colour rather than the source's. **So this is a mechanism that is missing, not a
+value to be tuned**, and the evidence for that is the profile pair above rather than an impression.
+
+Nothing was changed. 163 checks pass, and the modules are byte-identical to their committed state.
