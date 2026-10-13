@@ -4,10 +4,13 @@
       "chroma_aberration": 0.6,
       "axis_offset": 0.5,
       "longitudinal_ca": 0.4,
-      "ccd_smear": 0.0,
-      "halation": 0.0,
-      "spike_spread": 0.0,
-      "flare_defocus": 0.0
+      "ccd_smear": 0.2,
+      "halation": 0.25,
+      "source_glow": 0.04,
+      "overflow_drain": 0.6,
+      "lens_flare": 0.3,
+      "spike_spread": 0.4,
+      "flare_defocus": 0.35
     },
     "format": {
       "luma_bandwidth": 5.0,
@@ -47,8 +50,9 @@
       "crt_age": 0.0
     }
   },
-  "param_count": 34,
+  "param_count": 37,
   "seed": 20240101,
   "standard": "ntsc",
-  "note": "the source's pole must carry more colour contrast against its surround than the chain shifts the surround (about 0.06): +0.0363 inverts, +0.1459 survives"
+  "source_note": "the input's pole must carry more colour contrast against its own surround than the chain shifts that surround, about 0.06. Measured: +0.0363 inverts, +0.1459 survives.",
+  "settings_note": "the light group is at the reproduction's values, which raise the blown fraction from 0.40% to 3.07% on this subject; reducing it lowers the pole's excess toward the range where the inversion returns."
 }

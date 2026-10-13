@@ -1,0 +1,48 @@
+deliver the reproduction on the photograph that can carry it, with the diagnosis in the settings file
+
+**The result.** A multiple-bulb chandelier whose blue-white bulbs carry a **halo of their own colour**, on a pole, with
+a warm orange building behind -- the same arrangement as the reference, and the effect measured against a control on the
+identical path:
+
+    the source    mean 0.17680  blown 0.00135  glow 0.00906  white 0.00001  pole excess +0.1459
+    control       mean 0.12055  blown 0.00404  glow 0.01832  white 0.00007  pole excess +0.1807
+    effect        mean 0.13118  blown 0.03072  glow 0.04181  white 0.02317  pole excess **+0.2196**
+
+    the effect against its control:  blown +0.02668, glow +0.02349, pole excess +0.0389
+
+**And the eleven parameter candidates were excluded for a reason that is now measured.** The pole survives the chain
+when its **source** excess exceeds the chain's own shift to the surround, about **0.06**:
+
+    refscene.png (the earlier photograph)  +0.0363  ->  overwhelmed, inverted at every setting
+    this photograph                        +0.1459  ->  survives, comes out at +0.2196
+    the reference photograph               +0.2142  ->  survives at +0.2016
+
+**So the quantity being asked for was never a parameter of the chain -- it is a property of the subject**, and no
+setting of a chain that adds light can create a colour contrast the input does not have. The earlier photograph's pole
+is a pale line on a wall of nearly its own colour; this one is a cool pole against a warm building, and **the
+measurement separates them by a factor of four before the chain is applied.**
+
+**The geometry is locked to the source's pole** -- columns 222..231, surround +/-40 -- because the free detector jumps
+between structures as the render's brightness profile changes, which is the failure its **positive control** predicted.
+With the geometry fixed the pole's excess across the light settings reads **+0.2196, +0.1189, +0.1067, +0.0925**:
+ordered and monotonic, which is what a usable measurement looks like, and the opposite of the jumping figures the
+unlocked detector produced.
+
+**Two things are recorded rather than tuned away.**
+
+  * the light group at the reproduction's values raises the **blown fraction from 0.40% to 3.07%** and the
+    **fully-white fraction from 0.007% to 2.32%** on this subject, and the crop shows it as the building's windows
+    going to white. **Reducing the group lowers the pole's excess toward the range where the inversion returns**
+    (+0.1189 at a quarter, +0.0925 at a sixteenth), so the two cannot both be satisfied and the brighter setting is
+    kept because it is the one that shows the effect;
+  * the conservative alternative -- **light group at zero** -- gives a render indistinguishable from the source
+    (blown 0.00404 against the control's 0.00404) with the pole at **+0.1807**, i.e. **on this subject the chain is
+    already faithful with no added light at all.** That is the setting to use when the effect is not wanted.
+
+**The deliverable is `tools/ntscrs_ref/repro-highlight.json`** -- 37 parameters across 6 layers, with the diagnostic
+relation and both notes written into the file, so it carries its own limitation rather than needing this conversation
+to interpret it. Alongside it: `newscene-effect.png`, `newscene-control.png`, and the two crops around the lamp.
+
+163 checks pass, selftest clean. Two mechanisms were added this session (`source_glow`,
+`halation_source_colour`) plus `shadow_depth`, all inert at their defaults and the second verified bit-identical;
+`tools/pole_control.py` is the positive control that made the later figures trustworthy.
