@@ -1,0 +1,49 @@
+trace the invented chroma to its true origin, and refute the fix I attempted
+
+**Where it really comes from.** Earlier I recorded the mechanism as aliasing in `fft_bandpass`, on the strength of a
+measurement showing the invented chroma fall from 40.1% to 0.2% as the sample rate rose. **That measurement was
+wrong, and the way it was wrong matters.**
+
+The composite was built with `composite_encode(..., std)` at the **original** standard and then split with a **copy**
+of the standard whose `pixel_rate_hz` had been raised. `composite_encode` uses the standard's rate to generate the
+subcarrier, so the two sides disagreed about what rate the signal was at -- and the fall from 40% to 0.2% was the
+result of that disagreement, not of oversampling.
+
+**Done properly, by giving both sides the same raised rate, the fraction does not move at all:**
+
+    factor   pixel rate   samples/cycle   chroma returned   fraction of the I it was encoded with
+    1.0      11.33        3.165           0.13790           40.1%     the model's rate
+    2.0      22.66        6.330           0.13766           40.1%
+    4.0      45.31       12.659           0.13725           40.0%
+    8.0      90.63       25.319           0.13641           39.7%
+
+**Forty per cent, at every rate up to eight times the model's.** So the invented chroma is **not** something the
+bandpass picks out of the sampled spectrum -- it is **already in the composite**, produced by `composite_encode`
+generating the subcarrier on the pixel grid. Raising the sample rate cannot recover information that was lost when
+the signal was made, which is what the earlier "fix" was trying to do.
+
+**So the fault is in the composite's construction**, and the arithmetic that decides it is unchanged and still the
+right thing to look at: **3.17 samples per subcarrier cycle** at the model's rate, against the **4 samples per cycle**
+that real digital NTSC chose (4 x fsc = 14.32 MHz) precisely so that the subcarrier is representable. If the
+subcarrier is mixed at a rate where a cycle is barely three samples, the modulation gives a different result for
+different line phases and **a constant field does not produce a constant composite** -- which is exactly what was
+measured: the field's own composite has `mean 0.4378, std 0.153369`, where a field with no chroma must have a
+**constant** composite.
+
+**The attempted fix is reverted.** `VideoStandard.oversampled()` was added and is removed again: it is correct in
+itself -- it keeps `pixels_for_bandwidth` consistent so a filter asked for a bandwidth in Hz behaves the same at
+either rate -- but **it does not address this fault**, and shipping it would have been a change with no evidence
+behind it. `standards.py` is byte-identical to its committed state.
+
+**What the next attempt has to establish first**, because two failed attempts have both mis-stated the mechanism:
+**why a field with no chroma produces a composite with a non-zero standard deviation.** That is a property of
+`composite_encode` alone and can be measured in isolation -- a constant I of zero and a constant Q of zero must give a
+flat plane -- without any filter or stage in the picture. The previous two attempts both reasoned about what happened
+*after* the signal existed, and both were wrong for that reason.
+
+**Three refutations and one self-correction this turn**, recorded because each closes a direction: the chroma band
+limit, the per-line phase error and the luma frequency response are excluded by measurement; `vert_blend` is
+unreachable on the path this preset takes; and the aliasing story above is withdrawn as an artefact of my own test.
+
+Nothing is changed: `standards.py`, `signal.py` and `player.py` are all byte-identical to their committed state, and
+163 checks pass.
