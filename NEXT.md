@@ -40,48 +40,60 @@
 
 ## 下一步动作（具体到文件）
 
-**相机阶段【不是】压缩，是放大 —— 上一版这里记错了。** 干净配置（schema 默认，`dynamic_range` **不碰**，保持 8.0）
-下的实测：
+**压缩已定位到 `atsim/stages/player.py` 的 `_separate()`，边界缩到它末尾的 6 行。**
 
-| 阶段 | 斜坡 | 分场 | 说明 |
-|---|---|---|---|
-| 源 | 1.000 | 1.000 | 斜坡自身对比度 0.2896，分场 0.2500 |
-| `camera` | **1.082** | **1.167** | **S 曲线：两端收、中间放 → 提高对比度** |
-| `format`→`tape` | 1.082 | 1.167 | `signal` 通道逐位不变（0.3136 / 0.2905） |
-| `player` | **0.800** | **0.870** | **唯一压缩的一级** |
+逐层实测（全部在【同一配置】下：schema 默认，`dynamic_range` 保持 8.0）：
 
-**两个输入的比值【不同】（1.082 vs 1.167）→ 所以相机是 S 曲线，不是标量增益。**
-`_roll_off`（`camera.py:380`）把 `lin=0.6` 送到 `comp=0.6667`，**大于线性值，所以它是抬高中间调**——
-我上一版把 0.785 记成"压缩"是因为那次用了 `dynamic_range=14.0`，**跨配置取数，正是第 71 行那条弯路。**
+| 接缝 | 斜坡 |
+|---|---|
+| 源的对比度 | 0.2896（1.000） |
+| `camera` → **1.082** | **S 曲线，放大**（不是压缩，上一版记错了） |
+| `format`→`tape` | 不变（signal 通道 0.3136 → 逐位相同） |
+| 到达 `player` 的 signal | **1.083** |
+| **`_separate` 返回** | **0.802** ← 【压缩 26% 在这里】 |
+| `_frequency_response` | 只贡献 **0.0006** |
+| 离开 player | 0.800 |
 
-**所以只剩一个目标：`atsim/stages/player.py` 里那个无条件压缩。**
+**进 `_separate` 内部再测一层**（用 `tools/separate_inside.py`，它包住 `yc_separate` / `demod_chroma` /
+`remod_chroma` 这三个真实调用）：
 
-**已排除（在【同一配置】下实测）**：
-- YIQ 往返还**无损**：斜坡和分场都是 **1.000**，`y` 跨满 [0,1]。`rgb_to_yiq`/`yiq_to_rgb` 在 `atsim.core.signal`
-- `player` 全部参数逐个中性化 —— 最大变化 0.0002
-- `output_gain` / `output_bias` 默认就是 0
-- 带宽 3 / 16 / 40 MHz —— 逐位相同
-- `head_wear`、`color_noise`、`blue_screen` —— 中性化无效
-
-**`player.apply` 的实际通路**（已读，见 `player.py` 的 `apply`）：
-```python
-y, i, q = self._separate(comp, buf)      # 嫌疑 1
-i, q = self._chroma_phase_error(i, q, buf)
-y = self._frequency_response(y)          # 嫌疑 2（带宽扫过无效，但函数本身可能是固定的）
-y = y * (1.0 + 0.25 * self.output_gain) + 0.08 * self.output_bias   # 默认 0
-sig = SignalFrame(y, i, q); rgb_out = sig.to_rgb()
 ```
-**下一步：直接对斜坡的 `y` 调用 `_separate` 和 `_frequency_response`，看哪一个把对比度乘了 0.8。**
-方法：绕开渲染器，把这两个方法当作纯函数测——**这是唯一还没做过的隔离。**
+真实 composite                std 0.3121   (1.078)
+after yc_separate #1          std 0.3121   (1.078)   ← 无损
+after demod_chroma (i)        std 0.0030            ← chroma 很小，正确
+after remod_chroma            std 0.0018
+after yc_separate #2          std 0.3570   (1.233)   ← 分离本身【放大】到 1.233
+而 _separate 返回              0.802
+```
 
-**验收标准**：黑到白斜坡通过链路后对比度 **接近 1.0**（相机现在给 1.082，所以链路应落在 1.0 附近）。
+**所以压缩发生在【第二次 `yc_separate` 之后、函数 return 之前】的那一段**，即 `cross_color` / `cross_luma`
+残余项与增益：
 
-## 仪器本身修过两次（都是盲区，务必用修好的版本）
+```python
+comp_shifted = (y_band + remod_chroma(i, q, self.std, chroma_gain=gain))     # gain = 0.63
+y_band, chroma_band = yc_separate(comp_shifted, ..., comb_depth=self.comb_depth, ...)   # → 1.233
+chroma_band = chroma_band / gain
+if self.cross_color > 1e-4:
+    detail = highpass(y_band, ...)                       # 默认 cross_color = 0.45，【会执行】
+    chroma_band = chroma_band + self.cross_color * 0.55 * detail * mod
+if self.cross_luma > 1e-4:
+    resid = chroma_band - remod_chroma(i, q, self.std, chroma_gain=1.0)
+    y_band = y_band + self.cross_luma * 0.5 * resid * mod     # 默认 cross_luma = 0.3，【会执行】
+return y_band.astype(np.float32), i.astype(np.float32), q.astype(np.float32)
+```
 
-1. `tools/stage_trace.py` 只记 `.rgb`，但**链路实际传递的是 `meta["signal"]`**——所以"format 贡献 0.0000"
-   是量错了缓冲区。**修好的版本在 `tools/composite_trace.py`，它同时记 `rgb` / `composite` / `signal` 三栏。**
-2. **`buf.composite` 全程是 `None`**（实测），所以 `player.apply` 开头的 `comp = buf.composite` 不是它拿到
-   信号的途径——**别再去追 composite。**
+**下一步：把 `cross_luma` 和 `cross_color` 设 0 再测 `_separate` 的返回。** 预期 `cross_luma`
+那一行是嫌疑（它**加**一个残差到 `y_band`，而残差含 `y_band` 自己的高频——那可能是一个【自反馈】项）。
+
+**注意**：之前"player 全部参数逐个中性化最大只变 0.0002"的结论与此**不矛盾**——那次是在【整条链的最终输出】上量的，
+而这次是在 `_separate` 的**返回值**上量的。**验收标准：斜坡通过链路后接近 1.0。**
+
+## 仪器修正（盲区，务必用修好的版本）
+
+1. **链路实际传递的是 `meta["signal"]`，不是 `.rgb`**。`tools/composite_trace.py` 同时记三栏。
+2. **`buf.composite` 全程是 `None`**（实测）——别追 composite。
+3. **不要手工重建 composite**：我用 YIQ 往返重建后跑出的数是 1.000/1.000/1.000/1.165，而真实的是
+   1.078/1.078/…/1.233。**重建描述的是另一个实验。** 用 `tools/separate_inside.py` 包真实调用。
 
 ## 不要重复的弯路（每条都花过一整轮）
 
