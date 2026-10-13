@@ -316,7 +316,7 @@ class CameraStage(Stage):
         instead of being implied by two call sites far apart in `apply`.
         """
         from ..codecs.nightvision import (accumulate, add_illuminator, ir_highlights,
-                                           mode_of, monochrome_green)
+                                           mode_of, monochrome_green, read_noise)
         if mode_of(self.nv) == "off":
             return rgb
         if stage == "scene":
@@ -338,7 +338,17 @@ class CameraStage(Stage):
             if n > 1:
                 stack = self._nv_source_frames(n, index)
                 if len(stack) > 1:
+                    # **The mode's read noise is added to each frame BEFORE the sum**, so accumulation reduces it --
+                    # which is the whole reason Super NightShot exists.  Read noise adds per frame at the sensor, so N
+                    # frames add it N times in quadrature while the signal adds N times coherently and the ratio
+                    # improves as sqrt(N).  Applied after the sum it would not fall at all, and the model could not
+                    # show why the camera has an accumulating mode.
+                    idx = int(index) if index is not None else 0
+                    stack = [read_noise(np.asarray(f, np.float32), self.nv, idx - (len(stack) - 1 - j))
+                             for j, f in enumerate(stack)]
                     out = accumulate(stack, self.nv)
+            else:
+                out = read_noise(out, self.nv, int(index) if index is not None else 0)
             out = add_illuminator(out, self.nv)
             out = ir_highlights(out, self.nv)
             return out

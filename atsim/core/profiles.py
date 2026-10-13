@@ -27,6 +27,13 @@ LAYER_LABELS = {
 }
 
 
+# **The night-vision functions by name.**  `nv_mode` is a selector, not a slider -- a number between 0 and 3 gives the
+# user no way to know which function they are choosing -- so the schema carries the four names and the interface
+# presents them.  The mechanism still reads the number, so a settings file and the API are unchanged.
+# **The four functions, named here so the label can carry them.**  `ParamSpec` has no `choices` field,
+# so the selector's names live in the label and the help text rather than in the parameter machinery.
+
+
 def build_schema() -> ParamSchema:
     s = ParamSchema()
 
@@ -244,7 +251,7 @@ def build_schema() -> ParamSchema:
                     "也就稀释了线的颜色（这正是灯杆蓝色丢失的原因）。"
                     "实测：原来靠调低泛光来提对比，结果对比从 0.2185 掉到 0.2069，方向相反。")
     # --- the night-vision modes ------------------------------------------------
-    cam.define("nv_mode", "夜视模式", 0.0, 0.0, 3.0, unit="0-3", group=g,
+    cam.define("nv_mode", "夜视模式 0关/1NightShot/2Super/3ColorSlow", 1.00, 0.0, 3.0, unit="", group=g,
                phys_min=0.0, phys_max=3.0, source="索尼 Digital 8 / DSC-F717 的三种夜视功能",
                help="**从物理底层重建的索尼夜视功能。**"
                 "0 = 关；1 = NightShot（拆掉红外截止滤镜 + 开红外照明，显示为绿单色）；"
@@ -270,7 +277,7 @@ def build_schema() -> ParamSchema:
                     "而深色衣物和沥青变黑，这是任何调色都做不出来的。")
     cam.define("nv_ir_response", "红外响应", 1.0, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=1.0, help="红外截止滤镜被移除的程度（0 = 滤镜在位）。")
-    cam.define("nv_green_mix", "绿单色显示", 1.0, 0.0, 1.0, unit="0-1", group=g,
+    cam.define("nv_green_mix", "绿单色显示", 1.00, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=1.0,
                help="1 = 纯绿单色取景，0 = 保留原色。"
                     "**是【单轴增益】而不是去饱和**——实测素材绿段的通道差大而色相散度小"
@@ -282,7 +289,7 @@ def build_schema() -> ParamSchema:
                help="**模式自己的曝光提升，走相机正常的曝光通路**——"
                     "所以在高光滚降、增益噪声和白平衡上都和普通曝光一样。"
                     "在末端乘一个系数只会让画面变亮，而没有真的被曝光过。")
-    cam.define("nv_accumulate", "帧积累", 1.0, 1.0, 16.0, unit="frames", group=g,
+    cam.define("nv_accumulate", "帧积累", 8.00, 1.0, 16.0, unit="frames", group=g,
                phys_min=1.0, phys_max=16.0,
                help="**Super NightShot 的关键：信号相干相加、噪声按平方根相加，"
                     "所以信噪比按 sqrt(N) 改善。**单次 N 倍曝光则会同时放大暗电流和散粒噪声，"

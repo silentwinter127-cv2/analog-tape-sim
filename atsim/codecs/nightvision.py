@@ -177,7 +177,11 @@ def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     `ir_albedo_mix` sets how much of the picture's appearance is governed by this term rather than by the visible
     luminance, which is the knob that turns a plausible night-vision look into a convincing one.
     """
-    m = float(np.clip(spec.ir_albedo_mix, 0.0, 1.0))
+    # **`nv_ir_response` is the fraction of the IR-cut filter that has been removed**, and it was declared and never
+    # read -- measured, 0.0 gave a bit-identical frame, so turning the filter back on changed nothing.  It gates the
+    # whole near-infrared term, which is the parameter's entire meaning: at 0 the filter is in place and the sensor
+    # sees what a normal camera sees.
+    m = float(np.clip(spec.ir_albedo_mix, 0.0, 1.0)) * float(np.clip(spec.ir_response, 0.0, 1.0))
     if m < 1e-4:
         return rgb
     lum = np.clip(rgb @ LUMA, 0.0, 1.0)
@@ -239,6 +243,13 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # measured gain **1.0000** on every level below clipping.
     weights = np.array([0.29, 0.46, 0.25], dtype=np.float32)
     weights = weights / float(weights @ LUMA)
+    # **The green gun's own gain.**  `nv_green_gain` was declared and never read -- measured, 0.5 and 1.6 gave
+    # bit-identical frames.  It scales the green channel alone, which is what a viewfinder's green gain does, and then
+    # the weights are re-normalised so the change is a **hue shift and not a brightness change**: without that, raising
+    # the gain would also brighten the picture and the two effects could not be told apart.
+    g = float(np.clip(spec.green_gain, 0.1, 4.0))
+    weights = weights * np.array([1.0, g, 1.0], dtype=np.float32)
+    weights = weights / float(weights @ LUMA)
     mono = np.clip(lum[..., None] * weights, 0.0, 1.0)
     return (rgb * (1.0 - m) + mono * m).astype(np.float32)
 
@@ -291,3 +302,25 @@ def apply_mode(rgb: np.ndarray, spec: NightVisionSpec, frames: list[np.ndarray] 
         if frames:
             out = accumulate([out] + list(frames), spec)
     return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+
+def read_noise(rgb: np.ndarray, spec: NightVisionSpec, seed: int = 0) -> np.ndarray:
+    """
+    The sensor's read noise at the mode's gain -- **applied before accumulation, so summing frames reduces it.**
+
+    **Why the placement carries the meaning.** Read noise is added per frame at the sensor, so summing N frames adds it
+    N times in quadrature while the signal adds N times coherently: the ratio improves as `sqrt(N)`. Applied *after*
+    accumulation it would not fall at all, and the model would be unable to show why a night-vision camera has an
+    accumulating mode in the first place. **That is the whole content of Super NightShot**, so where this runs is not a
+    detail.
+
+    `nv_read_noise` was declared and never read -- measured, 0.0 and 0.2 gave bit-identical frames.
+
+    The noise is **deterministic in the frame index**, so a still picture is stable across renders and a sequence
+    differs frame to frame, which is what an accumulator needs to have something to average.
+    """
+    a = float(np.clip(spec.read_noise, 0.0, 0.5))
+    if a < 1e-6:
+        return rgb
+    rng = np.random.default_rng(0x9E3779B9 ^ (int(seed) * 2654435761 & 0xFFFFFFFF))
+    return np.clip(rgb + rng.normal(0.0, a, rgb.shape).astype(np.float32), 0.0, 1.0)
