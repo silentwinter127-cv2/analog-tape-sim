@@ -1,26 +1,16 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-13T15:25:36",
+  "exported": "2026-10-13T15:31:17",
   "name": "新工程",
   "standard": "ntsc",
   "seed": 20240101,
-  "fps": 25.0,
+  "fps": 29.97002997002997,
   "environment": {},
   "keyframes": [],
   "unit_identities": {},
-  "source": "runs\\uploads\\refscene.png",
-  "source_info": {
-    "path": "runs\\uploads\\refscene.png",
-    "width": 452,
-    "height": 382,
-    "fps": 25.0,
-    "frame_count": 0,
-    "duration": 0.0,
-    "has_audio": false,
-    "codec": "png",
-    "aspect": 1.1832
-  },
+  "source": null,
+  "source_info": null,
   "params": {
     "format": {
       "chroma_bandwidth": 2.0,
