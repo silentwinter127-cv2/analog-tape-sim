@@ -275,6 +275,20 @@ function renderParams() {
   });
 }
 
+// **Parameters that are selectors rather than quantities.**  A night-vision mode is one of four named functions of the
+// camera, so a slider reading "1.7" tells the user nothing -- and the schema has no `choices` field, so the names live
+// here.  The control still calls `setParam(layer, key, value)` with a number, so the API, the settings file, the
+// keyframes and the render path are all unchanged: only the widget differs.
+const SELECTORS = {
+  "camera.nv_mode": [
+    [0, "关"],
+    [1, "NightShot（红外 + 绿单色）"],
+    [2, "Super NightShot（帧积累）"],
+    [3, "Color Slow Shutter（慢快门保留彩色）"],
+  ],
+};
+
+
 function paramRow(sp) {
   const cur = (S.params[S.layer] || {})[sp.key];
   const val = cur === undefined ? sp.default : cur;
@@ -293,20 +307,41 @@ function paramRow(sp) {
   vv.textContent = sp.step === 1 ? (val > 0.5 ? "开" : "关") : fmt(val);
   head.append(name, vv);
 
-  const r = document.createElement("input");
-  r.type = "range";
-  r.min = sp.min; r.max = sp.max;
-  r.step = sp.step === 1 ? 1 : (sp.max - sp.min) / 200;
-  r.value = val;
-  r.oninput = () => {
-    const nv = parseFloat(r.value);
-    vv.textContent = sp.step === 1 ? (nv > 0.5 ? "开" : "关") : fmt(nv);
-    const stillPhys = sp.phys_min === null || sp.phys_max === null
-      || (nv >= sp.phys_min - 1e-9 && nv <= sp.phys_max + 1e-9);
-    vv.classList.toggle("artistic", !stillPhys);
-    setParam(S.layer, sp.key, nv, true);
-  };
-  r.onchange = () => setParam(S.layer, sp.key, parseFloat(r.value), false);
+  const opts = SELECTORS[`${S.layer}.${sp.key}`];
+  let r;
+  if (opts) {
+    // a selector: the four functions by name, with the numeric value kept in the readout
+    r = document.createElement("select");
+    r.className = "psel";
+    for (const [v, label] of opts) {
+      const o = document.createElement("option");
+      o.value = String(v);
+      o.textContent = label;
+      if (Math.abs(v - val) < 1e-6) o.selected = true;
+      r.appendChild(o);
+    }
+    vv.textContent = fmt(val);
+    r.onchange = () => {
+      const nv = parseFloat(r.value);
+      vv.textContent = fmt(nv);
+      setParam(S.layer, sp.key, nv, false);
+    };
+  } else {
+    r = document.createElement("input");
+    r.type = "range";
+    r.min = sp.min; r.max = sp.max;
+    r.step = sp.step === 1 ? 1 : (sp.max - sp.min) / 200;
+    r.value = val;
+    r.oninput = () => {
+      const nv = parseFloat(r.value);
+      vv.textContent = sp.step === 1 ? (nv > 0.5 ? "开" : "关") : fmt(nv);
+      const stillPhys = sp.phys_min === null || sp.phys_max === null
+        || (nv >= sp.phys_min - 1e-9 && nv <= sp.phys_max + 1e-9);
+      vv.classList.toggle("artistic", !stillPhys);
+      setParam(S.layer, sp.key, nv, true);
+    };
+    r.onchange = () => setParam(S.layer, sp.key, parseFloat(r.value), false);
+  }
 
   row.append(head, r);
   if (sp.help) {

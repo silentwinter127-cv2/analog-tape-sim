@@ -1,0 +1,50 @@
+add the night-vision dropdown, and give each mode its own settings
+
+**The interface now carries the four functions by name.** `nv_mode` is a **selector**, not a quantity -- and the schema
+has no `choices` field, so the names live in a small table in `app.js` and the control is a `<select>`. Every other
+parameter keeps its slider. **The parameter machinery is untouched**: the control still calls
+`setParam(layer, key, value)` with a number, so the API, the settings file, the keyframes and the render path see
+exactly what they saw before. Only the widget differs, and adding a second selector later is one line.
+
+**And the check through the browser's own API found a real fault that reading the code would not have.** With
+`nv_mode = 3` selected, the rendered frame came back **green** -- ratio 0.330:0.383:0.287 -- because `nv_green_mix`
+defaults to **1.0** and Color Slow Shutter's requirement is **0.0**. **A mode's behaviour depended on the user separately
+setting four other parameters, and the defaults cannot be right for all three modes at once**, which makes them wrong
+for at least two.
+
+**So each mode now carries its own settings**, applied where the mode is resolved:
+
+    NightShot            the lamp on, the green display on, **one frame**
+    Super NightShot      the same, **and accumulation on** -- the entire difference between the two functions
+    Color Slow Shutter   no lamp, **no green display**, accumulation on
+
+**And the first version of that preset was too wide, which created the same fault it was fixing.** It also forced
+`ir_albedo_mix` and `ir_response`, and `nv_ir_response` went **inert again** -- measured, 0.0 gave a bit-identical
+frame. **A preset that overrides a physical control is a preset that removes a control**, and `nv_ir_response` is the
+IR-cut filter's position, the most physical thing in the mode. The preset now sets only the lamp, the green display and
+accumulation; the beam's strength, aim and width, the green gain, the read noise and the exposure bias stay the user's.
+
+**Verified through the API the browser uses** -- `/api/upload`, `/api/project`, `/api/frame`:
+
+    mode                        mean      G share   channel ratio          blown
+    0 关 (baseline)             0.3933    0.3371    0.426:0.337:0.237      0.02230
+    1 NightShot                 0.6723    0.3827    0.330:0.383:0.287      0.13954
+    2 Super NightShot           0.6723    0.3827    0.330:0.383:0.287      0.13954
+    3 Color Slow Shutter        0.6028    **0.3349** 0.364:0.335:0.302     0.10293
+
+**Color Slow Shutter keeps its colour** (G share 0.3349 against NightShot's 0.3827, and close to the baseline's
+0.3371), which is what the mode is. **NightShot and Super NightShot read identically here, and that is correct rather
+than a fault**: `/api/frame` renders **one** frame, so a mode defined by accumulating eight has nothing to accumulate --
+the difference between them is only visible across a sequence, which is where the noise law already verified it
+(16 frames at 0.2326 against the predicted 0.2500).
+
+**All thirteen parameters are exposed to the interface** -- read back from `/api/schema` in the camera layer's
+"光学与传感器" group -- and **all nine that were checked respond**: `nv_green_gain` moves the G share from 0.2891 to
+0.7517, `nv_ir_response` at 0 drops the mean to 0.19903, and the beam aim, beam width and illuminator leak all move the
+picture.
+
+**The objective's substance is now complete**: the physics, the module, the camera wiring, the schema, the render path,
+the calibration, the mode-specific settings, and the interface. **What remains is a browser confirmation pass** --
+reloading the GUI and exercising the dropdown visually -- which needs the user's own view of the running page.
+
+163 checks pass, selftest clean, 263 commits.

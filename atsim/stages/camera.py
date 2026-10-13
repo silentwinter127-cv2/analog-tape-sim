@@ -319,6 +319,13 @@ class CameraStage(Stage):
                                            mode_of, monochrome_green, read_noise)
         if mode_of(self.nv) == "off":
             return rgb
+        # **The mode's own settings.**  The stage drives the module's pieces directly rather than through
+        # `apply_mode`, so it has to resolve the mode's values too -- and that is the right place for it, because the
+        # stage is what sequences the pieces.  Without this, selecting Color Slow Shutter returned a green picture:
+        # measured through the API, ratio 0.330:0.383:0.287, because `nv_green_mix` defaults to 1 and that mode's
+        # requirement is 0.
+        from ..codecs.nightvision import mode_spec
+        self.nv = mode_spec(self.nv)
         if stage == "scene":
             # **Accumulation comes first, while the picture is still at the scene's own level.**  It ran in the
             # display stage initially -- the last thing to execute -- where it replaced a *processed* picture (mean

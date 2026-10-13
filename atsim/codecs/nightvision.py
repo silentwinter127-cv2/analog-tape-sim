@@ -291,6 +291,8 @@ def apply_mode(rgb: np.ndarray, spec: NightVisionSpec, frames: list[np.ndarray] 
     m = mode_of(spec)
     if m == "off":
         return rgb
+    # **the mode's own settings, applied before anything else**, so a named function behaves as its name says
+    spec = mode_spec(spec)
     out = rgb
     if m in ("nightshot", "super_nightshot"):
         out = add_illuminator(out, spec)
@@ -324,3 +326,44 @@ def read_noise(rgb: np.ndarray, spec: NightVisionSpec, seed: int = 0) -> np.ndar
         return rgb
     rng = np.random.default_rng(0x9E3779B9 ^ (int(seed) * 2654435761 & 0xFFFFFFFF))
     return np.clip(rgb + rng.normal(0.0, a, rgb.shape).astype(np.float32), 0.0, 1.0)
+
+
+#: **What each mode sets, when it is selected.**  A named function has to behave as its name says without the user
+#: setting four other parameters correctly -- and the defaults cannot be right for all three modes at once, so they are
+#: wrong for at least two.  Selecting `nv_mode = 3` with `nv_green_mix` at its default returned a **green** picture,
+#: measured through the API, because the mode's requirement is 0 and the default is 1.
+#:
+#: The schema's defaults stay neutral -- what a user sees before choosing anything -- and the mode's own values are
+#: applied here, which is the one place that knows what a mode means.
+MODE_PRESETS: dict[str, dict[str, float]] = {
+    # the lamp on, the green display on, **one frame** -- accumulation is what Super adds
+    "nightshot": dict(illuminator=0.15, green_mix=1.0, accumulate=1.0),
+    # the same, **and accumulation on** -- that is the entire difference between the two functions
+    "super_nightshot": dict(illuminator=0.15, green_mix=1.0, accumulate=8.0),
+    # no lamp and **no green display** -- colour is the point of this mode
+    "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=8.0),
+}
+
+
+def mode_spec(spec: NightVisionSpec) -> NightVisionSpec:
+    """
+    The spec a mode actually runs with: the mode's own values where the mode defines them, the user's otherwise.
+
+    **Why this exists rather than more defaults.**  Each mode needs a *combination* -- green display for NightShot and
+    none for Color Slow Shutter, accumulation for Super and not for plain -- and the defaults cannot satisfy all three
+    at once.  A mode selector that leaves the user to set four more parameters correctly is not a mode selector.
+
+    **And it is deliberately narrow.**  It sets only what *defines* a mode -- the lamp, the green display and whether
+    frames are accumulated -- and nothing else.  The first version also forced `ir_albedo_mix` and `ir_response`, which
+    made `nv_ir_response` **inert again** (measured: 0.0 gave a bit-identical frame), so fixing one fault created
+    another of exactly the same kind.  **A preset that overrides a physical control is a preset that removes a
+    control**, and `nv_ir_response` is the IR-cut filter's position -- the most physical thing in the mode.  The beam's
+    strength, aim and width, the green gain, the read noise and the exposure bias are all the *shot* rather than the
+    *function*, and they stay the user's.
+    """
+    name = mode_of(spec)
+    preset = MODE_PRESETS.get(name)
+    if not preset:
+        return spec
+    import dataclasses
+    return dataclasses.replace(spec, **preset)

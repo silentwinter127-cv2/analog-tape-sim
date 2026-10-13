@@ -127,6 +127,21 @@ main.wsGrid > #panelRight{border-right:none;border-left:none}
 input[type=range]{width:100%;margin:4px 0 0;accent-color:var(--accent2);height:16px}
 .prow .src{font-size:10px;color:#6b6157;font-family:var(--mono)}
 
+/* **A selector rather than a slider.**  `nv_mode` is one of four named night-vision functions, so it gets a dropdown;
+   every other parameter is a continuous quantity and keeps its slider.  The styling matches the rows around it. */
+select.psel {
+  width: 100%;
+  box-sizing: border-box;
+  background: #1b1f27;
+  color: #d8dee9;
+  border: 1px solid #2c3340;
+  border-radius: 3px;
+  padding: 3px 4px;
+  font: inherit;
+  font-size: 12px;
+}
+select.psel:focus { outline: 1px solid #4c8bf5; }
+
 /* ---- job bar ---- */
 .jobbar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);display:flex;
   align-items:center;gap:12px;background:var(--panel2);border:1px solid var(--line);
