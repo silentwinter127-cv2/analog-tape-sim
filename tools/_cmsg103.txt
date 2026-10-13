@@ -1,0 +1,50 @@
+build a positive control for the pole detector, and find that every render measurement was taken off the pole
+
+**The control, and it decided the question.** A synthetic frame with a pole of **known width, known columns and known
+hue** on a wall of known brightness, plus the two cases that had gone wrong:
+
+    a pole on a plain wall              found at 200..205, width 6, hue +0.2300   -- all correct
+    a pole plus a bright edge at 330    unconstrained: picks 330..335, hue +0.0000  -- WRONG
+                                        constrained:   picks 200..205              -- correct
+    a wall with no pole at all          NOT FOUND                                  -- correct
+
+**So the detector is fooled by a bright vertical edge elsewhere on the wall**, which is exactly what it did on the real
+renders, and **it does not invent a pole where there is none**. The first property makes it unusable unconstrained; the
+second means it is not worse than useless. **Neither was known before, and both came from a case with a known answer.**
+
+**And with the geometry then fixed from the source -- columns 270..275, surround +/-24, the detector's only remaining
+job being to check the band still clears its surround -- the decisive figure appears:**
+
+    the source, at columns 270..275      excess +0.0363   (pole +0.0062 against surround -0.0388)
+
+**Every render measurement in the last several turns was taken at columns 308..322.** The detector, unconstrained,
+locked onto a bright vertical edge; the search window, which was meant to prevent that, did not, because **inside the
+window the reproduction's frame has no pole standing above its surroundings where the source's does** -- so the
+strongest remaining vertical structure in that window won. **Those figures were therefore comparing a pole in one
+picture against a wall in another, and all of them are withdrawn**: the `source_glow` sweep, the
+`halation_source_colour` sweep, the `shadow_depth` sweep, and the reversal that said the line was "over-distinct".
+
+**What is established now, and it is a much smaller set than before.**
+
+  * the pole on the source is **6 px at columns 270..275, pole hue +0.0062, surround -0.0388, excess +0.0363**;
+  * **the detector must be given the geometry, not asked to find it** -- asking it to locate the pole on a frame the
+    mechanisms have altered makes the measurement follow the thing being measured, which is the design fault behind
+    both failed instruments;
+  * and a **positive control must precede any figure about a render**, which is the discipline that caught the
+    head-switching band and the `source_glow` magnitude earlier and was not applied here.
+
+**And one thing the corrected geometry suggests but does not yet establish**: the fact that the pole does not clear its
+surround in that window on the renders is consistent with the glow burying it, which is what the earlier turns
+suspected for other reasons. It is **not** measured -- the locked-geometry sweep was not completed, because the script's
+earlier half was left in place and printed the withdrawn figures again. **That is the first thing to run next**, and it
+is a single script rather than a new line of investigation.
+
+**A note on how this went.** Three instruments produced confident numbers here and two were wrong in ways that took
+another fix to notice. The common cause is the same in both: **a statistic was trusted before it was checked against a
+case whose answer was known.** `tools/pole_control.py` is kept, and it is the artefact that should have existed before
+the first measurement rather than after the third.
+
+163 checks pass, selftest clean. Three mechanisms were added this session (`source_glow`,
+`halation_source_colour`, `shadow_depth`), all inert at their defaults and the second verified bit-identical.
+`repro-highlight.json` stands as rendered but **without any validated claim about how its pole compares to the
+reference**.
