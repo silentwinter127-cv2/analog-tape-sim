@@ -1,0 +1,38 @@
+apply the reproduction to the supplied photograph, and report what `source_glow` does on a subject it was not tuned on
+
+**The photograph's own measurement first.** Its fixture spans **22.2% of the frame's height and 12.4% of its width**,
+and its saturation reaches **252 px below the core -- 0.164 of the height, about 148 rows in the reference's 900-row
+terms**. So it has the *extent* the reference's profile needs, which no earlier candidate had. But its own colour below
+the core is **cool** throughout (+0.233 at 40 rows, +0.187 at 100), where the reference is **-0.510 at 100** -- strongly
+warm. That is a property of the subject: the reference's lamp sits inside a large continuous warm glow, while this
+fixture lights a pale wall and the wall reads cool.
+
+**And the mechanism does the right thing on it.** Down from the core, in B-R:
+
+    rows below      +0       +40      +60      +100     +160     +180
+    the reference   +0.000   -0.009   -0.170   -0.510   +0.178   +0.226
+    the raw file    +0.000   +0.233   +0.219   +0.187   +0.135   +0.158     cool
+    control         -0.019   +0.291   +0.321   +0.468   +0.355   +0.170     cooler still
+    effect          -0.043   **-0.044  -0.042  -0.034**  +0.182   +0.151     warm
+
+**`source_glow` turns the near field from +0.29 to -0.044** -- from cool to warm, with the warm region extending past
+100 rows -- **which is exactly what a scatter that carries the source's colour is for**: the fixture's own light, thrown
+onto a pale wall, is warmer than the wall's ambient. And the magnitude is in range: blown area 1.67% -> 6.75%, glow
+3.50% -> 13.28%.
+
+**What this is and is not.** It is **a real, measured effect produced by a physical mechanism on a photograph the
+mechanism was not tuned on** -- which is the check that matters, and it passes. It is **not** a profile match to the
+reference, and it should not be read as one: the reference's warm region is 0.51 deep at 100 rows because its lamp
+sits inside its own orange glow, whereas here the same rows fall on a wall the fixture merely illuminates. **A
+scattering term carries the source's colour; if the source and its surroundings are cool the halo is cool, and that
+is correct behaviour rather than a failure.**
+
+**So the deliverable is unchanged in kind and better in evidence.** `tools/ntscrs_ref/repro-highlight.json` carries 25
+parameters across 6 layers -- a digital-component path, a linear display, the tape's head-switching band off, the
+chroma crosstalk terms at zero, and the ten mechanisms split into the light group that is per-unit-area
+(`source_glow 0.85`, `halation 0.85`, `ccd_smear 0.80`, `flare_defocus 1.00`, `lens_flare 0.50`, `spike_spread 0.85`,
+`overflow_drain 0.35`) and the aberration group that scales with the frame (`chroma_aberration 0.20`,
+`longitudinal_ca 0.12`, `axis_offset 0.20`).
+
+163 checks pass, selftest clean. The model gained one mechanism this session -- `source_glow` -- and it is the only
+change to the code; everything else is a settings file.

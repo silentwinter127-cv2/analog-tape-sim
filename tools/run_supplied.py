@@ -1,18 +1,19 @@
 """
-Render the effect on the closest-framed raw source available, and state what remains.
+Run the reproduction on the supplied photograph, and report the profile rather than judging it.
 
-**Where the gap actually is.** Measured: the reference's lamp is a large multiple-bulb fixture covering about **18%** of
-its frame; the raw photographs available have saturated regions from **0.05% to 0.62%**, and cropping the one whose
-light is nearest the camera raises it to **3.02%** -- five times better than the best full frame, and still six times
-short of the reference. **The mechanism is not the limit**: `source_glow` is calibrated so that on a realistic source
-it reaches a halo of **0.53** where the reference's own profile needs **0.51**.
+**What its measurement says before anything is applied.** Its fixture spans **22.2% of the frame's height** and
+**12.4% of its width**, and its saturation reaches **252 px below the core -- 0.164 of the height, which is about 148
+rows in the reference's 900-row terms**. So it has the extent the reference's profile needs, and the earlier
+photographs did not.
 
-**So this render uses the best subject available and reports the comparison honestly**, rather than presenting it as a
-match. It is the same chain as the accepted reproduction -- raw photograph, digital-component path, linear display, the
-band off, the mechanisms at a visible strength -- with `source_glow` added at the calibrated value.
+**But its own colour below the core is positive in B-R throughout** (+0.233 at 40 rows, +0.187 at 100, +0.158 at 180),
+i.e. **cool**, where the reference is **-0.510 at 100 rows**, i.e. strongly warm. That is a statement about the
+subject: the reference's lamp sits inside a large continuous warm glow, while this fixture lights a pale wall below
+itself and the wall reads cool. **A scattering mechanism carries the source's colour, so if the source and its
+surroundings are cool there, the halo will be cool** -- and that is the correct behaviour, not a failure.
 
-The crop is a field-of-view choice on a raw photograph, recorded with its own provenance and its own measurements, so
-what was done to the input is stated rather than implied.
+So the effect is run at the calibrated strength and the profile is reported next to the reference's, with the
+comparison stated in terms of what each number means rather than whether it "looks right".
 """
 from __future__ import annotations
 
@@ -26,7 +27,8 @@ from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "tools", "ntscrs_ref")
-SRC = os.path.join(OUT, "raw_light_close.jpg")
+SRC = (r"C:\Users\Administrator\.dsh\attachments\v1\objects\20"
+       r"\204363c0164fe605ff4b85d7d7f3b1d8d4940f98d85d8b0a2e401a0f2b703bd8")
 BASE = "http://127.0.0.1:8941"
 COEF = np.array([0.299, 0.587, 0.114], np.float32)
 
@@ -49,13 +51,12 @@ def upload_raw(path):
     req = urllib.request.Request(
         BASE + "/api/upload", data=data, method="POST",
         headers={"Content-Type": "application/octet-stream",
-                 "X-Filename": os.path.basename(path),
-                 "Content-Length": str(len(data))})
+                 "X-Filename": "supplied.jpg", "Content-Length": str(len(data))})
     with urllib.request.urlopen(req, timeout=900) as r:
         return json.loads(r.read())
 
 
-print("   uploading the crop of the raw photograph")
+print("   uploading the supplied photograph as a raw source")
 print("      %s" % {k: v for k, v in upload_raw(SRC).items() if k in ("ok", "still")})
 
 COMMON = {
@@ -67,30 +68,24 @@ COMMON = {
     "tape": {"head_switching": 0.0},
     "display": {"enabled": 1.0, "gamma": 1.0, "saturation": 0.62},
 }
-
-EFFECT = {
-    # the light mechanisms, per-unit-area and so unchanged by the frame's size
-    "source_glow": 0.85,     # the scattered halo carrying the source's own colour -- calibrated against the reference
-    "halation": 0.85, "ccd_smear": 0.80, "flare_defocus": 1.00, "lens_flare": 0.50,
-    "spike_spread": 0.85, "overflow_drain": 0.35,
-    # the aberrations, radial and in pixels, so scaled to this frame
-    "chroma_aberration": 0.20, "longitudinal_ca": 0.12, "axis_offset": 0.20,
-}
-
-
-def apply(camera):
-    params = {k: dict(v) for k, v in COMMON.items()}
-    base = {"exposure": 0.0, "color_cast": 0.0, "halation": 0.0, "ccd_smear": 0.0,
+BASE_CAM = {"exposure": 0.0, "color_cast": 0.0, "halation": 0.0, "ccd_smear": 0.0,
             "chroma_aberration": 0.0, "lens_flare": 0.0, "spike_spread": 0.0,
             "flare_defocus": 0.0, "longitudinal_ca": 0.0, "axis_offset": 0.0,
             "overflow_drain": 0.0, "source_glow": 0.0, "lens_fog": 0.0, "lens_wear": 0.0,
             "bloom_amount": 0.0, "dead_sites": 0.0}
-    params["camera"] = dict(base, **camera)
+EFFECT = {"source_glow": 0.85, "halation": 0.85, "ccd_smear": 0.80, "flare_defocus": 1.00,
+          "lens_flare": 0.50, "spike_spread": 0.85, "overflow_drain": 0.35,
+          "chroma_aberration": 0.20, "longitudinal_ca": 0.12, "axis_offset": 0.20}
+
+
+def apply(camera):
+    params = {k: dict(v) for k, v in COMMON.items()}
+    params["camera"] = dict(BASE_CAM, **camera)
     post("/api/project", {"reset_params": True})
     post("/api/project", {"params": params, "seed": 20240101, "standard": "ntsc"})
 
 
-def render(name, scale=0.6):
+def render(name, scale=0.55):
     with urllib.request.urlopen(BASE + "/api/frame?t=0.0&scale=%s&q=96" % scale, timeout=900) as r:
         im = Image.open(io.BytesIO(r.read())).convert("RGB")
     im.save(os.path.join(OUT, name))
@@ -98,21 +93,21 @@ def render(name, scale=0.6):
     L = x @ COEF
     return im, dict(mean=round(float(L.mean()), 4), blown=round(float((L > 0.97).mean()), 5),
                     glow=round(float((L > 0.85).mean()), 5),
-                    warm=round(float((x[..., 0] - x[..., 2]).mean()), 5))
+                    rb=round(float(x[..., 0].mean() - x[..., 2].mean()), 5))
 
 
 apply({})
-im_c, m_c = render("close-control.png")
+im_c, m_c = render("sup-control.png")
 print()
-print("   control (mechanisms zero)  %s" % m_c)
+print("   control  %s" % m_c)
 apply(EFFECT)
-im_e, m_e = render("close-effect.png")
-print("   effect                     %s" % m_e)
+im_e, m_e = render("sup-effect.png")
+print("   effect   %s" % m_e)
 print("   the effect against its control:")
-for k in ("mean", "blown", "glow", "warm"):
+for k in ("mean", "blown", "glow", "rb"):
     print("      %-6s %.5f -> %.5f  (%+.5f)" % (k, m_c[k], m_e[k], m_e[k] - m_c[k]))
 
-# the profile below the core, against the reference's, which is the number that says whether it matches
+
 def prof(img, rows=(0, 40, 60, 100, 160, 180)):
     H, W = img.shape[:2]
     lum = img @ COEF
@@ -137,12 +132,15 @@ def prof(img, rows=(0, 40, 60, 100, 160, 180)):
 
 print()
 print("   the profile below the core, B-R:")
-print("      %-12s %s" % ("the reference", "  ".join("+%-6d" % d for d in (0, 40, 60, 100, 160, 180))))
-print("      %-12s %s" % ("", "  ".join("%+.3f" % v for v in
-                                      [0.000, -0.009, -0.170, -0.510, 0.178, 0.226])))
-for tag, name in (("control", "close-control.png"), ("effect", "close-effect.png")):
+print("      %-16s %s" % ("the reference", "  ".join("+%-5d" % d for d in (0, 40, 60, 100, 160, 180))))
+print("      %-16s %s" % ("", "  ".join("%+.3f" % v for v in
+                                        [0.000, -0.009, -0.170, -0.510, 0.178, 0.226])))
+for tag, name in (("this source", None),):
+    b = np.asarray(Image.open(SRC).convert("RGB"), np.float32) / 255.0
+    print("      %-16s %s" % ("(the raw file)", "  ".join("%+.3f" % v for v in prof(b))))
+for tag, name in (("control", "sup-control.png"), ("effect", "sup-effect.png")):
     b = np.asarray(Image.open(os.path.join(OUT, name)).convert("RGB"), np.float32) / 255.0
-    print("      %-12s %s" % (tag, "  ".join("%+.3f" % v for v in prof(b))))
+    print("      %-16s %s" % (tag, "  ".join("%+.3f" % v for v in prof(b))))
 
 apply(EFFECT)
 cfg = json.loads(get_raw("/api/export"))

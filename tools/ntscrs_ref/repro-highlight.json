@@ -1,7 +1,7 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-13T14:56:56",
+  "exported": "2026-10-13T15:00:47",
   "name": "新工程",
   "standard": "ntsc",
   "seed": 20240101,
@@ -9,17 +9,17 @@
   "environment": {},
   "keyframes": [],
   "unit_identities": {},
-  "source": "runs\\uploads\\raw_light_close.jpg",
+  "source": "runs\\uploads\\supplied.jpg",
   "source_info": {
-    "path": "runs\\uploads\\raw_light_close.jpg",
-    "width": 864,
-    "height": 864,
+    "path": "runs\\uploads\\supplied.jpg",
+    "width": 2048,
+    "height": 1536,
     "fps": 25.0,
     "frame_count": 1,
     "duration": 0.04,
     "has_audio": false,
     "codec": "mjpeg",
-    "aspect": 1.0
+    "aspect": 1.3333
   },
   "params": {
     "format": {
