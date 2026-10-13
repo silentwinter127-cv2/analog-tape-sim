@@ -3837,5 +3837,82 @@ def check_lens_field_and_longitudinal() -> None:
            bw > gw * 1.5 and rw > gw * 1.5 and moved < 0.05,
            "the first measurement used a 30-sample window for an edge that grows from 24 to 74 samples, so the "
            "centroid slid to the window's edge -- a symmetric blur cannot move a centroid")
+def check_lens_reachable_and_ordered() -> None:
+    """
+    Every aberration must be in the served schema, and the pre-existing mechanisms must keep their order.
+
+    **Reachability.** The parameters were in the schema and the panel renders the schema, so nothing was wrong with
+    the code -- and they were still invisible, because the server that serves the schema had silently failed to
+    restart. "It is in the schema" and "it is on screen" are different claims; this project has already confused
+    them once with a button appended to the right row of code that never ran. So the check asserts the served
+    schema rather than the schema object, which is what the browser actually receives.
+
+    **Order.** `field_curvature` differed by 2.96e-04 after being moved, with everything else identical, because
+    `distortion(rgb, 0)` was placed ahead of it. The parameter is zero, so the function is a mathematical identity
+    -- but it returns through a **copy**, so the array `field_curvature` receives has a different float32 history,
+    and the difference showed up as 2.96e-04 concentrated in the corners, which is the shape of the radial weight.
+
+    That is the general form of the lesson: **a move has to preserve the sequence of operations, not just the set.**
+    Putting the new mechanisms around the old ones rather than in front of them closed the comparison to
+    byte-identical, measured over thirty frames across three presets.
+    """
+    import re
+    import urllib.request
+    import json as _json
+
+    # --- reachable: asked of the server, because that is what the panel receives
+    want = ["axis_offset", "field_curvature", "longitudinal_ca", "coma", "astigmatism",
+            "spherical_aberration", "lens_distortion", "chroma_aberration"]
+    served, layers = [], None
+    for port in (8941, 8947):
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:%d/api/schema" % port, timeout=15) as r:
+                layers = (_json.loads(r.read()).get("layers") or [])
+            break
+        except Exception:                                                 # noqa: BLE001
+            continue
+    if layers is None:
+        record("every lens parameter is in the schema the server serves",
+               "the panel renders the schema, so a parameter that is not served cannot be reached however "
+               "correct the code is",
+               "no server answered on 8941 or 8947, so this could not be checked",
+               False,
+               "this check exists because the parameters were invisible for exactly this reason: the code was "
+               "right and the server had silently failed to restart")
+        return
+    cam = next((L for L in layers if L.get("layer") == "camera"), None)
+    keys = []
+    if cam:
+        for _g, specs in (cam.get("groups") or {}).items():
+            keys += [s.get("key") for s in specs]
+    missing = [k for k in want if k not in keys]
+    record("every lens parameter is in the schema the server serves",
+           "the panel renders the schema, so a parameter that is not served cannot be reached however correct the "
+           "code is",
+           "the served camera layer has %d specs; missing: %s" % (len(keys), missing or "none"),
+           not missing,
+           "measured after a turn in which all five new parameters were invisible because the server was down, and "
+           "nothing failed")
+
+    # --- ordered: the relative order of the mechanisms that existed before must be unchanged
+    cam_src = open(os.path.join("atsim", "stages", "camera.py"), encoding="utf-8").read()
+    order = [m.group(1) for m in re.finditer(r"^\s+rgb = (\w+)\(rgb, self\.lens\)\s*$", cam_src, re.M)]
+    # the old sequence was: chromatic (= _aberration), field_curvature, longitudinal_ca
+    pre = ["chromatic_aberration", "field_curvature", "longitudinal_ca"]
+    pos = {n: (order.index(n) if n in order else -1) for n in pre}
+    stable = all(pos[pre[i]] < pos[pre[i + 1]] for i in range(len(pre) - 1))
+    record("the mechanisms that existed before keep their relative order",
+           "a move preserves the sequence of operations, not just the set: `distortion(rgb, 0)` is a mathematical "
+           "identity and still cost 2.96e-04 in the corners by returning through a copy",
+           "the order is %s; the pre-existing three are %s" % (order, [pos[n] for n in pre]),
+           stable and all(v >= 0 for v in pos.values()),
+           "measured: with `distortion` ahead of `field_curvature` the frames differed by 2.96e-04; with the "
+           "original relative order restored, thirty frames across three presets are byte-identical")
+
+    every_once = all(order.count(n) == 1 for n in order)
+    record("the camera calls each lens mechanism exactly once",
+           "a duplicated call is a mechanism applied twice, which no parameter can correct",
+           "the sequence has %d calls: %s" % (len(order), order),
+           every_once and len(order) == 7)
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -633,13 +633,22 @@ class CameraStage(Stage):
         # field-dependent blurs, then the wavelength errors -- and the camera's own sharpening last,
         # because aperture correction is applied *after* the lens and sharpening first would undo the
         # corner softening that field curvature exists to leave visible.
+        # **The mechanisms that existed before keep their original relative order.**  `chromatic_aberration` is
+        # the old `_aberration` and `longitudinal_ca` was already here, so `field_curvature` stays between them
+        # exactly where it was.  The new mechanisms are placed around that sequence rather than in front of it:
+        # `distortion` first because it is the geometry of the glass and everything else is defined in the frame it
+        # produces, and `coma`, `astigmatism` and `spherical` after the field-dependent blur they belong with.
+        #
+        # Measured, putting `distortion` ahead of `field_curvature` cost 2.96e-04 in the corners even with
+        # `distortion` at zero -- it returns `rgb` through a copy, so the array `field_curvature` receives has a
+        # different float32 history.  A move has to preserve the *sequence*, not just the set.
         rgb = distortion(rgb, self.lens)
+        rgb = chromatic_aberration(rgb, self.lens)
         rgb = field_curvature(rgb, self.lens)
+        rgb = longitudinal_ca(rgb, self.lens)
         rgb = coma(rgb, self.lens)
         rgb = astigmatism(rgb, self.lens)
         rgb = spherical(rgb, self.lens)
-        rgb = chromatic_aberration(rgb, self.lens)
-        rgb = longitudinal_ca(rgb, self.lens)
         rgb = self._sharpen(rgb)
         if getattr(self, "_defocus", 0.0) > 1e-4:
             # a Gaussian of radius growing with defocus.  The factor is chosen so that full defocus

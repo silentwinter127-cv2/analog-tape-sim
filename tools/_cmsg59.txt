@@ -1,0 +1,39 @@
+answer why the lens parameters were invisible, close the refactor's proof, and guard both
+
+**They were invisible because the servers were down.** The parameters were in the schema, the panel renders the
+schema, and the schema the server serves has all eight -- the restart at the end of the previous turn had silently
+failed, so nothing was being served at all. Verified in the running page rather than in the code: opening the camera
+tab and reading the DOM found all eight labels, `missing: []`.
+
+**"It is in the schema" and "it is on screen" are different claims**, and this project has confused them once before
+with a button appended to the right row of code that never ran. There is a check now that asks **the server** for
+the schema and asserts every aberration is in it, so a dead server fails a check instead of quietly hiding five
+parameters. It reports plainly when no server answers, rather than passing.
+
+**The refactor's proof is closed, and the cause was the calling sequence.** `field_curvature` differed by 2.96e-04,
+concentrated in the corners, and the weight expression was not the cause -- changing it to match the original
+character for character moved no hash at all. The cause was this:
+
+    old order    chromatic (= the old _aberration) -> field_curvature -> longitudinal_ca
+    new order    distortion -> field_curvature -> coma -> ... -> longitudinal_ca
+
+`distortion(rgb, 0)` is a mathematical identity and it **returns through a copy**, so the array `field_curvature`
+received had a different float32 history. Measured at `field_curvature = 0`, where the copy never happens, the two
+trees were already byte-identical -- which is what pointed at the sequence rather than the arithmetic.
+
+**A move has to preserve the sequence of operations, not just the set of them.** The new mechanisms are now placed
+around the pre-existing three rather than in front of them, and the comparison closes:
+
+    field_curvature 0.0   max |diff| 0.000000e+00
+    field_curvature 0.5   max |diff| 0.000000e+00
+    thirty frames across three presets   every frame byte-identical
+
+A second check asserts the relative order of the three mechanisms that existed before, because the new ones have to
+go somewhere and their position relative to each other is a free choice -- but the old ones' position relative to
+one another is not.
+
+**And the proof is now repeatable.** The pre-refactor `camera.py` was deleted with the scratch files last time, which
+made the comparison something that could only be run once; it lives in `tools/camera_prerefactor.py` and the
+comparison in `tools/compare_frames.py`.
+
+156 checks pass, selftest clean. The new mechanisms are the next step and are not started.
