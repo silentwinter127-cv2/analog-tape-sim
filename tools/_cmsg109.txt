@@ -1,0 +1,55 @@
+exclude the blowout as the cause too, and record where this line of enquiry actually stands
+
+**The last two candidates, both tested and both excluded.**
+
+**The roll-off clamp.** `CameraStage._roll_off` ends with `comp = np.where(lin >= white, 1.0, comp)` -- a **per-channel**
+clamp that pins each of R, G and B independently to exactly 1.0 above the white point, which for a pixel whose channels
+all exceed it gives a channel difference of **exactly zero**. That is the arithmetic behind the symptom that the pole's
+B-R reads `+0.0000` in every sweep, and it was the best candidate yet. **It is not the cause**: raising
+`dynamic_range` to **16** puts the white point at **2.0**, so the clamp can bind only above twice white, and the excess
+stays inverted at **-0.0513** with the band still **9.4%** fully white.
+
+**And the blowout itself.** The pole's band in the render is **10.8% fully white** against the source's **0.00001%**, so
+the picture is genuinely being driven past white before any clamp sees it -- an exposure problem, and the fix looked
+straightforward. It is not:
+
+    exposure    mean     band fully white   frame fully white   EXCESS
+    0.00        0.1251   0.10811            0.03364             -0.0319
+    -0.30       0.0825   0.05924            0.01285             -0.0443
+    -0.60       0.0637   0.03978            0.00973             -0.0092
+    **-0.90     0.0332   0.00000            0.00000             -0.0066**
+    -1.20       0.0210   0.00000            0.00000             -0.0863
+
+**The blowout is gone at `exposure = -0.90` -- not a single fully-white pixel in the frame -- and the pole's excess is
+still negative.** So the saturation and the inversion are **coincident, not causally linked**, and by that exposure the
+picture is far darker than the source (mean 0.033 against 0.189), so it is not a usable configuration either. **Both
+candidates are excluded, and this was my best remaining hypothesis.**
+
+**Where the line of enquiry actually stands, as a closed set.**
+
+The pole's excess is **+0.0363** on the source and **negative in every render**, and it has now been tested against:
+
+    the chroma bandwidth        both stages, full range          no effect
+    the crosstalk terms         format and player, full range    no effect
+    display saturation          0.0 to 1.0                       no effect
+    the tone curve              brightness x contrast, 5x5 grid  cannot reach the source at any pair
+    chroma_gain                 0.0 (chroma removed)             the inversion survives
+    the codec                   component vs composite           no effect
+    the ten light mechanisms    each over its range              no effect on the sign
+    color_temp, crt_age, convergence, mask_depth                 no effect (the last three: no effect at all)
+    the roll-off clamp          dynamic_range to 16              no effect
+    exposure                    -2.5 to 0.0                      cannot reach the source while staying usable
+
+**No parameter in the model reproduces the reference's pole**, and the search has covered every mechanism that could
+plausibly act on it. **The honest statement is that this is not a tuning problem and the cause has not been found.**
+
+**And a note on how this went, because it is the substance of the turn.** Three instruments produced confident numbers
+here and two were wrong; the fix for the second was itself wrong; and the last two hypotheses -- the clamp and the
+blowout -- were each the best available explanation and each refuted by measurement. **The one practice that
+consistently worked was checking against a case with a known answer**, which found the head-switching band, the
+`source_glow` magnitude, and the detector's failure, and which was skipped at the start of this particular line of
+enquiry. `tools/pole_control.py` is the artefact of that practice and is kept.
+
+**What is unchanged and still true**: the reproduction renders cleanly, the raster is off, `source_glow` is calibrated
+against a designed reference, and the pole's difference from the reference is **measured** rather than suspected.
+163 checks pass, selftest clean.
