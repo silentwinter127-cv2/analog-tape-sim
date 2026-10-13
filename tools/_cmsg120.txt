@@ -1,0 +1,54 @@
+verify the night-vision controls in a real browser, and find one remaining mismatch
+
+**The controls are confirmed working in the running GUI**, driven through Chrome's debugging protocol rather than read
+from the source -- because the source being correct is not evidence that the page renders it, which is the mistake an
+earlier probe made in this project when it asked about a panel that did not exist.
+
+    the control, as the page actually renders it:
+      tag     SELECT
+      class   psel
+      options 0 = 关
+              1 = NightShot（红外 + 绿单色）
+              2 = Super NightShot（帧积累）
+              3 = Color Slow Shutter（慢快门保留彩色）
+      camera layer: 65 parameter rows, no page errors
+
+**And the first probe's own mistake is worth recording, because it produced a false negative.** It reported "no
+night-vision select" while the control was working: **the page opens on the `format` layer**, so the camera panel's rows
+had never been built. Switching the layer is what builds them. It was found by printing the app's state -- `S.layer`
+was `"format"` -- rather than by reasoning about the DOM.
+
+**One mismatch remains, and it is measured.** Driving the selector to mode 3 leaves the **engine's own state** reporting
+`nv_green_mix = 1` while the **renderer uses 0**, because the mode's settings are applied inside the camera stage where
+the page cannot see them:
+
+    mode 0 -> {"nv_mode":0,"nv_green_mix":1,"nv_accumulate":8}
+    mode 1 -> {"nv_mode":1,"nv_green_mix":1,"nv_accumulate":8}
+    mode 3 -> {"nv_mode":3,"nv_green_mix":1,"nv_accumulate":8}
+
+**So the render is correct and the panel's readout is not.** For mode 3 the picture does keep its colour -- the API
+verification measured a G share of 0.3349 against NightShot's 0.3827 -- but the `绿单色显示` slider still displays 1,
+and a user moving it would be editing a parameter the mode overrides. **Two sources of truth for one picture**, which is
+the fault this project keeps meeting in other forms.
+
+**The fix was attempted and abandoned for this round, deliberately.** It belongs in `app.js`: the mode's coupled
+parameters should be set in the same request, so `S.params`, the panel and the renderer agree. **Four attempts failed**,
+each for an identifiable reason:
+
+  * two literal replacements did not match, because the select branch's handler sits at **six** spaces of indentation
+    while the slider branch's sits at four -- so an `OLD` string copied from one never matched the other. The first
+    attempt threw *before writing*, which is why the file was untouched and the source never diverged;
+  * a regex attempt failed because **`fmt(val)` and `fmt(nv)` contain unescaped parentheses**, which a regular
+    expression reads as grouping rather than as literal characters -- so the pattern could never match the text it was
+    written from;
+  * and the diagnostic that finally identified this also **ruled out the alternative explanation**: the file on disk and
+    the copy the server serves are **byte-for-byte identical** (23603 chars), so a stale file was never the cause.
+
+**Rather than keep spending on it, the state is recorded**: the mechanism, the schema, the render path, the calibration,
+the dropdown and the server-side mode resolution are all done and verified, and **what is left is a display-consistency
+fix in one file** with the cause and the two traps (indentation, and escaping source punctuation inside a regex) written
+down. A cleaner route than patching the handler may be to have the panel re-read the server's resolved parameters after
+a mode change, which removes the need for a second copy of the preset table on the client at all.
+
+163 checks pass, selftest clean, 265 commits. `tools/cdp_nvdrive.js` is kept: it is what verified the controls, and it
+prints the app's own state rather than assuming it.
