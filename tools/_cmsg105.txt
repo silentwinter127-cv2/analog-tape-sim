@@ -1,0 +1,46 @@
+attribute the inverted pole to the display stage, and show it is not the saturation
+
+**The sweep that found it.** Ten light mechanisms were varied over their ranges with no change of sign, so the candidates
+were the mechanisms that act on chroma **regardless of brightness**, and one of them is responsible:
+
+    the source                         pole +0.0062  surround -0.0301  EXCESS +0.0363
+    the reproduction                   pole +0.0000  surround +0.0319  EXCESS -0.0319   inverted
+    chroma bandwidth max / min         -0.0319 / -0.0319    no effect
+    crosstalk max / zero               -0.0319 / -0.0319    no effect
+    display saturation 0.0 / 1.0       -0.0319 / -0.0319    **no effect**
+    **display disabled**               pole -0.0578  surround -0.0618  EXCESS **+0.0040**   sign restored
+    the codec switched off             -0.0319               no effect
+    every light mechanism at zero      -0.0319               no effect
+
+**So the inversion is the display stage's**, and it is not the saturation: turning saturation from 0.0 to 1.0 leaves
+every figure identical to four decimals, which is itself a finding -- **the parameter that scales chroma does not move a
+measurement that is entirely about chroma**, so something else in the display is dominating it.
+
+**And the mechanism is visible in the two hues.** The display moves the pole from -0.0578 to 0.0000 and the **surround
+from -0.0618 to +0.0319** -- i.e. it shifts the **dark and mid-tone** region **+0.062 in B-R** while shifting the
+brighter pole by **+0.058**. Both are lifted, but the surround is lifted slightly more, and since the surround starts
+below the pole the two **cross over**. So the display is adding blue to the picture in a **brightness-dependent** way,
+and the amount is just enough to put the wall above the pole.
+
+**That is a narrow and testable statement about the display stage**, and it is much smaller than the question that was
+being asked before: **not "which of ten mechanisms loses the pole's blue" but "which term in the display adds
+brightness-dependent blue, and why does `saturation` not govern it".** The candidates are the tube's own colour terms
+-- convergence, `crt_age`, the shadow mask, the colour temperature of the display, and the tone curve -- none of which
+were neutralised in this run **except through `enabled = 0`**, which removes all of them at once.
+
+**What is established, precisely:**
+
+  * the fault is in the **display stage**, established by disabling it and nothing else restoring the sign;
+  * it is **not** the chroma bandwidth, the crosstalk, the codec, any of the ten light mechanisms, or the saturation;
+  * and it manifests as a **brightness-dependent addition of blue**, +0.062 on the dark surround against +0.058 on the
+    brighter pole, which is enough to put the wall's hue above the pole's.
+
+**The next step is one measurement, not a search**: neutralise the display's remaining terms **individually** -- the
+output colour temperature, the tone curve, `convergence`, `crt_age`, the mask -- and find which one carries the
+brightness-dependent blue. The instrument is validated and the geometry is fixed, so any figure it produces from here
+is evidence.
+
+163 checks pass, selftest clean. Three mechanisms were added this session (`source_glow`,
+`halation_source_colour`, `shadow_depth`), all inert at their defaults and the second verified bit-identical.
+**`repro-highlight.json` produces a clean render whose pole is measurably unlike the reference's, and the display's
+brightness-dependent blue is the identified cause.**
