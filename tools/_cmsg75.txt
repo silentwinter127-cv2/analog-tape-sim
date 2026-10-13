@@ -1,0 +1,49 @@
+reproduce the highlight effect with a settings file, and find the artefact that blocks it
+
+**What was delivered.** A settings file, `tools/ntscrs_ref/repro-highlight.json`, holding the state that produces the
+effect: **26 parameters across 4 layers**, with `kind=atsim.config`, `version=1`, a fixed seed and the NTSC
+standard, so a second person imports it and gets the same state rather than a description of one. It comes with the
+render it produces and, more usefully, with a **control** rendered on the identical path with every highlight
+mechanism at zero.
+
+**And the effect is not reproduced, which the control is what proves.**
+
+    row-to-row R-B variation   the source 0.00100
+                               the control 0.05217     every highlight mechanism at zero
+                               the effect 0.05192      the mechanisms on
+
+    blown pixels               the source 7.9%
+                               the control 23.7%
+                               the effect 20.2%
+
+**The banding that has made every comparison unreadable is present in the control.** It is not from `halation`, nor
+`ccd_smear`, nor `flare_defocus`, nor the two chromatic aberrations, nor `overflow_drain` -- all of them are zero in
+that render, and the stripes are still there. **A signal path with nothing switched on moves the row-to-row chroma
+variation by a factor of fifty** on a source that has essentially none, and it produces three times the blown area.
+So the artefacts are an order of magnitude larger than the effects, which is the concrete reason the last several
+attempts all failed: the mechanisms were being tuned underneath something bigger that was never measured.
+
+**What the same investigation did establish, and it is a real finding:** of the display's contribution to the drift
+on a clean source, **almost all of it is one parameter** --
+
+    display off                 0.0517
+    display gamma = 1.0         0.1101
+    everything else default     0.2642
+
+**the default gamma of 1.5 accounts for more than half of it.** The reproduction therefore sets `gamma = 1.0`, which
+was measured rather than assumed, and it is why the file carries that value.
+
+**What is not done, and the order it should be done in.**
+
+  * **The banding in the neutral path.** This is the blocker: until it is attributed, no highlight effect can be
+    shown or judged, because the noise is larger than the signal. It is now narrowed to the signal path rather than
+    to any mechanism, and the tool that found the chroma-filter fault -- `tools/channel_drift.py`, which reports the
+    channel means stage by stage -- is the one to use on it.
+  * **`display.gamma`'s lower half is dead.** Line 404 of `display.py` is `g = max(1.0, self.gamma)`, so **every
+    gamma below 1.0 is silently replaced by 1.0**. That is the fault noted at the end of the previous turn and it is
+    still there; it is a one-line fix but it needs its own measurement, on the ramp, because the ramp is what shows a
+    gamma curve.
+  * **and only then** the effects that were asked for.
+
+**The honest state:** a settings file that reproduces a state, a control that shows the state is not yet the effect,
+and a measurement that says what is in the way.
