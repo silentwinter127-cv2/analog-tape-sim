@@ -1,7 +1,7 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-13T15:00:47",
+  "exported": "2026-10-13T15:06:20",
   "name": "新工程",
   "standard": "ntsc",
   "seed": 20240101,
@@ -45,20 +45,31 @@
     },
     "display": {
       "gamma": 1.0,
-      "saturation": 0.62
+      "saturation": 0.62,
+      "scanlines": 0.0,
+      "mask_depth": 0.0,
+      "interlace_flicker": 0.0,
+      "scan_pitch": 0.0,
+      "spot_sigma": 0.0,
+      "defocus": 0.0,
+      "vignette": 0.0,
+      "reflection": 0.0,
+      "bloom": 0.0,
+      "geometry_warp": 0.0,
+      "crt_age": 0.0
     },
     "camera": {
-      "halation": 0.85,
-      "ccd_smear": 0.8,
+      "halation": 0.18,
+      "ccd_smear": 0.18,
       "chroma_aberration": 0.2,
-      "lens_flare": 0.5,
-      "spike_spread": 0.85,
-      "flare_defocus": 1.0,
+      "lens_flare": 0.12,
+      "spike_spread": 0.18,
+      "flare_defocus": 0.3,
       "longitudinal_ca": 0.12,
       "axis_offset": 0.2,
-      "overflow_drain": 0.35,
-      "source_glow": 0.85
+      "overflow_drain": 0.7,
+      "source_glow": 0.02
     }
   },
-  "param_count": 25
+  "param_count": 36
 }

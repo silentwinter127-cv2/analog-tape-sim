@@ -1,0 +1,56 @@
+turn the CRT raster off, and find that it had been hiding how strong the light group was
+
+**The raster was not a decoration, it was 93% of what was being measured.** With the tube's raster in place the frame's
+row-to-row variation is **0.04268**; with the raster group at zero it is **0.00141**. So a scanline pattern was sitting
+in the same statistic used to read the reference's profile -- the warm and cool regions below a core are **row-by-row**
+measurements -- and competing with it. **That is why several comparisons in this work were hard to read, and the honest
+fix is to remove it from the reproduction rather than to read past it.**
+
+**And removing it exposed that the light group was far too strong.** The tube had been darkening the picture, so the
+mechanisms looked proportionate: the blown fraction read 6.8%. With the raster gone the true figures appear --
+**1.034% blown with every mechanism at zero against 13.0% with them on.**
+
+**Isolating that took two steps, and the first one was a wrong guess.** Each mechanism was set alone at the value the
+reproduction used:
+
+    source_glow 0.12      0.01044 -> 0.09522     <- the whole excess
+    halation 0.18         0.01044 -> 0.01167
+    ccd_smear 0.18        0.01044 -> 0.01048
+    flare_defocus 0.30    0.01044 -> 0.01044
+    lens_flare 0.12       0.01044 -> 0.01067
+    spike_spread 0.18     0.01044 -> 0.01044
+    overflow_drain 0.70   0.01044 -> 0.00977
+
+**`source_glow` is the only contributor** -- and it is structural, not a bad value: **it adds a blurred copy of the
+picture's bright regions back into the picture, so its effect is proportional to the area of that region.** A lamp of a
+few hundred pixels needs a large coefficient for a visible halo; a fixture filling a fifth of the frame has so much
+area that even 0.12 saturates a further tenth of the picture. **The same number therefore means different things on
+different subjects.** Calibrated against the source's own near field, 0.12 -> 0.02 moves it from **+0.257** to
+**+0.158**, toward the raw photograph's own **+0.170**, while the blown area falls from 9.3% to **5.1%**.
+
+**And `overflow_drain` was suspected of acting backwards, and is not.** Its blown fraction *falls* as it rises
+(0.00977 at 0.70 against 0.01044 at zero) and the glow fraction falls with it -- which is what an anti-blooming drain
+does. That suspicion is withdrawn, and it was mine.
+
+**The final reproduction**, in `tools/ntscrs_ref/repro-highlight.json`, 36 parameters across 6 layers:
+
+    display    gamma 1.0, saturation 0.62, **and the whole raster group at zero**
+               (scanlines, mask_depth, interlace_flicker, scan_pitch, spot_sigma, defocus,
+                vignette, reflection, bloom, geometry_warp, overscan, curvature, breathing,
+                crt_age, convergence, crt_moisture, crt_corrosion)
+    camera     source_glow 0.02, halation 0.18, ccd_smear 0.18, flare_defocus 0.30,
+               lens_flare 0.12, spike_spread 0.18, overflow_drain 0.70,
+               chroma_aberration 0.20, longitudinal_ca 0.12, axis_offset 0.20
+    codec      dv_enabled 1.0        tape  head_switching 0.0
+    format     chroma_bandwidth 2.0, luma 5.0, crosstalk 0
+    player     chroma_bandwidth 2.0, luma 5.0, crosstalk 0
+
+**Measured against its control:** blown 1.03% -> 5.12%, glow 2.80% -> 6.85%, near-field B-R **+0.257 -> +0.158**
+against the raw photograph's **+0.170**, so the halo lands very close to the source's own colour rather than past it.
+
+**One honest note on the result**: the fixture is a cool white LED, and `source_glow` carries the picture's own colour,
+so the halo it produces here is **neutral-to-cool** -- which is the correct behaviour for this subject and not the
+reference's warm orange. The warm case needs a warm source.
+
+The model gained one mechanism this session (`source_glow`) and that is the only code change; everything else,
+including the raster being off, is the settings file. 163 checks pass.
