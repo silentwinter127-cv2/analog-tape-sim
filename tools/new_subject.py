@@ -1,23 +1,23 @@
 """
-The decisive experiment: run the reference photograph itself through the chain and see whether its pole inverts too.
+Measure the new photograph's pole, which is the property the last experiment identified as decisive.
 
-**Why this separates the two possibilities cleanly.** The pole's excess is **+0.0363** on the reference scene
-(`refscene.png`) and **negative in every render**, across eleven excluded candidates. Two explanations remain and they
-predict different outcomes here:
+**What the previous experiment established.** The chain does **not** invert poles: the reference photograph's pole keeps
+an excess of **+0.2016** through it, while the reproduction's photograph has only **+0.0363** to begin with and the
+chain's own additions shift the **surround** by about **0.06** -- larger than the whole difference it was supposed to
+preserve. **A difference smaller than the perturbation cannot survive it**, so the remedy is material whose pole
+carries a **larger colour contrast against its own surround.**
 
-  * **if the reference photograph's own pole also inverts**, then the chain does this to poles of this kind as a general
-    behaviour, and the fault is in the chain's handling of a bright thin structure against a darker surround;
-  * **if it does not invert**, then the chain is faithful and the difference lies **between the two pictures** -- their
-    exposure, the pole's brightness relative to its surround, or how close to white the pole sits.
+**And this photograph looks like it does.** A multiple-bulb chandelier whose bulbs read blue-white against a dark sky,
+on a pole, with a **warm orange building** behind -- which is a much larger pole-to-surround colour separation than the
+previous subject's blank blue-grey wall.
 
-**And there is a specific reason to expect the second.** The render's pole is **10.8% fully white** and the source's is
-essentially never white, so if the reference photograph's pole likewise stays below saturation through the chain, the
-mechanism at work is the chain pushing this particular subject past white -- not a general inversion.
+**Measured rather than assumed**, with the detector that passed the positive control: its pole is located, its width and
+row count reported, and its **excess** compared against the two figures already known -- the previous photograph's
+**+0.0363** and the reference's **+0.2142**. The instrument is run bounded, and it returns "not found" rather than
+inventing a structure, so a figure it produces here is evidence.
 
-**The measurement is the same validated one**, with the geometry taken from **each picture's own pole**, since the
-reference photograph frames its lamp differently and the fixed columns would not land on it. That means the pole
-detector runs on both -- and it has been through the positive control, so its output is evidence: it is fooled by a
-bright edge if unconstrained, so the search is bounded, and it returns "not found" rather than inventing a structure.
+**And then the same experiment as last time**: the photograph through the chain, to see whether the larger difference
+survives where the smaller one did not. **That is the test of the diagnosis**, not just of the picture.
 """
 from __future__ import annotations
 
@@ -37,9 +37,8 @@ from atsim.render.renderer import Renderer                                   # n
 OUT = os.path.join(ROOT, "tools", "ntscrs_ref")
 COEF = np.array([0.299, 0.587, 0.114], np.float32)
 BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
-
-REF_PHOTO = (r"C:\Users\Administrator\.dsh\attachments\v1\objects\03"
-             r"\039d9af408f07923375d9fae0a7fb6839668f20b2c0508face5b0a2a14b56eb9")
+NEW = (r"C:\Users\Administrator\.dsh\attachments\v1\objects\1e"
+       r"\1e772675f0c138e382f524eba8e0f9a91ee8b04e9622b001a611521f3048e2c1")
 
 
 class Still:
@@ -79,12 +78,6 @@ def render(pic, cam=None):
 
 
 def find_pole(img, min_rows=30, window=None, min_score=0.01):
-    """
-    The pole: the column band standing above its horizontal neighbours **consistently down the frame**.
-
-    Bounded by `window` when given, because the positive control showed the unconstrained rule is defeated by a bright
-    vertical edge. Returns None when no band holds up, so a frame with no pole is reported rather than measured.
-    """
     lum = img @ COEF
     Hh, Ww = lum.shape
     k = max(5, Hh // 40)
@@ -98,10 +91,7 @@ def find_pole(img, min_rows=30, window=None, min_score=0.01):
         return None
     wide = np.apply_along_axis(lambda r: np.convolve(r, np.ones(41) / 41, mode="same"), 1, band)
     score = (band - wide).mean(axis=0)
-    if window is None:
-        lo, hi = max(0, cx - Ww // 3), min(Ww, cx + Ww // 3)
-    else:
-        lo, hi = window
+    lo, hi = window if window else (max(0, cx - Ww // 3), min(Ww, cx + Ww // 3))
     j = lo + int(np.argmax(score[lo:hi]))
     if score[j] <= min_score:
         return None
@@ -119,7 +109,7 @@ def find_pole(img, min_rows=30, window=None, min_score=0.01):
     if keep.sum() < min_rows:
         return None
     return dict(start=start, left=int(left), right=int(right), c0=int(c0), c1=int(c1),
-                d0=int(d0), d1=int(d1), keep=keep, width=int(right - left + 1))
+                d0=int(d0), d1=int(d1), keep=keep, width=int(right - left + 1), cx=cx)
 
 
 def measure(img, window=None):
@@ -135,55 +125,58 @@ def measure(img, window=None):
         img[q, r["c0"]:r["c1"], 2] - img[q, r["c0"]:r["c1"], 0],
         img[q, r["d0"]:r["d1"], 2] - img[q, r["d0"]:r["d1"], 0]]).mean()) for q in sel]))
     return dict(band=(r["left"], r["right"]), width=r["width"], pole=ph, surround=sh,
-                excess=ph - sh, n=int(len(sel)),
+                excess=ph - sh, n=int(len(sel)), cx=int(r["cx"]),
                 band_white=float(np.all(img[rows][:, r["left"]:r["right"] + 1] >= 0.9999,
                                         axis=-1).mean()),
                 frame_white=float(np.all(img >= 0.9999, axis=-1).mean()))
 
 
-ref = np.asarray(Image.open(REF_PHOTO).convert("RGB"), np.float32) / 255.0
-print("   the reference PHOTOGRAPH: %dx%d, mean luma %.4f, fully white %.5f"
-      % (ref.shape[1], ref.shape[0], float((ref @ COEF).mean()),
-         float(np.all(ref >= 0.9999, axis=-1).mean())))
-q0 = measure(ref)
+pic = np.asarray(Image.open(NEW).convert("RGB"), np.float32) / 255.0
+sl = pic @ COEF
+print("   the new photograph: %dx%d, mean luma %.4f, blown(>0.97) %.5f, fully white %.5f, R-B %+.4f"
+      % (pic.shape[1], pic.shape[0], float(sl.mean()), float((sl > 0.97).mean()),
+         float(np.all(pic >= 0.9999, axis=-1).mean()),
+         float(pic[..., 0].mean() - pic[..., 2].mean())))
+
+q0 = measure(pic)
 if q0 is None:
-    print("   no pole found on the photograph itself -- nothing to compare")
+    print("   no pole found -- nothing to measure")
     raise SystemExit(1)
+print()
 print("   its pole, located on itself:  band %d..%d (%d px), %d rows"
       % (q0["band"][0], q0["band"][1], q0["width"], q0["n"]))
 print("      pole %+.4f, surround %+.4f, EXCESS %+.4f" % (q0["pole"], q0["surround"], q0["excess"]))
+
 print()
+print("   THE THREE SUBJECTS SIDE BY SIDE -- the quantity the diagnosis says matters:")
+print("   %-34s %-11s %-11s %s" % ("photograph", "pole", "surround", "EXCESS"))
+print("   %-34s %-+11.4f %-+11.4f %+.4f" % ("refscene.png (the earlier one)", 0.0062, -0.0301, 0.0363))
+print("   %-34s %-+11.4f %-+11.4f %+.4f" % ("the reference photograph", 0.1049, -0.1093, 0.2142))
+print("   %-34s %-+11.4f %-+11.4f %+.4f" % ("this new one", q0["pole"], q0["surround"], q0["excess"]))
 
-# the geometry from the photograph's own pole, so the render is measured on the same structure
 L, R2 = q0["band"]
-WIN = (max(0, L - 40), min(ref.shape[1], R2 + 40))
-
-print("   THE EXPERIMENT: the reference photograph through the chain, measured on its own pole geometry")
-print("   %-24s %-11s %-11s %-11s %-12s %s"
+WIN = (max(0, L - 40), min(pic.shape[1], R2 + 40))
+print()
+print("   AND THE TEST OF THE DIAGNOSIS -- does the larger difference survive the chain?")
+print("   %-30s %-11s %-11s %-11s %-12s %s"
       % ("", "pole", "surround", "EXCESS", "band white", "sign"))
-print("   %-24s %-+11.4f %-+11.4f %-+11.4f %-12.5f %s"
+print("   %-30s %-+11.4f %-+11.4f %-+11.4f %-12.5f %s"
       % ("the photograph", q0["pole"], q0["surround"], q0["excess"], q0["band_white"],
          "cooler" if q0["excess"] > 0 else "warmer"))
-
 for label, cam in (("through the chain", {}),
+                   ("chain, exposure -0.6", {"exposure": -0.6}),
                    ("chain, light mechanisms at zero",
                     {k: 0.0 for k in ("halation", "ccd_smear", "flare_defocus", "lens_flare",
                                       "spike_spread", "overflow_drain", "chroma_aberration",
-                                      "longitudinal_ca", "axis_offset", "source_glow")}),
-                   ("chain, exposure -0.6", {"exposure": -0.6})):
-    out = render(ref, cam)
+                                      "longitudinal_ca", "axis_offset", "source_glow")})):
+    out = render(pic, cam)
     q = measure(out, window=WIN)
     if q is None:
-        print("   %-24s not found (no pole stands out in the render)" % label)
+        print("   %-30s not found" % label)
         continue
-    print("   %-24s %-+11.4f %-+11.4f %-+11.4f %-12.5f %s"
+    print("   %-30s %-+11.4f %-+11.4f %-+11.4f %-12.5f %s"
           % (label, q["pole"], q["surround"], q["excess"], q["band_white"],
-             ("cooler" if q["excess"] > 0 else "WARMER -- INVERTED")))
-    print("   %-24s (band %d..%d, %d px, %d rows)"
-          % ("", q["band"][0], q["band"][1], q["width"], q["n"]))
-
+             "COOLER -- the difference survived" if q["excess"] > 0 else "warmer -- inverted"))
 print()
-print("   the two outcomes and what each means:")
-print("      if the photograph's pole inverts too -> the chain does this to poles generally;")
-print("      if it stays cooler                     -> the chain is faithful and the difference is between the")
-print("                                                two pictures -- their exposure and how near white the pole is.")
+print("   the diagnosis predicts: a pole whose source excess is near the reference's 0.2142 keeps its sign,")
+print("   and the earlier photograph's 0.0363 -- smaller than the chain's own ~0.06 shift -- does not.")
