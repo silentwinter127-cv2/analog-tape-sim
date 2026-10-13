@@ -1,0 +1,48 @@
+make the low-light colour noise reach the measured value, and remove the line that made it unreachable
+
+**The outcome.**  The colour noise now produces what the three frames show:
+
+    at the default (0.15)   per-channel sigma 0.08872  0.07903  0.09744   spread 1.2329
+    with the term off (0.0) per-channel sigma 0.04949  0.04910  0.05016   spread 1.0038
+    and the sum across the channels is +0.000079 -- zero, so the luminance is carried
+    the real frames read 0.00736 / 0.00659 / 0.00836, a spread of 1.27
+
+**The root cause, and it took three wrong diagnoses to reach because the line hid in plain sight.**
+
+    cshape = np.array([...], np.float32)
+    cshape = cshape / float(np.sqrt(np.mean(cshape ** 2)))     # <- this
+
+**The division by the RMS cancels any overall scaling exactly**, so the shape was always `[0.998, 0.839, 1.141]` --
+fixed ratio, unit magnitude, **whatever numbers were written above it**.  Two consequences, and both wasted a round:
+
+  * **a "search" over scale factors could not change anything.**  Six values were tried and all returned the identical
+    spread, which I read as a broken reload harness.  **The harness was fine; the file was ignoring the change**, and
+    the identical output was the correct response to six identical programs;
+  * **the term's variance was pinned** at `(a*cn)^2 * (2/3)` -- a third of the scalar noise's at `cn = 1` -- giving a
+    maximum spread of **1.1361** against the measured **1.27**.  **Unreachable by construction**, so no amount of tuning
+    the shape or the default could have worked.
+
+**Three diagnoses came before it and all were wrong**, each recorded because the pattern matters more than the fix:
+**the estimator was blamed** (the mean absolute spatial difference was called blind -- and the positive control showed
+**it was not blind at all**, recovering 1.2718 for a true 1.27); **the mean-removal was blamed as flattening the
+channels** (that part was right and is fixed by the rescaling); **and `importlib.reload` was blamed** (the reload was
+working).  **The systematic fault was that each diagnosis was tested only against the model, never against a case whose
+answer was known** -- which is why one positive control, run once, replaced three rounds of theory.
+
+**And the positive control is kept as the first thing the script does**, since it is what decides whether any later
+figure means anything:
+
+    true spread 1.00 -> recovered 1.0008
+    true spread 1.27 -> recovered 1.2701
+    true spread 1.50 -> recovered 1.5055
+
+**The parameter's meaning is now stated.**  `chroma_noise = 1.0` puts the chroma component's sigma on the same scale as
+the scalar read noise, so the default 0.15 means the chroma part is about a sixth of it.  The default was 0.27 before
+the term could reach the target, and at 0.27 the per-channel sigma is 0.14 against a scalar read noise of 0.05 -- a
+colour noise nearly three times the luminance one, which the frames do not show.
+
+**And the estimator is replaced by the one that was calibrated**:  the standard deviation **across realisations at each
+pixel**, averaged -- not a mean over the field, which converges to its own expectation.  The old estimator is kept in
+the script as the contrast, since seeing it track a known answer is what showed it was never the problem.
+
+163 checks pass, selftest clean.

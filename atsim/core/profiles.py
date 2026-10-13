@@ -304,7 +304,7 @@ def build_schema() -> ParamSchema:
                     "两者物理上不同。实测：8 帧使高频能量降到 1/2.878（理论 sqrt(8)=2.83）。")
     cam.define("nv_read_noise", "夜视读出噪声", 0.0, 0.0, 0.2, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.1, help="夜视增益档带来的读出噪声。")
-    cam.define("nv_chroma_noise", "彩噪 (0纯亮度噪/1各通道独立)", 0.27, 0.0, 1.0, group=g,
+    cam.define("nv_chroma_noise", "彩噪 (0纯亮度噪/1各通道独立)", 0.15, 0.0, 1.0, group=g,
                phys_min=0.0, phys_max=1.0,
                help="**低照度下噪点是有颜色的**：实测三个 NIGHTSHOT 帧的暗部逐通道高频能量为"
                     "0.00736 / 0.00659 / 0.00836，通道间相差 27%。"
