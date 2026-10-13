@@ -40,30 +40,48 @@
 
 ## 下一步动作（具体到文件）
 
-**相机阶段那 0.785 已定位到 `atsim/stages/camera.py:380` 的 `_roll_off()`——高光肩部曲线。**
+**相机阶段【不是】压缩，是放大 —— 上一版这里记错了。** 干净配置（schema 默认，`dynamic_range` **不碰**，保持 8.0）
+下的实测：
 
+| 阶段 | 斜坡 | 分场 | 说明 |
+|---|---|---|---|
+| 源 | 1.000 | 1.000 | 斜坡自身对比度 0.2896，分场 0.2500 |
+| `camera` | **1.082** | **1.167** | **S 曲线：两端收、中间放 → 提高对比度** |
+| `format`→`tape` | 1.082 | 1.167 | `signal` 通道逐位不变（0.3136 / 0.2905） |
+| `player` | **0.800** | **0.870** | **唯一压缩的一级** |
+
+**两个输入的比值【不同】（1.082 vs 1.167）→ 所以相机是 S 曲线，不是标量增益。**
+`_roll_off`（`camera.py:380`）把 `lin=0.6` 送到 `comp=0.6667`，**大于线性值，所以它是抬高中间调**——
+我上一版把 0.785 记成"压缩"是因为那次用了 `dynamic_range=14.0`，**跨配置取数，正是第 71 行那条弯路。**
+
+**所以只剩一个目标：`atsim/stages/player.py` 里那个无条件压缩。**
+
+**已排除（在【同一配置】下实测）**：
+- YIQ 往返还**无损**：斜坡和分场都是 **1.000**，`y` 跨满 [0,1]。`rgb_to_yiq`/`yiq_to_rgb` 在 `atsim.core.signal`
+- `player` 全部参数逐个中性化 —— 最大变化 0.0002
+- `output_gain` / `output_bias` 默认就是 0
+- 带宽 3 / 16 / 40 MHz —— 逐位相同
+- `head_wear`、`color_noise`、`blue_screen` —— 中性化无效
+
+**`player.apply` 的实际通路**（已读，见 `player.py` 的 `apply`）：
 ```python
-dr    = 8.0                      # dynamic_range 默认
-knee  = 0.5 ** (dr/8)   = 0.500
-white = 2 ** ((dr-8)/8) = 1.000
-span  = white - knee    = 0.500
-t     = clip((lin - knee) / span, 0, 1)
-rise  = 2t / (1 + t)
-comp  = where(lin <= knee, lin, knee + (1-knee) * rise)
+y, i, q = self._separate(comp, buf)      # 嫌疑 1
+i, q = self._chroma_phase_error(i, q, buf)
+y = self._frequency_response(y)          # 嫌疑 2（带宽扫过无效，但函数本身可能是固定的）
+y = y * (1.0 + 0.25 * self.output_gain) + 0.08 * self.output_bias   # 默认 0
+sig = SignalFrame(y, i, q); rgb_out = sig.to_rgb()
 ```
+**下一步：直接对斜坡的 `y` 调用 `_separate` 和 `_frequency_response`，看哪一个把对比度乘了 0.8。**
+方法：绕开渲染器，把这两个方法当作纯函数测——**这是唯一还没做过的隔离。**
 
-**两端精确（`comp(knee)==knee`、`comp(white)==1.0`），但中间被【拉向 1.0】**：
-`t=0.5` 时输出 `0.833`，而线性到 white 应为 `0.750`。**钉死两端 + 上抬中间 = 压缩对比度。**
+**验收标准**：黑到白斜坡通过链路后对比度 **接近 1.0**（相机现在给 1.082，所以链路应落在 1.0 附近）。
 
-**而 `dr` 越大 `knee` 越低、受影响范围越大**——这解释了为什么把 `dynamic_range` 从 8 提到 14 反而让对比度
-从 0.711 掉到 0.589。
+## 仪器本身修过两次（都是盲区，务必用修好的版本）
 
-**所以下一步是**：
-1. **改 `rise`**，让肩部在 `dynamic_range` 宽时更接近线性（真实的宽容度传感器不该压得这么狠）。
-   约束：`comp(knee)==knee` 和 `comp(white)==1.0` 必须保持精确，否则会重犯"没有纯白像素"那个已修的缺陷。
-2. **然后用同一个方法找 `player` 的 0.588**：在 `player.py` 里搜对整个画面做非线性映射的行。
-   （已排除：全部参数逐个中性化最大只变 0.0002；带宽 3/16/40 MHz 逐位相同。）
-3. **验收标准（极简）**：黑到白斜坡通过链路后对比度 **接近 1.0**。一个斜坡，一个数字。
+1. `tools/stage_trace.py` 只记 `.rgb`，但**链路实际传递的是 `meta["signal"]`**——所以"format 贡献 0.0000"
+   是量错了缓冲区。**修好的版本在 `tools/composite_trace.py`，它同时记 `rgb` / `composite` / `signal` 三栏。**
+2. **`buf.composite` 全程是 `None`**（实测），所以 `player.apply` 开头的 `comp = buf.composite` 不是它拿到
+   信号的途径——**别再去追 composite。**
 
 ## 不要重复的弯路（每条都花过一整轮）
 
