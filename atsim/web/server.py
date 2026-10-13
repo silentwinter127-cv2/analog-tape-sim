@@ -11,6 +11,8 @@ Endpoints
     GET  /api/catalog         presets, device profiles, layer labels
     GET  /api/schema          the full parameter schema with units/provenance
     GET  /api/project         current project
+    GET  /api/export          the whole configuration as a downloadable JSON file
+    POST /api/import          apply an exported configuration (resets first, so the file is complete)
     POST /api/project         update project (params / seed / preset / source)
     POST /api/preset          apply a factory preset or a device profile
     POST /api/upload          import a clip
@@ -256,6 +258,100 @@ class App:
             self.store.save(p)
             self._revision += 1
         return self.project_dict()
+
+    # ------------------------------------------------------------------ export / import
+    def export_config(self) -> dict:
+        """
+        The whole configuration as one JSON-serialisable object, **as a diff against the schema defaults**.
+
+        A full dump of every layer is 400-odd numbers and says nothing about which of them a reproduction depended
+        on. The diff says exactly that, and it is small enough to read.
+
+        Everything needed to reproduce a frame is included: the changed parameters, the seed, the standard, the
+        environment, the keyframe tracks, the unit identities, and what the source was. A version and a timestamp go
+        with it, so an old file can be recognised instead of being applied half-way.
+        """
+        from ..core.profiles import SCHEMA
+        import datetime as _dt
+
+        with self.lock:
+            p = self.current
+            defaults = SCHEMA.resolve_all({})
+            changed: dict[str, dict[str, object]] = {}
+            for layer, values in (p.params or {}).items():
+                base = defaults.get(layer) or {}
+                diff = {}
+                for k, v in values.items():
+                    d = base.get(k)
+                    # a NaN default is how the schema writes "off", and a NaN is not equal to itself
+                    if isinstance(d, float) and isinstance(v, float) and d != d and v != v:
+                        continue
+                    if isinstance(d, float) and isinstance(v, float):
+                        if abs(d - v) <= 1e-9:
+                            continue
+                    elif d == v:
+                        continue
+                    diff[k] = v
+                if diff:
+                    changed[layer] = diff
+            return {
+                "kind": "atsim.config",
+                "version": 1,
+                "exported": _dt.datetime.now().isoformat(timespec="seconds"),
+                "name": p.name,
+                "standard": p.standard,
+                "seed": p.seed,
+                "fps": p.fps,
+                "environment": dict(p.environment or {}),
+                "keyframes": list(p.keyframes or []),
+                "unit_identities": dict(p.unit_identities or {}),
+                # recorded but not imported: the path is machine-specific, and it is here so a reader can tell
+                # which clip the file was made from
+                "source": p.source,
+                "source_info": p.source_info,
+                "params": changed,
+                "param_count": sum(len(v) for v in changed.values()),
+            }
+
+    def import_config(self, payload: dict) -> dict:
+        """
+        Apply an exported configuration.  **The parameters are reset first, so the file means the same thing here as
+        it did where it was written.**
+
+        `set_project` already merges correctly, so the only thing an import has to add is determinism. Applying a
+        file on top of whatever happens to be loaded would leave every value the file does not mention at its
+        current setting, and the same file would then give different results on two machines -- which defeats the
+        point of exporting one.
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("配置必须是一个 JSON 对象")
+        kind = payload.get("kind")
+        if kind not in (None, "atsim.config"):
+            raise ValueError("这不是本程序的配置导出文件（kind=%r）" % (kind,))
+        version = payload.get("version")
+        if isinstance(version, int) and version > 1:
+            raise ValueError("配置版本 %d 比本程序支持的版本新" % version)
+        params = payload.get("params")
+        if not isinstance(params, dict):
+            raise ValueError("配置里没有 params")
+
+        # reset first, then merge -- so the file is complete on its own
+        self.set_project({"reset_params": True})
+        applied = self.set_project({
+            "params": params,
+            "seed": payload.get("seed"),
+            "standard": payload.get("standard"),
+            "environment": payload.get("environment"),
+            "keyframes": payload.get("keyframes"),
+            "unit_identities": payload.get("unit_identities"),
+            "name": payload.get("name"),
+        })
+        applied["imported"] = {
+            "from": payload.get("exported"),
+            "version": version,
+            "params_applied": sum(len(v) for v in params.values() if isinstance(v, dict)),
+        }
+        return applied
 
     def apply_preset(self, key: str) -> dict:
         with self.lock:
@@ -716,6 +812,14 @@ def make_handler(app: App):
                     return self._json(SCHEMA.schema_dict())
                 if path == "/api/project":
                     return self._json(app.project_dict())
+                if path == "/api/export":
+                    # a download rather than a JSON reply, so the browser saves it as a file
+                    cfg = app.export_config()
+                    body = json.dumps(cfg, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+                    stamp = time.strftime("%Y%m%d-%H%M%S")
+                    return self._send(200, body, "application/json; charset=utf-8", {
+                        "Content-Disposition":
+                            'attachment; filename="atsim-config-%s.json"' % stamp})
                 if path == "/api/timeline":
                     return self._json(app.timeline())
                 if path == "/api/frame":
@@ -878,6 +982,14 @@ def make_handler(app: App):
                     return self._json(app.graph_move(self._body()))
                 if path == "/api/graph/node":
                     return self._json(app.graph_node_params(self._body()))
+                if path == "/api/import":
+                    b = self._body()
+                    # accept either the parsed object or the raw text of a file
+                    if isinstance(b.get("config"), dict):
+                        b = b["config"]
+                    elif isinstance(b.get("text"), str):
+                        b = json.loads(b["text"])
+                    return self._json(app.import_config(b))
                 if path == "/api/save":
                     b = self._body()
                     if b.get("name"):

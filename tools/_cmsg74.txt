@@ -1,0 +1,51 @@
+add configuration export and import, so a reproduction can be handed over
+
+**What it is for.** Reproducing an effect means reproducing the whole state: nine layers of parameters, the standard,
+the seed, the environment and the keyframe tracks. Over the last several turns every check rebuilt that state by
+hand in Python -- the same `merge_values(BASE, {...})` written out twenty times -- and a setting that lives only in a
+screenshot cannot be re-run by anyone, including its own author a week later.
+
+    GET  /api/export    the whole configuration as a downloadable JSON file, named with a timestamp
+    POST /api/import    apply an exported configuration
+
+and two buttons in the header, **导出设置** and **导入设置**.
+
+**Exported as a diff against the schema defaults, not as a full dump**, and that is the decision worth recording. A
+dump would be 400-odd numbers, most of them the defaults, and nothing in it would say which of them the reproduction
+depended on. The diff states the answer to the only question that matters -- *what was changed* -- and it is small
+enough to read in a pull request. Verified:
+
+    a reset configuration exports  0 changed parameters
+    after 11 known changes         9 parameters in 3 layers
+    and it holds exactly the parameters that differ from the defaults, **if and only if**
+
+The last line is the property, and the test's first version got it wrong: it asserted that everything it set would
+appear, and two entries did not -- `display.enabled = 1.0` and `codec.dv_enabled = 0.0`, both already the schema's
+defaults. **The test contradicted the feature.** The expectation is now the stronger "if and only if" form.
+
+**Imported by resetting first and then merging.** `set_project` already merges correctly, so the only thing an import
+had to add is determinism: applying a file on top of whatever happens to be loaded would leave every value the file
+does not mention at its current setting, and the same file would give different results on two machines. Verified on
+the **frame hash** rather than on the parameters, because the parameters are what was written and the frame is what
+anyone actually cares about:
+
+    the frame with the changes        72d574ac2fe2660c
+    after resetting everything        5f5399314383ec2d   differs, so the comparison is not vacuous
+    after importing the file back     72d574ac2fe2660c   exact
+
+    and from a deliberately different starting state (binder loss, exposure and saturation all moved):
+    after importing the same file     72d574ac2fe2660c   the file is complete on its own
+
+**And a bad file is refused rather than half-applied**, which matters more here than usual because an import that
+partly succeeds leaves a state that is neither the file's nor the one you started from:
+
+    a non-config JSON object   -> refused: 配置里没有 params
+    a newer version            -> refused: 配置版本 99 比本程序支持的版本新
+    no params at all           -> refused: 配置里没有 params
+
+The file carries a `kind`, a `version` and an `exported` timestamp, so one written before a schema change can be
+recognised instead of applying what still happens to match. It also records the source path and its probe, **for
+identification only** -- the path is machine-specific, so it is written but not read back.
+
+161 checks pass, selftest clean, and the export is a plain navigation in the browser so nothing had to be built in
+JavaScript to produce the download.

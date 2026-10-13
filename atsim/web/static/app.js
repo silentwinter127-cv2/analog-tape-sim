@@ -93,6 +93,50 @@ function wireChrome() {
   $("autoRefresh").onchange = () => { S.auto = $("autoRefresh").checked; };
   $("btnRender").onclick = startRender;
   $("btnSave").onclick = () => api("/api/save", jsonPost({ name: S.project.name }));
+
+  // **Configuration export and import.**  Export is a navigation rather than a fetch: the route sends the file with
+  // a Content-Disposition header and a timestamped name, so the browser saves it without any code here.  Import has
+  // to go through a file input, since a page cannot read a path the user did not choose.
+  //
+  // The whole point of the pair is that a reproduction can be handed over, so the import reports what it applied
+  // rather than failing silently -- an import that half-applies is worse than one that refuses.
+  const btnExport = $("btnExport");
+  if (btnExport) {
+    btnExport.onclick = () => {
+      const a = document.createElement("a");
+      a.href = "/api/export";
+      a.download = "";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast("已导出设置文件");
+    };
+  }
+  const btnImportCfg = $("btnImportCfg");
+  const cfgFile = $("cfgFile");
+  if (btnImportCfg && cfgFile) {
+    btnImportCfg.onclick = () => cfgFile.click();
+    cfgFile.onchange = async () => {
+      const f = cfgFile.files && cfgFile.files[0];
+      if (!f) return;
+      try {
+        const text = await f.text();
+        // parsed here only to fail early with a clear message; the server parses it again
+        const parsed = JSON.parse(text);
+        if (parsed.kind && parsed.kind !== "atsim.config") {
+          throw new Error(`这不是本程序的配置文件（kind=${parsed.kind}）`);
+        }
+        const r = await api("/api/import", jsonPost({ config: parsed }));
+        if (r && r.error) throw new Error(r.error);
+        const n = (r && r.imported && r.imported.params_applied) || 0;
+        toast(`已导入 ${n} 项设置${parsed.exported ? "（导出于 " + parsed.exported + "）" : ""}`);
+      } catch (err) {
+        toast("导入失败：" + (err && err.message ? err.message : err));
+      } finally {
+        cfgFile.value = "";
+      }
+    };
+  }
   $("btnTimeline").onclick = showTimeline;
   $("tlClose").onclick = () => $("modal").classList.add("hidden");
   $("jobClose").onclick = () => $("jobbar").classList.add("hidden");
