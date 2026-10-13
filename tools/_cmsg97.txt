@@ -1,0 +1,50 @@
+make `halation` carry the source's colour, which is the mechanism that was dividing a thin line's blue away
+
+**The line that did it, found by reading rather than guessing.** `CameraStage._halation` finished with
+
+    tint = np.array([1.05, 0.88, 1.05])
+    return rgb + (a * 0.52) * halo[..., None] * tint[None, None, :]
+
+so the halo was built from a **luminance** mask -- colourless by construction -- and then given a **fixed**
+magenta-leaning tint. That is a real lens property, but as a **constant** it adds neutral-to-magenta light on top of a
+small chroma difference and **divides that difference away**: a bright thin line with its own blue keeps its
+brightness, keeps its contrast, and loses its colour. Measured on the reference scene, the pole's hue came back at
+**+0.000** against its own **+0.024**, and no value of any existing parameter recovered it -- raising the display
+saturation cannot restore a difference that neutral light has divided out.
+
+**The physical fix is the one `source_glow` already uses**: light scattered from a bright source keeps that source's
+spectrum. So the halo's tint is now taken from the **blown region itself** -- `rgb * hot`, averaged per channel and
+normalised so its **luminance is unchanged** -- which means a scene with no blown source, or a neutral one, behaves
+exactly as before and only a **coloured** source moves.
+
+**And the change is opt-in, which is verified rather than asserted.** A new parameter `halation_source_colour`
+(default **0.0**) blends between the fixed lens tint and the source's own. At 0.0 the output is **bit-identical** to
+the old body, checked with `np.array_equal` on four different sources:
+
+    blue-white (0.75, 0.92, 1.00)     new(0.0) identical to the old body: True
+    white (1.00, 1.00, 1.00)          True
+    warm-bright (1.00, 0.85, 0.55)    True
+    sodium (1.00, 0.72, 0.30)         True
+
+**And at 1.0 the colour follows the source, in both directions:**
+
+    the blown source                 its own B-R   halation 0.0   halation 1.0   follows
+    blue-white                       +0.2500       +0.00000       +0.00359       yes
+    white                             0.0000       +0.00000       +0.00000       yes (stays neutral)
+    warm-bright                      -0.4500       +0.00000       -0.00676       yes
+    sodium                           -0.7000       +0.00000       -0.00940       yes
+
+**One test of mine was wrong and is recorded.** The first attempt used a warm patch of (1.00, 0.62, 0.25) and got no
+effect at all. The mask is `hot = clip((lum - 0.72) / 0.28, 0, None)`, so that patch's luma of **0.6914** is **below
+the threshold** and the mechanism correctly did nothing. **A mechanism that never fires cannot be judged**, and the
+source has to be bright -- which a blown lamp is. With the patch above the threshold the effect appears in every case.
+
+**What this does and does not do.** It makes the **colour** of a halo follow its source, which is the property that was
+missing and which fixes the *mechanism* rather than the values. It does not by itself restore the pole's blue in the
+final render, because the halo around a thin bright line is dominated by the line's own pixels -- so the tint there
+moves only slightly (B-R +0.2500 -> +0.2770 on the test) -- while the setting is aimed at the **surround** of a bright
+source, which is where a small difference actually gets divided away. Whether that is enough on the reference scene is
+a measurement, and it is the next thing to take.
+
+163 checks pass. Two mechanisms have been added this session -- `source_glow` and `halation_source_colour` -- and both
+are inert at their defaults, the second verified bit-identical.

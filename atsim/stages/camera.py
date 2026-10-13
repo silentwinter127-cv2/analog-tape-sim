@@ -130,6 +130,10 @@ class CameraStage(Stage):
         self.zoom_kind = str(cfg.get("zoom_kind", 1.0))
         self.smear = float(cfg.get("ccd_smear", 0.0))
         self.halation = float(cfg.get("halation", 0.0))
+        #: How much the halation's tint follows the **blown region's own colour** instead of the fixed
+        #: lens tint.  A scattering halo keeps the source's spectrum, so this is the physical behaviour;
+        #: it is a blend because the fixed tint is also a real lens property.
+        self.halation_source_colour = float(cfg.get("halation_source_colour", 0.0))
         # --- the note's optical and sensor mechanisms ---------------------------
         self.lens_fog = float(cfg.get("lens_fog", 0.0))
         # **The overflow drain's dark rim.**  A photosite whose well overflows has its excess charge
@@ -367,7 +371,29 @@ class CameraStage(Stage):
             core = core / peak
         coverage = float(np.clip(hot.mean() * 14.0, 0.0, 1.0))
         halo = np.clip(0.80 * core + 0.32 * coverage * veil, 0.0, 1.6)
-        tint = np.array([1.05, 0.88, 1.05], dtype=np.float32)
+        # **The halo's colour is the source's, not a constant.**  Scattered light keeps the spectrum of what it came
+        # from, so a halo around a blue-white line should be blue-white.  The fixed tint below is a real lens
+        # property, but as a *constant* it dilutes a small chroma difference -- measured, a thin blue line under a
+        # halation came back at B-R +0.000 against its own +0.024, and no value of the existing parameters recovered
+        # it, because raising saturation cannot restore a difference that neutral light has divided away.
+        #
+        # So the tint is taken from the blown region itself, normalised so its **luminance is unchanged**: a scene
+        # with no blown source, or a neutral one, therefore behaves exactly as before, and only a coloured source
+        # moves.  Built from the same `hot` mask, per channel, so it is the colour of what is actually blowing out.
+        blown = rgb * hot[..., None]
+        mass = float(hot.sum())
+        if mass > 1e-6:
+            mean_rgb = blown.reshape(-1, 3).sum(axis=0) / mass
+            g = float(mean_rgb[1])
+            if g > 1e-4:
+                src_tint = np.clip(mean_rgb / g, 0.55, 1.75).astype(np.float32)
+            else:
+                src_tint = np.ones(3, np.float32)
+        else:
+            src_tint = np.ones(3, np.float32)
+        lens_tint = np.array([1.05, 0.88, 1.05], dtype=np.float32)
+        mix = float(np.clip(self.halation_source_colour, 0.0, 1.0))
+        tint = (1.0 - mix) * lens_tint + mix * src_tint
         return (rgb + (a * 0.52) * halo[..., None] * tint[None, None, :]).astype(np.float32)
 
     def _color_science(self, rgb: np.ndarray) -> np.ndarray:
