@@ -1,0 +1,49 @@
+name the fault: it is the tape's head-switching band, in the bottom 32 rows
+
+**The attribution, measured by the pair of statistics that defines the fault's shape.**
+
+    the source                 row-mean std 0.05141   column-mean std 0.05086   ratio 1.011
+    through the neutral chain  row-mean std 0.12851   column-mean std 0.03840   ratio 3.347
+
+The source is **symmetric**, which is what a picture's own two-dimensional structure gives. The chain makes the row
+spread 2.5x while leaving the column spread unchanged -- the signature of a **per-row additive offset** -- and one
+parameter accounts for it:
+
+    as it is                       0.12851 / 0.03840   ratio 3.347
+    player burst_error_deg = 0     0.12851 / 0.03840   no change
+    player tbc_residual = 0        0.12851 / 0.03840   no change
+    player tbc_enabled = 0         0.12851 / 0.03840   no change
+    tape row_chroma_* = 0          0.12851 / 0.03840   no change
+    **tape head_switching = 0      0.04918 / 0.03973   ratio 1.238**
+
+**Setting one parameter to zero returns the row spread to the source's own value of 0.05141**, and four other
+candidates measured in the same run move neither statistic by a digit.
+
+**And the extent is exactly the band, not the frame.**
+
+    head switching 0.45 -> row-mean std 0.08971
+    head switching 0.00 -> row-mean std 0.04918
+    the rows it moves most: 224, 231, 227, 232, 239, 238, 217, 220, 225, 237, 236, 235, 234, 208, 230, 233
+
+**every one of them in the bottom fifth of a 240-row frame**, 32 rows carry a deviation above 0.01, and the top 20
+rows carry 84% of the total. The parameters are `head_switching` (default **0.85**, range 0..1.2),
+`head_switch_lines` (default **16**) and `head_switch_mid_line` (default **0.25**) -- so the band is meant to be about
+16 lines at three-quarters of the way down, and at 240 rows that is 32 lines of real disruption.
+
+**Why eight hypotheses missed it, and the reason is worth recording.** Head switching lives in the **`tape` layer**,
+and the series of measurements either switched the tape off, passed it an empty configuration, or ran with the tape's
+own defaults while every *other* layer was neutralised. **The two hypotheses that did touch the tape examined
+`row_chroma_*`, which is zero by default** -- so the term was inert in every configuration tested and its exclusion
+was correct but irrelevant. **The fault was in the one layer the measurements were routing around.**
+
+**What this means for the reproduction, and it changes the picture.** The banding is not a defect in the chroma path
+at all: it is head switching, a **modelled tape defect**, doing what it is designed to do -- and it is doing it at
+**0.85 by default**, which is more than two-thirds of the parameter's range. On a smooth night scene, 32 lines of
+disrupted chroma at the bottom of every frame **is** the striped appearance that has been chased for eight attempts.
+
+**So the reproduction's settings file should carry a head-switching value appropriate to the material**, and the
+statement that "the chain multiplies banding by 40x" should be withdrawn: the chain was faithfully applying a defect
+that was switched on, to material that does not have it.
+
+Nothing changed yet: the modules are byte-identical to their committed state and 163 checks pass. The next step is to
+set the parameter in the reproduction and re-render, which is a change to a settings file rather than to the model.
