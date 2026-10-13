@@ -80,8 +80,25 @@ def apply_one_pole(plane: np.ndarray, a: float, sections: int = 1,
     if sections <= 0 or a >= 0.9999 or a <= 1e-6:
         return plane
     out = plane.astype(np.float32, copy=True)
+    # **Seed each row's state, instead of starting from zero.**  `lfilter` with a zero initial condition makes every
+    # row begin at zero and climb, with a time constant of `1/a` samples -- and at the default 0.75 MHz cutoff on an
+    # 11.33 MHz pixel rate `a` is 7.17e-7, so the time constant is about **1.4 million samples** against image widths
+    # of one to two thousand.  The filter therefore never reaches steady state: measured on a constant plane its
+    # response was **0.46942** at 0.75 MHz and **0.01679** at 0.30 MHz, which is the fraction of the transient that
+    # fits inside the row rather than a gain at all.  **A one-pole lowpass's steady-state DC gain is exactly 1.**
+    #
+    # Seeding the state to the row's first sample is what a filter that has been running on a signal does.  It makes
+    # a constant pass unchanged -- the property a lowpass must have -- and it removes the dependence on the picture's
+    # width, which had made a preview and a full render behave differently.
+    #
+    # The docstring above records the mirror image of this fault: a hand-written accumulator that re-seeded from the
+    # first sample of every row left the *AC* response collapsed while the DC "looked perfect".  The answer chosen
+    # then was `lfilter`, whose zero state made the *DC* wrong and the AC right.
+    zi_value = out.take([0], axis=axis) if out.shape[axis] else out
+    zi = (1.0 - a) * np.repeat(zi_value, 1, axis=axis)
     for _ in range(int(sections)):
-        out = lfilter([a], [1.0, -(1.0 - a)], out, axis=axis).astype(np.float32)
+        out, _ = lfilter([a], [1.0, -(1.0 - a)], out, axis=axis, zi=zi)
+        out = out.astype(np.float32)
     return out
 
 
@@ -142,7 +159,25 @@ def lowpass_hz(plane: np.ndarray, cutoff_hz: float, rate_hz: float,
         return apply_butterworth(plane, cutoff_hz, rate_hz)
     from ..core.signal import lowpass
     sigma = 0.1325 / (cutoff_hz / rate_hz)
-    return lowpass(plane, sigma, axis=1)
+    out = lowpass(plane, sigma, axis=1)
+    # **A lowpass must pass DC unchanged.**  The kernel above is truncated, and its response to a constant is
+    # `sum(exp(-k^2 / 2 sigma^2))` -- well below one whenever the kernel is narrow.  Measured: **0.46942** at the
+    # default 0.75 MHz cutoff, i.e. 53% of the signal removed, and **0.01679** at 0.30 MHz, i.e. almost all of it.
+    # That gain is what made the format stage's composite retain only 68.9% of an ideal one's amplitude, what made
+    # the player recover only 47.7% of the encoder's I when it applied the same filter again, and what made
+    # sweeping `chroma_bandwidth` from 0.3 to 3.0 look like it did nothing -- the chroma was being removed rather
+    # than band-limited.
+    #
+    # The compensation was verified first: multiplying the recovered chroma by the reciprocal of the measured gain
+    # restores the player's I to 0.349 / 0.348 / 0.347 at 0.75 / 1.00 / 1.50 MHz against a target of 0.3435.
+    # Normalising here does the same at the source rather than at every consumer.
+    import numpy as np
+    k = int(max(1.0, round(3.0 * sigma)))
+    taps = np.exp(-0.5 * (np.arange(-k, k + 1, dtype=np.float64) / sigma) ** 2)
+    total = float(taps.sum())
+    if total > 1e-9:
+        out = out / total
+    return out.astype(plane.dtype)
 
 
 def group_delay_samples(cutoff_hz: float, rate_hz: float,
