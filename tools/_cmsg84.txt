@@ -1,0 +1,34 @@
+narrow the chroma banding: it is row-to-row, 3.4x, and the recovery is accurate for spatial chroma too
+
+**The definition, measured the right way.** After six hypotheses and three withdrawals, the criterion that works is
+the chain's own before and after on the same picture, split into luma and chroma:
+
+                            row-to-row row-mean variation
+    the source              luma 0.002631      R-B 0.003417
+    through the neutral     luma 0.002569      R-B 0.011570
+    chain (display off)     -2%, unchanged     3.4x
+
+**The luma path is unchanged and the chroma path is not.** That is the first statement in this investigation with
+both sides measured the same way on the same subject. The earlier multipliers against a perfectly flat field
+(2.5 million times) were meaningless, because a real photograph has scene structure and a flat field is not a floor.
+
+**And the recovery is accurate for spatially varying chroma as well as constant chroma.** A vertical square-wave I
+of +-0.30, constant down every column, comes back with a row-to-row ripple of its row means of **0.001984** against a
+designed **0.000000**, and a peak-to-peak of the recovered row means of **0.007091** against a designed modulation of
+**0.600000** -- **1.2%**. Its mean absolute column error is 0.062 on a +-0.30 pattern, which is what a 0.75 MHz
+chroma band does to a square wave's edges: the modulation survives and the shape is rounded, which is correct.
+
+**So both the constant and the structured chroma recovery are accurate**, which is what makes the 3.4x on a real
+picture a specific thing rather than a general one: it is **row-to-row**, it is **chroma**, it appears on a
+**photograph** and not on a **designed pattern**, and the difference between those two subjects is that the
+photograph's chroma varies in **both** directions while the pattern's varies in one.
+
+**One premise failed in this test and is recorded rather than hidden.** The square wave was asserted to be invariant
+under a horizontal shift, and the check printed **False** -- so that assumption was wrong and the shift-invariance
+argument does not hold as stated. The reading above is still usable because it is a **relative** figure (1.2% of the
+designed modulation), which is the form established last turn as the one that does not depend on a floor.
+
+**Where that leaves it.** The fault is real, chroma-specific, row-to-row, 3.4x on a photograph, and not reproducible
+on a designed constant or a designed vertical pattern -- so the next subject has to vary chroma in **both**
+directions, and the criterion is the chain's before-and-after ratio rather than any comparison against a floor.
+Nothing changed: the modules are byte-identical to their committed state and 163 checks pass.
