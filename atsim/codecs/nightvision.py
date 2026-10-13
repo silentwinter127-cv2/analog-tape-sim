@@ -453,11 +453,17 @@ MODE_PRESETS: dict[str, dict[str, float]] = {
     # frame *increases* monotonically with the residue (0.0336 at 0.35, 0.0423 at 0.90), because the mismatch is in
     # the **channel proportions**: the real frame spans a factor of 2.26 across its channels and the model 11.7.
     # A residue scales the chroma the picture already has and cannot rebalance it.
-    "nightshot": dict(illuminator=0.15, green_mix=1.0, accumulate=1.0, chroma_residue=0.35),
+    # **`illuminator` is NOT set here, and that is deliberate.**  It was, and the effect was that the parameter never
+    # reached `add_illuminator`: spying on the call showed **0.00, 0.15 and 0.25 all arriving as 0.15**.  The rule was
+    # already written in this file -- *"a preset that overrides a physical control is a preset that removes a control"* --
+    # and had been applied to `ir_albedo_mix` and `ir_response` while **the lamp's own strength, the control a NightShot
+    # user most needs, was left in**.  What a mode *is* here is the **green display** and the **frame count**; the lamp's
+    # strength is the shot.
+    "nightshot": dict(green_mix=1.0, accumulate=1.0, chroma_residue=0.35),
     # the same, **and accumulation on**.  **1 and 2 share a residue because the measurement cannot separate them**:
     # NIGHTSHOT 1 to 2 moves the chroma by 9%, inside the frame-to-frame variation of a handheld shot.  Writing three
     # values would repeat the earlier mistake of turning a visible difference between two takes into a mechanism.
-    "super_nightshot": dict(illuminator=0.15, green_mix=1.0, accumulate=8.0, chroma_residue=0.90),
+    "super_nightshot": dict(green_mix=1.0, accumulate=8.0, chroma_residue=0.90),
     # no lamp and **no green display** -- colour is the point of this mode, so the chroma is not attenuated at all
     "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=8.0, chroma_residue=1.0),
 }
