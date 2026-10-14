@@ -174,6 +174,12 @@ class NightVisionSpec:
     #: tension is unresolved**, and it is not claimed to be the fitted value: **a single per-pixel scale on the blue leak
     #: provably cannot satisfy both**, which is what the sweep shows.
     cast_variation: float = 0.0
+    #: **The display's drive, which is what lets the top of the range reach full scale.**  Measured, a flat 0.90 input and
+    #: a flat 1.00 input came out of the chain identically at 0.8532 because the projection's weights sum to 1, so a
+    #: full-scale luminance can never put any channel past 0.43 and the output's own ceiling is 0.853.  **A viewfinder
+    #: drives its channel to full scale and clips there**, which is `note.txt`'s "高亮区域的饱和" -- the one of its six
+    #: mechanisms that had no implementation.  1.0 is the undriven projection; the default and the sweep decide the rest.
+    highlight_saturation: float = 1.0
 
     @classmethod
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
@@ -196,6 +202,7 @@ class NightVisionSpec:
             shutter_frames=float(cfg.get("nv_shutter_frames", 1.0)),
             shot_noise=float(cfg.get("nv_shot_noise", 0.0)),
             cast_variation=float(cfg.get("nv_cast_variation", 0.0)),
+            highlight_saturation=float(cfg.get("nv_highlight_saturation", 1.0)),
         )
 
 
@@ -574,7 +581,36 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     g = float(np.clip(spec.green_gain, 0.1, 4.0))
     weights = weights * np.array([1.0, g, 1.0], dtype=np.float32)
     weights = weights / float(weights @ LUMA)
-    mono = np.clip(lum[..., None] * weights, 0.0, 1.0)
+    # **The clip is per channel, and the peak channel is driven past full scale so that a bright area goes white.**
+    # Measured on flat fields, a 0.90 input and a 1.00 input came out of the chain **identically at 0.8532**, so the
+    # model could never reach the footage's 1.0 with 0.66% of the frame blown out; its brightest pixel was **0.8686 with
+    # nothing clipped anywhere**.  Traced through the camera the loss is exactly here: the scene branch takes 0.90 to
+    # 0.9999 and `_roll_off` takes it to 1.0000, **and the display branch flattens both to 0.8532**.
+    #
+    # **A first attempt normalised the weights by their maximum instead of their sum, which broke the luminance** --
+    # measured, the mean fell from 0.2373 to 0.1907, because `weights @ LUMA == 1` is exactly the constraint that makes
+    # `mono` carry the picture's brightness, and the calibration of the R:G:B ratios depends on it.  **So the sum
+    # normalisation stays**, and the saturation comes from the peak channel being allowed to exceed full scale and clip:
+    # at a luminance where the green channel reaches 1.0 the other two are at 0.505 and 0.824 of it, so the result is a
+    # **desaturated near-white** with a luminance of **0.958** -- which is what a viewfinder actually does, and what
+    # `note.txt`'s "高亮区域的饱和" asks for.
+    gain = float(np.clip(getattr(spec, "highlight_saturation", 1.0), 0.0, 2.0))
+    cd = getattr(spec, "cast_variation", 0.0)
+    sp = float(np.clip(cd, 0.0, 1.0))
+    dep = getattr(spec, "ir_depth", None)
+    if sp > 1e-4 and dep is not None:
+        d = np.asarray(dep, np.float32)
+        if d.shape[:2] != lum.shape:
+            d = _resample(d, lum.shape[0], lum.shape[1])
+        near = float(d.min())
+        span = max(1e-6, float(d.max() - near))
+        t = np.clip((d - near) / span, 0.0, 1.0)
+        fac = 1.0 - sp * t
+        wpx = weights[None, None, :] * np.stack([np.ones_like(fac), fac, np.ones_like(fac)], axis=-1)
+        wpx = wpx / np.maximum(1e-6, (wpx @ LUMA)[..., None])
+        mono = np.clip(lum[..., None] * wpx * gain, 0.0, 1.0)
+    else:
+        mono = np.clip(lum[..., None] * weights[None, None, :] * gain, 0.0, 1.0)
     # **The cast is not UNIFORM across the frame, and a fixed projection makes it so.**  The user's report is exactly
     # this: "实拍图片并不是均匀的绿".  Every pixel here takes the same weights, so a rigid projection gives one hue
     # everywhere and only the brightness varies -- and **measured, that is what the model does**: its hue spread is
