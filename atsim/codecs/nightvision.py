@@ -226,13 +226,53 @@ def albedo_map(h: int, w: int, labelled: dict | None, fallback: np.ndarray | Non
     # a cell's value is its albedo, or the estimate where the model was unsure; weighted by how sure it was
     wgt = np.clip(conf / max(1e-6, float(conf.max())), 0.0, 1.0)
     mixed = np.where(labels >= 0, wgt * alb + (1.0 - wgt) * fb, fb)
-    big = np.repeat(np.repeat(mixed, max(1, h // gh), axis=0), max(1, w // gw), axis=1)
-    # the grid may not divide the frame evenly; clip rather than pad so no row is invented
-    big = big[:h, :w]
-    if big.shape != (h, w):
-        big = np.resize(big, (h, w))
+    # **The upsampling is SMOOTH, and the earlier "nearest-neighbour on purpose" reasoning was wrong.**  It read:
+    # "bilinear would invent smooth gradients between materials that do not exist in the table, and the model's own
+    # boundaries are the cell edges; a hard edge is the honest rendering of a grid of class labels."  **Honest about the
+    # grid, and wrong about the picture**: nearest-neighbour makes each cell a **flat 66x50-pixel block**, so
+    # multiplying the frame by the map **stamps those block edges onto the photograph as straight bands** -- and
+    # `IR_ALBEDO`'s own range is 0.28 to 2.10, a **7.5x** step at the boundary, so the bands are strong.
+    #
+    # **Measured, this was the banding the user reported**, and it is visible directly: written out, the albedo map's own
+    # picture is nothing but large diagonal bands, and the source multiplied by it is the banded frame.  **The bands are
+    # diagonal because the SUBJECT is** -- a rotated case and monitor under a rectangular grid -- which is why they did
+    # not look like a grid artefact.
+    #
+    # **A bilinear step keeps each label's value at its cell's centre and carries it across the boundary continuously.**
+    # The assumption it adds is that a material boundary is somewhere between two cell centres and its position is
+    # unknown -- which is exactly true at an 8x8 labelling of a 533x400 frame, and is a far smaller error than a 7.5x
+    # step at a guessed line.  **The labels themselves are unchanged**: this is the map's rendering, not the model's
+    # classification.
+    big = _resample(mixed, h, w)
     m = float(big.mean())
     return (big / m if m > 1e-6 else big).astype(np.float32)
+
+
+def _resample(cell: np.ndarray, h: int, w: int) -> np.ndarray:
+    """
+    Carry a coarse grid to the frame smoothly, so a label boundary is a gradient rather than a step.
+
+    Kept separate and named, because the choice it makes -- interpolate, not repeat -- is the whole of a defect that took
+    nine statistics to find and that the picture showed immediately once it was written out.
+    """
+    gh, gw = cell.shape
+    a = np.asarray(cell, np.float32)
+    if gh < 2 or gw < 2:
+        return np.repeat(np.repeat(a, max(1, h // max(1, gh)), 0), max(1, w // max(1, gw)), 1)[:h, :w]
+    # the cell centres, mapped onto the frame's pixel grid
+    ys = (np.arange(h, dtype=np.float32) + 0.5) * (gh / float(h)) - 0.5
+    xs = (np.arange(w, dtype=np.float32) + 0.5) * (gw / float(w)) - 0.5
+    y0 = np.clip(np.floor(ys).astype(np.int32), 0, gh - 2)
+    x0 = np.clip(np.floor(xs).astype(np.int32), 0, gw - 2)
+    fy = np.clip(ys - y0, 0.0, 1.0)[:, None]
+    fx = np.clip(xs - x0, 0.0, 1.0)[None, :]
+    a00 = a[np.ix_(y0, x0)]
+    a01 = a[np.ix_(y0, x0 + 1)]
+    a10 = a[np.ix_(y0 + 1, x0)]
+    a11 = a[np.ix_(y0 + 1, x0 + 1)]
+    top = a00 * (1.0 - fx) + a01 * fx
+    bot = a10 * (1.0 - fx) + a11 * fx
+    return (top * (1.0 - fy) + bot * fy).astype(np.float32)
 
 
 def mode_of(spec: NightVisionSpec) -> str:
