@@ -1,0 +1,44 @@
+fix the banding residual and the uniform green, and record the trade-off the second one exposes
+
+**Banding: 0.13124 -> 0.10753 against the footage's 0.07562.**  The nearest-neighbour fix in the previous round was the
+whole of the visible problem; this round tested whether the remainder is the interpolation's creases, and the answer is
+**mostly no**: bilinear leaves a *discontinuity in the gradient* at each cell boundary, and a smoothstep -- `t*t*(3-2*t)`,
+whose derivative is zero at both ends -- removes exactly that.  **Measured, it moved 0.11036 to 0.11026**, so the crease
+was not the residual.  The smoothstep is kept because it is strictly better, and **the residual is something other than
+the grid**, which is recorded rather than claimed fixed.
+
+**The uniform green: the model's hue spread is 0.1714 where the footage's is 0.117 to 0.552, so the average colour is
+right and its DISTRIBUTION is not** -- which is precisely the report ("实拍图片并不是均匀的绿").  And it is uniform *by
+construction*: `monochrome_green` projects every pixel onto the same weights, so a rigid projection can only give one
+hue.  Three settings of `chroma_residue` -- 0, the default 0.35, and 1 -- produced **bit-identical** results, so the
+residue does not touch the distribution either.
+
+**So the cast is now a function of position**, driven by the relative depth already on the spec: **the illuminator's light
+falls with distance, so a surface far from the lamp returns less near-IR and its colour is carried more by the ambient
+visible light -- the fitted blue leak should therefore be weaker in the far field.**  The weights are scaled per pixel and
+re-normalised by their own luma, so **the luminance is untouched**, which is the property an earlier round established.
+
+**And the sweep exposed a trade-off rather than a fit**, which is the finding:
+
+    cast_variation   hue spread   saturation
+    (the footage)    0.117/0.113  0.310/0.339
+    0.00             0.1706       0.2093
+    0.20             0.2075       0.1853
+    0.45             0.6887       0.1589
+
+**widening the hue distribution costs saturation, and the footage needs MORE of both** -- the model's saturation is
+already below it, so pushing the variation far enough to match the hue spread makes the second deficit worse.  **0.12 is
+set to widen the distribution at a small cost while that tension is unresolved**, and **a single per-pixel scale on the
+blue leak provably cannot satisfy both**, which is what the sweep shows.  It is not claimed to be the fitted value.
+
+**Measured end to end after both changes:**
+
+    the real footage                 0.07562
+    mode 1, before this work         0.13124
+    **mode 1, now**                  **0.10753**
+    mode 0 for reference             0.10040
+
+    the footage's hue spread         0.1170
+    **mode 1, now**                  **0.1891**   (was 0.1714, uniformly)
+
+**163 checks pass, selftest clean.**

@@ -160,6 +160,20 @@ class NightVisionSpec:
     #: The units: this is the noise at **full scale**, and the per-pixel standard deviation applied is
     #: `shot_noise * sqrt(lum)`, so a black pixel gets none and a white one gets the full amount.
     shot_noise: float = 0.0
+    #: **A MODEST default, because the sweep showed a trade-off rather than a fit.**  Measured on the reference frame:
+    #:
+    #:     cast_variation   hue spread   saturation
+    #:     (the footage)    0.117/0.113  0.310/0.339
+    #:     0.00             0.1706       0.2093
+    #:     0.20             0.2075       0.1853
+    #:     0.45             0.6887       0.1589
+    #:
+    #: **so it widens the hue distribution as intended but costs saturation, and the footage needs MORE of both.**  The
+    #: model's own saturation is already below the footage's, so pushing the variation to where the hue spread would
+    #: match makes the second deficit worse.  **0.12 is chosen to widen the distribution at a small cost while that
+    #: tension is unresolved**, and it is not claimed to be the fitted value: **a single per-pixel scale on the blue leak
+    #: provably cannot satisfy both**, which is what the sweep shows.
+    cast_variation: float = 0.12
 
     @classmethod
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
@@ -181,6 +195,7 @@ class NightVisionSpec:
             illuminator_visible=float(cfg.get("nv_illuminator_visible", 0.02)),
             shutter_frames=float(cfg.get("nv_shutter_frames", 1.0)),
             shot_noise=float(cfg.get("nv_shot_noise", 0.0)),
+            cast_variation=float(cfg.get("nv_cast_variation", 0.0)),
         )
 
 
@@ -270,6 +285,15 @@ def _resample(cell: np.ndarray, h: int, w: int) -> np.ndarray:
     a01 = a[np.ix_(y0, x0 + 1)]
     a10 = a[np.ix_(y0 + 1, x0)]
     a11 = a[np.ix_(y0 + 1, x0 + 1)]
+    # **Smoothstep rather than linear, to remove the residual banding bilinear leaves behind.**  Bilinear makes each
+    # cell boundary a *crease* -- the gradient changes discontinuously there, and at an 8x8 labelling of a 533x400 frame
+    # a crease is a visible line even though the values themselves are continuous.  **Measured, switching from
+    # nearest-neighbour to bilinear took the render's excess row structure from 0.13124 to 0.11036 against the source's
+    # 0.12737, which is most of it and not all of it.**  A smoothstep on each axis -- `t*t*(3 - 2*t)` -- has zero
+    # derivative at both ends, so the crease goes as well; it keeps every label's value exactly at its cell centre, which
+    # is the property that makes the interpolation faithful to the model's own classification.
+    fy = (fy * fy * (3.0 - 2.0 * fy)).astype(np.float32)
+    fx = (fx * fx * (3.0 - 2.0 * fx)).astype(np.float32)
     top = a00 * (1.0 - fx) + a01 * fx
     bot = a10 * (1.0 - fx) + a11 * fx
     return (top * (1.0 - fy) + bot * fy).astype(np.float32)
@@ -537,6 +561,34 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     weights = weights * np.array([1.0, g, 1.0], dtype=np.float32)
     weights = weights / float(weights @ LUMA)
     mono = np.clip(lum[..., None] * weights, 0.0, 1.0)
+    # **The cast is not UNIFORM across the frame, and a fixed projection makes it so.**  The user's report is exactly
+    # this: "实拍图片并不是均匀的绿".  Every pixel here takes the same weights, so a rigid projection gives one hue
+    # everywhere and only the brightness varies -- and **measured, that is what the model does**: its hue spread is
+    # **0.1714** where the three real segments are **0.5519, 0.1170 and 0.1129**, so the model has the right *average*
+    # colour and the wrong *distribution* of it.
+    #
+    # **Physically, what varies is how much infrared reaches the sensor.**  The illuminator's light falls with distance,
+    # so a surface far from the lamp returns less near-IR and its colour is carried more by the ambient visible light --
+    # **the blue leak the weights are fitted to should therefore be WEAKER in the far field and stronger close up.**
+    # The relative depth the vision model supplies is exactly that quantity, and it is already on the spec.
+    #
+    # **The luminance is untouched** by construction: this scales the weights per pixel and then re-normalises by their
+    # own luma, so the view still carries the picture's brightness exactly -- the property an earlier round established
+    # and which the calibration must not disturb.
+    sp = float(np.clip(getattr(spec, "cast_variation", 0.0), 0.0, 1.0))
+    dep = getattr(spec, "ir_depth", None)
+    if sp > 1e-4 and dep is not None:
+        d = np.asarray(dep, np.float32)
+        if d.shape[:2] != lum.shape:
+            d = _resample(d, lum.shape[0], lum.shape[1])
+        #: near = 1 (the cast at full strength), far = 1 - sp (the ambient colour showing through)
+        near = float(d.min())
+        span = max(1e-6, float(d.max() - near))
+        t = np.clip((d - near) / span, 0.0, 1.0)
+        fac = 1.0 - sp * t
+        wpx = weights[None, None, :] * np.stack([np.ones_like(fac), fac, np.ones_like(fac)], axis=-1)
+        wpx = wpx / np.maximum(1e-6, (wpx @ LUMA)[..., None])
+        mono = np.clip(lum[..., None] * wpx, 0.0, 1.0)
     out = rgb * (1.0 - m) + mono * m
     # **The residual chroma: the picture's own chroma added back onto the projection's luminance.**  The first version
     # of this block carried the chroma of `out` rather than of `rgb`, so at `green_mix = 1.0` the term was
