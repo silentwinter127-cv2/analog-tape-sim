@@ -12,6 +12,8 @@ the previous input frame.  `set_previous` is called by the renderer.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from ..codecs.operator import HAND
@@ -99,6 +101,21 @@ class CameraStage(Stage):
         # `索尼F717夜视测试`, segmented into its four modes and measured per segment.
         from ..codecs.nightvision import NightVisionSpec
         self.nv = NightVisionSpec.from_params(cfg)
+        # **The near-IR material labelling, and whether this machine can do it at all.**  `note.txt`'s second mechanism
+        # asks for near-IR albedo per material rather than an RGB-to-grey conversion, and a vision-language model can
+        # supply it; where none is installed the estimate is used, **which is not a degraded mode but the documented
+        # fallback**.  The labels are computed once per clip and cached, because the source is a still or a clip whose
+        # materials do not change frame to frame.
+        self.nir_material = bool(round(float(cfg.get("nv_nir_material", 1.0))))
+        #: the checkpoint, if one is named.  **An environment variable rather than a schema parameter**, because every
+        #: parameter in this schema is numeric and a path is not -- and because naming a model is a property of the
+        #: machine, not of the look being simulated.
+        self.nir_model_dir = os.environ.get("ATSIM_NIR_MODEL") or None
+        self.nir_margin_floor = float(cfg.get("nv_nir_margin_floor", 0.02))
+        self.nir_grid = int(np.clip(round(float(cfg.get("nv_nir_grid", 8))), 2, 32))
+        self.nir_label_source: str | None = None
+        self._nir_albedo: np.ndarray | None = None
+        self._nir_failed = False
         #: The recent post-exposure frames, so a mode that accumulates has frames to sum.  The module
         #: returns the mean, so the picture stays at the same scale as a single frame -- which is what makes
         #: the noise *fall* rather than the brightness rise.
@@ -327,6 +344,12 @@ class CameraStage(Stage):
         from ..codecs.nightvision import mode_spec
         self.nv = mode_spec(self.nv)
         if stage == "scene":
+            self._attach_ir_albedo(rgb)
+            # **`mode_spec` has just rebuilt the spec from the mode's preset, so the albedo is put back on it here.**
+            # Setting it in `__init__` would be overwritten by that rebuild -- which is exactly the fault class this
+            # project keeps finding, where a value is read, then replaced before it is used.
+            if self._nir_albedo is not None:
+                self.nv.ir_albedo = self._nir_albedo
             # **Accumulation comes first, while the picture is still at the scene's own level.**  It ran in the
             # display stage initially -- the last thing to execute -- where it replaced a *processed* picture (mean
             # 0.4886) with the mean of several *source* frames (mean 0.1768), a factor of 3.66.  Then it ran after
@@ -362,6 +385,58 @@ class CameraStage(Stage):
         # the display stage
         out = monochrome_green(rgb, self.nv)
         return out
+
+    def _attach_ir_albedo(self, rgb: np.ndarray) -> None:
+        """
+        Label the scene's materials once per clip and put the resulting per-pixel near-IR albedo on the spec.
+
+        **This is the model's fallback boundary, and it is explicit rather than implicit.**  Three things can make the
+        labelling unavailable, and **all three leave the picture exactly as it was** -- the estimate from brightness,
+        which is the documented behaviour rather than a failure:
+
+          * the switch is off;
+          * no vision model is installed, which `material.available()` reports without raising, **because a user without
+            one is a supported configuration** -- the note's own wording is that the material table is what a filter
+            cannot fake, not that a model is required;
+          * an analysis that raises for any reason, after which it is not retried (the flag is set), so one bad frame
+            cannot cost a render per frame.
+
+        **And the provenance is recorded** (`nir_label_source`), so any figure can say whether the albedo came from a
+        model or an estimate -- the same discipline the chain's stage traces follow.
+        """
+        if not self.nir_material or self._nir_failed or self._nir_albedo is not None:
+            return
+        try:
+            from ..codecs import material
+            from ..codecs.nightvision import albedo_map
+        except Exception:                                                       # noqa: BLE001
+            self._nir_failed = True
+            return
+        if not material.available(self.nir_model_dir):
+            # **the fallback, taken deliberately**: no model here, so the brightness estimate stands
+            self._nir_failed = True
+            self.nir_label_source = "estimate (no vision model found)"
+            return
+        try:
+            labelled = material.analyse(rgb, grid=self.nir_grid, model_dir=self.nir_model_dir,
+                                        margin_floor=self.nir_margin_floor)
+        except Exception:                                                       # noqa: BLE001
+            labelled = None
+        if labelled is None:
+            self._nir_failed = True
+            self.nir_label_source = "estimate (labelling failed)"
+            return
+        h, w = rgb.shape[:2]
+        lum = np.clip(np.asarray(rgb, np.float32) @ np.array([0.299, 0.587, 0.114], np.float32), 0.0, 1.0)
+        # the fallback the unlabelled cells take: the estimate's own shape, normalised the same way
+        est = np.power(lum, 0.55)
+        self._nir_albedo = albedo_map(h, w, labelled, fallback=est)
+        classes = labelled["classes"]
+        counts = {}
+        for v in np.asarray(labelled["labels"], np.int32).ravel():
+            counts[classes[v] if v >= 0 else "unsure"] = counts.get(classes[v] if v >= 0 else "unsure", 0) + 1
+        self.nir_label_source = "%s: %s" % (labelled["source"],
+                                            ", ".join("%s %d" % kv for kv in sorted(counts.items(), key=lambda kv: -kv[1])))
 
     def _nv_exposure_bias(self) -> float:
         """

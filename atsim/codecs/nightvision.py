@@ -97,6 +97,12 @@ class NightVisionSpec:
     read_noise: float = 0.0
     #: the illuminator's own leakage into the visible channels, which is why the beam looks faintly purple
     illuminator_visible: float = 0.02
+    #: **The near-IR albedo per pixel, from material labelling.**  `None` means "estimate it from brightness", which
+    #: is what the model does on its own and what a user gets when no vision model is installed.  Where a model is
+    #: available, `atsim.codecs.material.analyse` labels the scene's materials and `albedo_map` turns the labels into
+    #: this per-pixel array -- **so near-IR response stops being a function of visible brightness**, which is the thing
+    #: `note.txt` says is hardest to fake and which `IR_ALBEDO`'s measured orderings exist to express.
+    ir_albedo: "np.ndarray | None" = None
 
     @classmethod
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
@@ -117,6 +123,57 @@ class NightVisionSpec:
             read_noise=float(cfg.get("nv_read_noise", 0.0)),
             illuminator_visible=float(cfg.get("nv_illuminator_visible", 0.02)),
         )
+
+
+def albedo_map(h: int, w: int, labelled: dict | None, fallback: np.ndarray | None = None) -> np.ndarray:
+    """
+    Turn material labels into a per-pixel near-IR albedo, in the units `IR_ALBEDO` uses and normalised about its mean.
+
+    **The normalisation is what makes it safe to multiply into the picture.**  `IR_ALBEDO`'s values run from 0.28 (dark
+    clothing) to 2.10 (foliage), i.e. a **7.5x range**, and its mean over a scene is arbitrary -- so used raw it would
+    change the picture's level as well as its structure.  Dividing by the map's own mean leaves the *relative* response
+    the table describes -- foliage bright against dark clothing -- and touches nothing else.
+
+    **Where the model was unsure, the estimate takes over.**  A cell labelled -1, or carrying confidence below the floor
+    the caller set, contributes the `fallback` value instead (itself normalised the same way), so the two sources mix
+    per cell rather than one replacing the other wholesale.  **That is the whole reason confidence is carried**: measured
+    on the reference photograph the model's margin runs from 0.692 to 0.030, and a label at 0.03 must not be allowed to
+    put foliage's 2.10 onto concrete.
+
+    **The upsampling is nearest-neighbour on purpose.**  Bilinear would invent smooth gradients between materials that
+    do not exist in the table, and the model's own boundaries are the cell edges; a hard edge is the honest rendering of
+    a grid of class labels.
+    """
+    if labelled is None:
+        # **no model: the estimate is `lum ** 0.55` in the caller, so a uniform map leaves that path untouched**
+        return np.ones((h, w), np.float32)
+    labels = np.asarray(labelled["labels"], np.int32)
+    conf = np.asarray(labelled["confidence"], np.float32)
+    alb = np.asarray(labelled["albedo"], np.float32)
+    gh, gw = labels.shape
+    # **The fallback is reduced to the labelling grid, not the reverse.**  It arrives at the picture's full resolution
+    # (it is the brightness estimate) while the labels are one value per cell, and mixing the two requires them in the
+    # same shape.  Reducing the fallback keeps the model's own cell boundaries as the map's boundaries -- the opposite
+    # choice would smear the labels back up to full resolution and then average, inventing boundaries the model never
+    # drew.
+    if fallback is None:
+        fb = np.ones((gh, gw), np.float32)
+    else:
+        f = np.asarray(fallback, np.float32)
+        if f.shape[:2] != (gh, gw):
+            f = f[: gh * max(1, f.shape[0] // gh), : gw * max(1, f.shape[1] // gw)]
+            f = f.reshape(gh, f.shape[0] // gh, gw, f.shape[1] // gw).mean(axis=(1, 3))
+        fb = f.astype(np.float32)
+    # a cell's value is its albedo, or the estimate where the model was unsure; weighted by how sure it was
+    wgt = np.clip(conf / max(1e-6, float(conf.max())), 0.0, 1.0)
+    mixed = np.where(labels >= 0, wgt * alb + (1.0 - wgt) * fb, fb)
+    big = np.repeat(np.repeat(mixed, max(1, h // gh), axis=0), max(1, w // gw), axis=1)
+    # the grid may not divide the frame evenly; clip rather than pad so no row is invented
+    big = big[:h, :w]
+    if big.shape != (h, w):
+        big = np.resize(big, (h, w))
+    m = float(big.mean())
+    return (big / m if m > 1e-6 else big).astype(np.float32)
 
 
 def mode_of(spec: NightVisionSpec) -> str:
@@ -227,6 +284,14 @@ def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # visible effect -- pale surfaces lifting, dark ones deepening -- survives, because that comes from the ratio
     # `lum_ir / lum` and not from an additive constant.
     ir = np.power(lum, 0.55)
+    # **The material's own near-IR albedo, where one is known.**  With no labelled map this multiplies by one and the
+    # line below is exactly the brightness estimate it has always been.  With a map, **the response stops being a
+    # function of visible brightness** -- foliage at 2.10 against dark clothing at 0.28 is a 7.5x ratio the luminance
+    # curve cannot express, and it is the difference `note.txt` says no amount of colour grading reproduces.
+    if spec.ir_albedo is not None:
+        alb = np.asarray(spec.ir_albedo, np.float32)
+        if alb.shape[:2] == lum.shape:
+            ir = ir * alb
     # **The curve keeps its SHAPE and loses its scale effect.**  `lum ** 0.55` stretches the shadows and compresses
     # the highlights, which is the appearance the term is for -- but a power below 1 also *lowers the spread* of any
     # picture it is applied to, and measured on a photograph it took the contrast from 0.1894 to 0.1308, i.e. **31%**.
