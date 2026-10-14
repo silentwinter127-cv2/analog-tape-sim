@@ -1,0 +1,43 @@
+correct a wrong verdict from the previous round, and record a contradiction I could not resolve
+
+**The correction, which matters more than anything else here.**  Last round I reported that `accumulate` was
+**inert** -- "temporal noise at `accumulate = 8` was 0.07968 against a single frame's 0.07968, no reduction at all".
+**That was wrong, and the mistake was mine**: the test set `nv_mode = 1` *and* `nv_accumulate = 8`, and `mode_spec`
+builds the spec from the **mode's preset** on every frame -- so mode 1 forced `accumulate` back to 1 and the term never
+ran.  **The parameter is an override; the mode is the control.**  Re-measured with the mode named, and with an ensemble
+over frame indices (which for a flickering source is an ensemble over noise realisations):
+
+    mode 1 (nightshot, one frame)        0.05014    1.000
+    mode 2 (super, 8 frames)             0.02141    **0.427**     (1/sqrt(8) = 0.354)
+    mode 3 (slow shutter, 8 integrated)  0.02144    0.428
+
+**so the accumulation reduces the noise by 2.3x, close to the 2.83x that eight frames predict**, and the earlier
+"regression I introduced" is not there either.  **And this is the second time the same configuration error produced a
+confident wrong verdict** -- the three-mode test before it failed the same way -- so the lesson is recorded with the
+figures rather than as a note.
+
+**Then the shot noise, measured on a flat field where the picture's own structure cannot hide it.**  Two uniform patches,
+dark 0.10 and bright 0.60, so every variation in them is noise by construction and the prediction is exact: a shot term's
+standard deviation goes as `sqrt(lum)`, so the ratio should be **2.449**.
+
+    neither                       dark 0.00487   bright 0.00774   ratio 1.590
+    read 0.20 only                dark 0.00487   bright 0.00774   ratio 1.590
+    shot 0.10 only                dark 0.00487   bright 0.00774   ratio 1.590
+    shot 0.20 only                dark 0.00487   bright 0.00774   ratio 1.590
+    read 0.20 + shot 0.20         dark 0.00487   bright 0.00774   ratio 1.590
+
+**every row is bit-identical, which means neither term is reaching the output at all** -- not that the shot term is
+weak.  **And that contradicts an earlier measurement in this same work**, where raising `read_noise` from 0 to 0.25 moved
+the dark-to-bright ratio from 0.281 to 0.448.  **Two of my own measurements disagree, so at least one of them is measuring
+something other than what it says**, and I could not resolve which before running out of room.  The candidates, none
+checked: the source being a **synthetic flat field** rather than a photograph (so the camera's AE and AWB loops may be
+driving the noise to a different operating point), the frames chosen (80-99 against 60-79), and whether the exposure loop
+filters per-pixel noise while leaving the mean.
+
+**What is therefore true of `shot_noise`**: the term exists, is read from `nv_shot_noise`, runs by default at 0.10,
+implements the right law (`sigma = shot_noise * sqrt(lum)`, which is what a Poisson arrival gives), and **on a photograph
+moved the dark-to-bright ratio by -0.001 where read noise moved it +0.166**.  **Whether that is the term being too weak or
+the measurement being unable to see it is still open**, and the flat-field test that was meant to settle it produced a
+result that contradicts a previous one instead.  **It is not claimed as verified.**
+
+**163 checks pass, selftest clean**, and no behaviour on the default path changed.
