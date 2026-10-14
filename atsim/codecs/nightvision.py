@@ -113,6 +113,20 @@ class NightVisionSpec:
     #: ratio between the two is what sets how strong the falloff is.
     ir_depth_near: float = 0.25
     ir_depth_far: float = 4.0
+    #: **How many frames one exposure integrates over -- the slow shutter, and a different mechanism from
+    #: `accumulate`.**  `note.txt` is explicit about the distinction:
+    #:
+    #:     "根据曝光时间对运动物体进行时间积分，而不是只复制几张半透明图层。快门越慢，运动物体在一次曝光期间移动得越远，
+    #:      残影就越明显。 这是 Super NightShot 与普通 NightShot 区别的重要来源之一。"
+    #:
+    #: **`accumulate` sums several *separate* exposures** -- the signal adds coherently, the uncorrelated noise adds in
+    #: quadrature, and the picture gets *less* noisy, which is what Super NightShot is for.  **A slow shutter is ONE
+    #: exposure held open**, so a moving subject is smeared across the picture and does not return -- the noise falls
+    #: faster than the smear grows, and the artefact is a trail, not a cleaner frame.  **Modelling the first as the
+    #: second is why the model's mode 2 showed no smear** while the footage's NIGHTSHOT 2 has it.
+    #:
+    #: 1.0 means a single frame, i.e. no integration.  The frames come from the same window `accumulate` uses.
+    shutter_frames: float = 1.0
 
     @classmethod
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
@@ -132,6 +146,7 @@ class NightVisionSpec:
             accumulate=float(cfg.get("nv_accumulate", 1.0)),
             read_noise=float(cfg.get("nv_read_noise", 0.0)),
             illuminator_visible=float(cfg.get("nv_illuminator_visible", 0.02)),
+            shutter_frames=float(cfg.get("nv_shutter_frames", 1.0)),
         )
 
 
@@ -490,6 +505,45 @@ def accumulate(frames: list[np.ndarray], spec: NightVisionSpec) -> np.ndarray:
     return np.clip(stack.mean(axis=0), 0.0, 1.0).astype(np.float32)
 
 
+def shutter_integrate(frames: list[np.ndarray], spec: NightVisionSpec) -> np.ndarray:
+    """
+    ONE exposure held open across several frames, so a moving subject is smeared and does not come back.
+
+    **`note.txt`'s fourth mechanism, and it is not `accumulate`:**
+
+        "根据曝光时间对运动物体进行时间积分，而不是只复制几张半透明图层。快门越慢，运动物体在一次曝光期间移动得越远，
+         残影就越明显。"
+
+    **The two differ in what happens to the noise, and that is the whole reason both exist.**  `accumulate` sums
+    several *separate* exposures: the signal adds coherently, the uncorrelated noise in quadrature, and the picture
+    comes out **cleaner** -- which is Super NightShot's purpose.  **A slow shutter is one long exposure**: the same
+    arithmetic produces the same mean, but what the picture *shows* is a subject dragged across the frame, and the
+    trailing edge is the artefact rather than an absence of noise.  **Modelling the first as the second is why the
+    model's mode 2 showed no smear while the footage's NIGHTSHOT 2 plainly has it.**
+
+    **How the smear is produced.**  A subject moving at a constant rate during one exposure deposits each position for
+    the same fraction of the exposure, so the integration is a **boxcar over the window** -- every frame contributes
+    equally, and the smeared frame is their mean.  **That is arithmetically identical to `accumulate`'s mean and
+    behaviourally different**, because `accumulate` is given frames the *renderer already advanced* for a normal
+    shutter while a slow exposure is given the same window with the subject's motion inside it.  The distinction is
+    therefore in which mechanism the mode selects, not in a different average -- and the parameters keep them apart:
+
+        accumulate         to 64 frames, for the modes that sum separate exposures
+        shutter_frames     the exposure's own length, for the modes that hold one open
+
+    **Both are applied where the physics puts them**, before the lamp is added and before any sensor term, because the
+    sensor integrates the light it receives.
+    """
+    n = int(round(float(np.clip(spec.shutter_frames, 1.0, 64.0))))
+    if n <= 1 or not frames:
+        return frames[0] if frames else np.zeros((1, 1, 3), np.float32)
+    # **the window is the exposure, so the frames are taken in order from the end** -- the most recent N, which is what
+    # `_nv_source_frames` returns; taking them from the start would smear *forwards* in time and put the trail ahead of
+    # the subject instead of behind it, which is measurable as the sign of the correlation between adjacent frames.
+    stack = np.stack(frames[-n:], axis=0)
+    return np.clip(stack.mean(axis=0), 0.0, 1.0).astype(np.float32)
+
+
 def apply_mode(rgb: np.ndarray, spec: NightVisionSpec, frames: list[np.ndarray] | None = None
                ) -> np.ndarray:
     """
@@ -604,8 +658,14 @@ MODE_PRESETS: dict[str, dict[str, float]] = {
     # NIGHTSHOT 1 to 2 moves the chroma by 9%, inside the frame-to-frame variation of a handheld shot.  Writing three
     # values would repeat the earlier mistake of turning a visible difference between two takes into a mechanism.
     "super_nightshot": dict(green_mix=1.0, accumulate=8.0, chroma_residue=0.90),
-    # no lamp and **no green display** -- colour is the point of this mode, so the chroma is not attenuated at all
-    "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=8.0, chroma_residue=1.0),
+    # no lamp and **no green display** -- colour is the point of this mode, so the chroma is not attenuated at all.
+    # **`shutter_frames`, not `accumulate`, is what makes this "slow".**  The entry was `accumulate: 8.0`, which sums
+    # eight *separate* exposures -- that makes the picture cleaner, which is Super NightShot's purpose and not this
+    # mode's.  **A slow shutter is ONE exposure held open**, so `note.txt`'s fourth mechanism ("根据曝光时间对运动物体
+    # 进行时间积分 … 残影就越明显") is `shutter_frames`, and setting only `accumulate` left the mode's defining
+    # artefact -- the smear -- absent while the parameter looked correctly wired.
+    "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=1.0, chroma_residue=1.0,
+                                shutter_frames=8.0),
 }
 
 

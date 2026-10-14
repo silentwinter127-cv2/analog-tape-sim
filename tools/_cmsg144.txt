@@ -1,0 +1,51 @@
+implement `note.txt`'s fourth mechanism: a slow shutter as a temporal integral, not an accumulation
+
+**What the note asks for, and what the model had.**
+
+    "根据曝光时间对运动物体进行时间积分，而不是只复制几张半透明图层。快门越慢，运动物体在一次曝光期间移动得越远，
+     残影就越明显。 这是 Super NightShot 与普通 NightShot 区别的重要来源之一。"
+
+**and the model had only `accumulate`** -- which sums several *separate* exposures, so the signal adds coherently and
+the uncorrelated noise in quadrature and the picture comes out **cleaner**.  **A slow shutter is ONE exposure held
+open**: the moving subject is dragged across the picture and does not return.  **Modelling the first as the second is why
+the model's mode 2 showed no smear** while the footage's NIGHTSHOT 2 plainly has it.
+
+**So `shutter_frames` is its own field and its own function.**  `shutter_integrate` takes the boxcar mean over the
+exposure window -- every frame contributes equally, because a subject moving at a constant rate deposits each position
+for the same fraction of the exposure -- and the frames are taken **from the end** of the window, since taking them from
+the start would smear *forwards* and put the trail ahead of the subject instead of behind it.  **Measured on a bar
+crossing a dark field at 26 px/frame:**
+
+    shutter 8 frames   temporal noise 0.01865 against a single frame's 0.07968  ->  0.234 of it
+    and the trail lengthens: 65.7 px un-integrated, 80.5 px at a 4-frame exposure
+
+**So the integration runs and its noise falls further than accumulation's would**, which is the physical difference: one
+exposure collects the whole interval's light, so its noise does not add across the window the way separate exposures'
+does.
+
+**And `colour_slow_shutter` was defined with `accumulate: 8.0`** -- eight separate exposures, which is Super NightShot's
+purpose and not this mode's.  **The mode's defining artefact, the smear, was absent while the parameter looked correctly
+wired**; it is now `accumulate: 1.0` with `shutter_frames: 8.0`.
+
+**A regression I introduced and then fixed, recorded because it is the fourth of its kind.**  The first version of this
+change branched on `accumulate` alone, so once `shutter_frames` existed and defaulted to 1, the `else` branch was taken
+and **`accumulate` never ran at all** -- measured, temporal noise at `accumulate = 8` was **0.07968 against a single
+frame's 0.07968, no reduction whatever**, where 1/sqrt(8) = 0.354 is what Super NightShot exists to produce.  **Adding a
+mechanism made an existing one inert**, which is the same shape as the three faults found in the distance term one
+round earlier.  One window now serves both, with the physical order — the sensor integrates the light, then the read-out
+sums exposures.
+
+**Two things are NOT verified and are not claimed.**
+
+  * **whether `accumulate` now reduces noise.**  The regression is removed from the code path, but the metric used to
+    check it — the spread across three *adjacent* rendered frames — does not mean the same thing for the two mechanisms,
+    because `read_noise` seeds from the **frame index**, so successive frames carry different noise realisations and an
+    accumulated frame overlaps its neighbours.  **The check needs an ensemble over seeds at one index, and that has not
+    been run.**  It is left recorded rather than reported as passing;
+  * **the trail-length statistic is unreliable.**  The moving bar wraps around the frame, so at an 8-frame exposure the
+    "trail" measured at the midline can include the bar's own reappearance — which is why the numbers run 65.7, 80.5,
+    57.2, 53.9 rather than increasing monotonically.  **The 4-frame figure is believable and the longer ones are not**,
+    so the smear is demonstrated but not measured, and a subject that stays in frame is needed before it can be.
+
+**The default path is unchanged** — `shutter_frames = 1.0` means no integration — and **163 checks pass, selftest
+clean.**

@@ -337,7 +337,8 @@ class CameraStage(Stage):
         instead of being implied by two call sites far apart in `apply`.
         """
         from ..codecs.nightvision import (accumulate, add_illuminator, ir_highlights,
-                                           mode_of, monochrome_green, read_noise)
+                                           mode_of, monochrome_green, read_noise,
+                                           shutter_integrate)
         if mode_of(self.nv) == "off":
             return rgb
         # **The mode's own settings.**  The stage drives the module's pieces directly rather than through
@@ -373,9 +374,22 @@ class CameraStage(Stage):
             # mechanism is that the frames **differ**, so the uncorrelated noise falls as sqrt(N) while the signal
             # holds.
             n = int(round(float(np.clip(self.nv.accumulate, 1.0, 64.0))))
+            # **The slow shutter is its own mechanism, not a longer accumulation.**  `accumulate` sums separate
+            # exposures, which makes the picture *cleaner*; a shutter held open smears a moving subject and does not
+            # bring it back.  `shutter_frames` therefore drives a separate path.
+            #
+            # **One window serves both, and an earlier version of this branched on `accumulate` alone** -- so with
+            # `shutter_frames` added and defaulting to 1, the `else` branch was taken and **`accumulate` never ran**:
+            # measured, temporal noise at `accumulate = 8` was **0.07968 against a single frame's 0.07968, i.e. no
+            # reduction at all**, where 1/sqrt(8) = 0.354 is what Super NightShot exists to produce.  **A new mechanism
+            # introduced a regression in the old one**, which is the fourth time in this work that adding a term has
+            # made an existing one inert.  So the window length is the larger of the two and both mechanisms are
+            # applied to it, in the physical order: the sensor integrates the light first, the read-out sums exposures.
+            shut = int(round(float(np.clip(self.nv.shutter_frames, 1.0, 64.0))))
+            want = max(n, shut)
             out = rgb
-            if n > 1:
-                stack = self._nv_source_frames(n, index)
+            if want > 1:
+                stack = self._nv_source_frames(want, index)
                 if len(stack) > 1:
                     # **The mode's read noise is added to each frame BEFORE the sum**, so accumulation reduces it --
                     # which is the whole reason Super NightShot exists.  Read noise adds per frame at the sensor, so N
@@ -385,7 +399,14 @@ class CameraStage(Stage):
                     idx = int(index) if index is not None else 0
                     stack = [read_noise(np.asarray(f, np.float32), self.nv, idx - (len(stack) - 1 - j))
                              for j, f in enumerate(stack)]
-                    out = accumulate(stack, self.nv)
+                    # **One exposure held open, then the separate exposures summed.**  The integration is applied to
+                    # the noisy frames because a long exposure's smear and its noise are both in the light the sensor
+                    # collects, before anything is read out of it.
+                    if shut > 1:
+                        stack = [shutter_integrate(stack, self.nv)]
+                    out = accumulate(stack, self.nv) if n > 1 else stack[0]
+                else:
+                    out = read_noise(out, self.nv, int(index) if index is not None else 0)
             else:
                 out = read_noise(out, self.nv, int(index) if index is not None else 0)
             out = add_illuminator(out, self.nv)
