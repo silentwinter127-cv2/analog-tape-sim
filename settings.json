@@ -204,6 +204,8 @@
       "burst_phase_error": 5.0,
       "chroma_bandwidth": 0.75,
       "chroma_gain": 1.0,
+      "chroma_lag": 0.0,
+      "chroma_lag_frames": 4.0,
       "chroma_vert_blend": 0.5,
       "chroma_vertical_averaging": 0.85,
       "color_noise": 0.25,
@@ -477,6 +479,8 @@
       "burst_phase_error": 5.0,
       "chroma_bandwidth": 0.75,
       "chroma_gain": 1.0,
+      "chroma_lag": 0.0,
+      "chroma_lag_frames": 4.0,
       "chroma_vert_blend": 0.5,
       "chroma_vertical_averaging": 0.85,
       "color_noise": 0.25,
@@ -607,6 +611,8 @@
     }
   },
   "_notes": {
+    "chroma_lag": "**the chroma channel's memory across frames** (note.txt §2), and the only parameter in the model that is about time rather than about one picture.  Left at 0.0, which is a no-op to the bit: twelve frames of the reference scene are byte-identical with it off, so nothing above this line depends on it.  Measured with a one-frame colour flash on a still picture (the only subject a spatial filter cannot reproduce): at weight 0.60 the chroma carried into the next frames is 0.00441 / 0.00265 / 0.00159 / 0.00096, a ratio of **0.601** against the coefficient itself, while at weight 0.00 the same four frames read **0.00000**.  **0.30 is the note's own weight**; the default is 0 because it needs the sequence pumped in order, which the renderer guarantees but a single-frame probe does not.  **It is not gated to `nv_mode`**, unlike the night-vision block: a chroma channel does not know which display mode the camera is in.",
+    "chroma_lag_frames": "how many frames of chroma the ring keeps.  It does not change the steady-state tail (that is `chroma_lag`'s recursion) -- only how far back the machine remembers.  At the default weight of 0 it costs nothing; the renderer's timeline reports `lagged_frames` and `cold_frames` so that 'the mechanism did nothing' and 'the history was empty' stay distinguishable.",
     "exposure": "camera exposure, stops.  Left at 0.0: the night-vision trim is applied inside the mode instead, because changing this broke 'a cold machine renders differently from a warm one'.",
     "saturation_stops": "**the sensor's saturation point, in stops below `dynamic_range`'s own white.**  Measured: at 0.0 the white point is 1.0 while the picture's maximum is 0.87, so `lin >= white` never fires and no pixel can ever clip -- the model's brightest pixel was 0.8686 with 0.00000 clipped, against the footage's 1.0000 with 0.00657.  0.30 is the largest value that leaves the overflow drain its ring: the ring reads 0.00310 / 0.00597 / 0.00919 at drain 0.15 / 0.25 / 0.35, and by 0.35 it has collapsed to 0.00021 / 0.00048 / 0.00084 because the white point (0.812 at 0.30, 0.757 at 0.40) approaches the drain check's own 0.62 ceiling.  **Applies only while `nv_mode` is on**: applied always it made the scanline structure cost light (mean varying 0.00275 across the four spot sizes).",
     "dynamic_range": "stops.  Left at 8.0.  **A lower value RAISES the white point** (8 -> 1.00, 10 -> 1.19, 12 -> 1.41), so it is the opposite control to `saturation_stops` and cannot produce a highlight.",

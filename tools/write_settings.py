@@ -27,6 +27,21 @@ from atsim.core.profiles import FACTORY_PRESETS, SCHEMA                       # 
 #: the parameters this work calibrated, and why each has the value it has.  **Every figure here was measured**, and the
 #: ones that came from a sweep say what the sweep showed.
 NOTES = {
+    "chroma_lag": "**the chroma channel's memory across frames** (note.txt §2), and the only parameter in the model "
+                  "that is about time rather than about one picture.  Left at 0.0, which is a no-op to the bit: twelve "
+                  "frames of the reference scene are byte-identical with it off, so nothing above this line depends "
+                  "on it.  Measured with a one-frame colour flash on a still picture (the only subject a spatial "
+                  "filter cannot reproduce): at weight 0.60 the chroma carried into the next frames is "
+                  "0.00441 / 0.00265 / 0.00159 / 0.00096, a ratio of **0.601** against the coefficient itself, while "
+                  "at weight 0.00 the same four frames read **0.00000**.  **0.30 is the note's own weight**; the "
+                  "default is 0 because it needs the sequence pumped in order, which the renderer guarantees but a "
+                  "single-frame probe does not.  **It is not gated to `nv_mode`**, unlike the night-vision block: a "
+                  "chroma channel does not know which display mode the camera is in.",
+    "chroma_lag_frames": "how many frames of chroma the ring keeps.  It does not change the steady-state tail (that "
+                         "is `chroma_lag`'s recursion) -- only how far back the machine remembers.  At the default "
+                         "weight of 0 it costs nothing; the renderer's timeline reports `lagged_frames` and "
+                         "`cold_frames` so that 'the mechanism did nothing' and 'the history was empty' stay "
+                         "distinguishable.",
     "exposure": "camera exposure, stops.  Left at 0.0: the night-vision trim is applied inside the mode instead, "
                 "because changing this broke 'a cold machine renders differently from a warm one'.",
     "saturation_stops": "**the sensor's saturation point, in stops below `dynamic_range`'s own white.**  Measured: at "

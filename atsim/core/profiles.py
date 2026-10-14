@@ -571,7 +571,39 @@ def build_schema() -> ParamSchema:
                     "实测参考片：行间色度相关从 lag1 的 +0.98 掉到 lag16 的 +0.20，"
                     "相干长度约 20-30 行且**没有固定周期**（因为反馈是按列独立的，每列历史不同）。"
                     "注意：**只在帧内递归**，不跨帧携带状态——跨帧会把相邻帧耦合起来，"
-                    "从而破坏「任意顺序请求帧、缓存仍然正确」这条前提。")
+                    "从而破坏「任意顺序请求帧、缓存仍然正确」这条前提。"
+                    "**需要跨帧的那一条另有其人**：`色度时间残留 (C(t-1))`。"
+                    "两者都是色度通道的记忆，但一个沿【垂直方向】在帧内递归，一个沿【时间方向】跨帧递归，"
+                    "分开放是因为它们的代价不同——前者不影响缓存前提，后者要求按顺序推进。")
+    # ---- temporal chroma lag ------------------------------------------------------------------------------------
+    # **Where this lives, and why it is not an `nv_*` parameter.**  The note asks for it as part of the chroma-damage
+    # model (its §2) and calls the NightShot requirement separately (its second half), so the mechanism belongs to the
+    # chroma channel -- the same channel in a VHS deck, a Hi8 camcorder and a NightShot DV path.  Putting it in the
+    # night-vision block would have repeated the fault REVIEW.md §3.4 names: confining a sensor/processing parameter
+    # to one *display* mode, when the physics does not know what mode the camera is in.  So it is a `format` parameter
+    # and it is live on every branch.
+    fmt.define("chroma_lag", "色度时间残留 (C(t-1))", 0.0, 0.0, 0.9, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.35,
+               source="窄带色度通道的冲激响应记忆（估算）；note.txt §2 的 0.3 权重",
+               help="**色度滞后一帧再混回来**，是唯一一条纯粹关于时间的机制："
+                    "色度通道的带宽只有亮度的几分之一（VHS 约 0.6-1.0 MHz），"
+                    "窄带通道的冲激响应本来就横跨若干行的时间，"
+                    "所以颜色比亮度晚到、并在物体移走后残留——"
+                    "Digital8 NightShot 的运动拖影、VHS 的彩色尾巴都出自这里。"
+                    "0 = 关闭（默认，逐帧输出与从前逐位相同）；"
+                    "0.3 = note.txt §2 的 `0.7·C(t) + 0.3·C(t-1)`。"
+                    "**实现是递归的**（每帧再混入前一帧的【输出】），"
+                    "等效于一条一阶 IIR——0.3 的尾巴衰减到 5% 需要 3 帧，"
+                    "这正是「拖影」而不是「双影」的原因。"
+                    "**代价与前提**：它必须按顺序推进（与整条链的时基/噪声状态同一条规矩），"
+                    "所以第一帧、以及参数改动后的第一帧没有历史、等同于关闭；"
+                    "任意顺序跳帧取样不会看到这条机制。")
+    fmt.define("chroma_lag_frames", "色度残留记忆深度", 4.0, 1.0, 8.0, unit="帧", group=g,
+               step=1.0, phys_min=1.0, phys_max=4.0, source="窄带通道的冲激响应长度",
+               help="保留多少帧的色度历史。**它不改变稳态的尾巴**（尾巴由 `色度时间残留` 的递归系数决定），"
+                    "决定的是这台机器「记得多久」——历史表填满后，"
+                    "一条衰减到 0.3^4 ≈ 0.8% 的尾巴本来也看不见了。"
+                    "默认 4 是在实测里能覆盖整条可见尾巴的最小值。")
     fmt.define("comb_depth", "梳状滤波深度", 0.55, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.2, phys_max=0.9, source="NTSC 接收机梳状滤波器",
                help="1H 延迟梳状滤波的权重；越深串色越少，但垂直亮度分辨率下降。")

@@ -4255,5 +4255,334 @@ def check_declared_ranges_are_reachable() -> None:
            "a range that is inert at one end is either mis-declared or not wired to anything",
            "inert: %s" % (inert or "none"),
            not inert)
+def check_chroma_lag() -> None:
+    """
+    Temporal chroma lag: the colour of a moving object must survive into the next frame's picture.
+
+    **This is the one mechanism in the model that is about the passage of time rather than about one picture**, and
+    the note asks for it by name (its §2: `Y(t) + 0.7*C(t) + 0.3*C(t-1)`, "this will be very close to a real
+    device"). It was the last ABSENT row in `tools/note_audit.py`, so the first thing this check has to establish is
+    that it exists at all.
+
+    **Why a naive check would have passed on a spatial blur.** Every quantity that a "smear" produces is also
+    produced by a horizontal lowpass: colour spread sideways, edges softened, a coloured halo. A check that measured
+    "the colour is more spread out than before" would therefore pass on a mechanism that never looked at another
+    frame -- which is this project's most expensive failure shape, and it is why the assertions below are all
+    *temporal*:
+
+      * the leading assertion is a **one-frame colour flash**, and it is scored on the frames *after* the flash. A
+        spatial filter cannot do anything with it: the frames that follow are pixel-identical in the two scenes being
+        compared, so filtering them changes nothing, and any difference at all is memory. That is a **presence**
+        test -- 0.00000 against something -- rather than a threshold, and the 0.00000 is exact;
+      * the second is the **decay ratio** between consecutive frames after the flash, which is the recursion
+        coefficient itself and so pins *which* mechanism is present: a two-tap blend or a one-frame delay gives a
+        ratio of 0.000;
+      * the third is what the mechanism adds to a **moving** object, scored in the band the object has just arrived
+        in -- where it is now and was not last frame -- with the cosine against `previous - current`. That is a
+        statement about *where the colour came from*, and it is the only one of the three that a blur could mimic,
+        which is why it is not the one doing the proving;
+      * and the negative control is the **same scene with the object held still**, where consecutive frames are
+        identical and lag must do *nothing at all*.
+
+    **The instrument took four attempts, and every failure was the same failure.** A difference between two scenes is
+    only a measurement of the flash if the flash is the only thing that differs: comparing "bar every frame" with
+    "bar only at frame 6" read 0.12968 at lag 0; giving the bar a cyan colour on the flash frame read 0.01846; and
+    letting a 30 px/frame bar sweep past a 24 px fixed patch meant it crossed the patch eventually whatever the
+    geometry. So the flash assertion's scene has **no bar at all** -- a cyan field and a stationary cyan patch that
+    is red on one frame -- and the motion assertion uses a separate scene. Each failure is recorded at the point in
+    the code where it was made.
+
+    Measured on the check's own scene (176x128, a 24 px patch, a 24 px bar travelling 30 px/frame):
+
+        flash, frames 7..10    lag 0.00: 0.00000 0.00000 0.00000 0.00000      <- exact
+                               lag 0.30: 0.00385 0.00116 0.00035 0.00010
+                               lag 0.60: 0.00441 0.00265 0.00159 0.00096
+        ratio, lag 0.60        0.00265 / 0.00441 = 0.601, against k = 0.60
+        moving object          cosine with (previous - current): 0.883 at lag 0.30, 0.884 at 0.60;
+                               at lag 0 the difference is identically zero, so there is nothing to score
+        still object           max|delta| 0.00000, against 0.18641 for the moving one
+
+    The first row is the important one: **zero on all four frames with the mechanism off, and a geometric tail with
+    it on.**
+    """
+    import numpy as np
+
+    from atsim.core.params import merge_values
+    from atsim.core.profiles import FACTORY_PRESETS
+    from atsim.render.renderer import Renderer
+
+    COEF = np.array([0.299, 0.587, 0.114], np.float32)
+    W, H, FPS, FRAMES = 176, 128, 25.0, 16
+    #: **`STEP > BAR` is a hard requirement of the geometry, not a taste.** With the first version's 20 px step and
+    #: 24 px bar, every frame's band overlapped the previous frame's completely, `now & ~was` was empty on **every**
+    #: frame, and the third assertion below scored 0 frames while reporting PASS -- vacuously true, and the fourth
+    #: time this project has recorded a measurement that could not see its own subject. The band is now 40 px wide
+    #: and the count of frames it scored is printed with the result.
+    #:
+    #: `FRAMES` is 16 rather than 12 for the same reason: at 12 the object has left a 176 px frame by frame 9, so
+    #: only four frames produce a band at all. The count is the instrument's own coverage and it is asserted.
+    STEP, BAR = 30.0, 24
+    IMPULSE_AT = 6
+    CYAN = (0.16, 0.55, 0.56)
+    HOT = (0.90, 0.12, 0.10)
+    #: The flash patch's own columns, and its measurement window (its middle 10 columns, so the horizontal band
+    #: limit's ~23 px spread from the patch's own edges stays outside the window -- that spread is what put
+    #: `_sep_probe`'s "the rainbow fringe turned out to have been there all along" into the record).
+    FLASH = (40, 64)
+
+    def _columns(centre: float, width: int = BAR) -> np.ndarray:
+        """A full-height band of columns -- a bar, which has no vertical structure to speak of."""
+        m = np.zeros((H, W), dtype=bool)
+        x0 = int(round(centre - width / 2.0))
+        m[:, max(0, x0):min(W, max(0, x0) + width)] = True
+        return m
+
+    class SlidingBar:
+        """
+        Two subjects in one small scene: a **moving bar**, and a **stationary patch that flashes on one frame**.
+
+        They are used separately, and keeping them apart is the fourth correction to this instrument -- the previous
+        three all failed for the same underlying reason, which is that a *difference between two scenes* is only a
+        measurement of the flash if the flash is the only thing that differs:
+
+        * comparing "bar every frame" with "bar only at frame 6" left the two scenes different at **every** frame,
+          and the lag-0 column read 0.12968;
+        * giving the bar a cyan colour on the flash frame still left it red in the other scene on the next frame,
+          and the lag-0 column read 0.01846;
+        * putting the fixed patch at columns 40..64 and letting the bar sweep past it meant the bar crossed the
+          patch's edge on some frame anyway -- the patch is 24 px and the bar travels 30 px a frame, so over a
+          16-frame clip it crosses **whatever** the geometry. Measured, the lag-0 column was zero on the frames in
+          between and non-zero again on frame 9, where the bar arrived.
+
+        So the flash test's scene has **no moving bar at all**: a cyan field and a stationary cyan patch that is red
+        on one frame. Nothing else in the picture ever changes, so the only thing a difference can contain is the
+        flash and what the channel did with it. The moving bar's own scene is used for the motion assertion, and the
+        two never share a measurement.
+        """
+
+        def __init__(self, moving: bool = True, flash_at: int | None = None,
+                     bar: bool = True):
+            self.width, self.height, self.fps, self.frame_count = W, H, FPS, FRAMES
+            self.moving = bool(moving)
+            self.flash_at = flash_at
+            self.bar = bool(bar)
+
+        def centre(self, index: int) -> float:
+            """
+            The bar sweeps **right to left**, so that on the flash frame it is at the far side of the picture.
+
+            That no longer matters now the flash test has its own scene, but it is kept: it puts the two subjects
+            50 px apart on frame 6, which is more than the ~23 px the band limit spreads a step, so even a scene that
+            showed both would not mix them on the frame the measurement starts.
+            """
+            if not self.moving:
+                return W * 0.5
+            return W * 0.5 - (index - FRAMES / 2.0) * STEP
+
+        def frame(self, index: int):
+            out = np.zeros((H, W, 3), np.float32)
+            out[..., 0], out[..., 1], out[..., 2] = CYAN
+            if self.bar:
+                x0 = int(round(self.centre(index) - BAR / 2.0))
+                x1 = min(W, max(0, x0) + BAR)
+                if x1 > max(0, x0):
+                    out[:, max(0, x0):x1] = np.array(HOT, np.float32)
+            if self.flash_at is not None:
+                f0, f1 = FLASH
+                if int(index) == int(self.flash_at):
+                    out[:, f0:f1] = np.array(HOT, np.float32)
+                # ... and on every other frame the patch is the field's own colour, so the two scenes differ in
+                # exactly one frame and in exactly one region
+            return out
+
+    # Everything that would blur, tint or add noise is off: the only thing left to move the chroma is the lag.
+    #
+    # **The camera's own control loops are off too, and that mattered.** With auto-exposure and auto-white-balance
+    # live, the impulse at frame 6 changes the loops' state, and frame 7 -- whose source is identical in both runs --
+    # came out with a camera mean of 0.200000 against 0.229933. The differencing instrument then reported 0.00049
+    # of "chroma carried past the impulse" at `chroma_lag = 0`, i.e. an effect with the mechanism switched off. A
+    # feedback loop is a second temporal mechanism, and leaving it in means measuring the pair.
+    QUIET = merge_values(FACTORY_PRESETS["family_archive_1992"]["layers"], {
+        "display": {"enabled": 0.0},
+        "camera": {"sensor_noise": 0.0, "noise_grain": 0.0, "fixed_pattern": 0.0,
+                   "bloom_amount": 0.0, "lens_flare": 0.0, "flare_amount": 0.0,
+                   "halation": 0.0, "chroma_aberration": 0.0, "longitudinal_ca": 0.0,
+                   "sharpness": 1.0, "motion_blur": 0.0,
+                   "ae_enabled": 0.0, "awb_enabled": 0.0, "af_enabled": 0.0},
+        "format": {"color_noise": 0.0, "cross_color": 0.0, "cross_luma": 0.0,
+                   "edge_boost": 0.0, "burst_phase_error": 0.0},
+        "player": {"color_noise": 0.0, "cross_color": 0.0, "cross_luma": 0.0,
+                   "transport_jitter": 0.0, "head_wear": 0.0, "frequency_response": 0.0},
+        "tape": {"line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0,
+                 "noise_floor": 0.0, "head_switching": 0.0, "dropout_rate": 0.0,
+                 "vertical_instability": 0.0, "wear": 0.0, "drum_speed": 1.0,
+                 "binder_loss": 0.0},
+    })
+
+    def chroma(rgb: np.ndarray):
+        g = rgb @ COEF
+        return (rgb[..., 2] - g) * 0.564, (rgb[..., 0] - g) * 0.713
+
+    def run(lag: float, moving: bool = True, flash_at: int | None = None,
+            bar: bool = True, frames: int = FRAMES) -> tuple[object, list]:
+        scene = SlidingBar(moving, flash_at, bar)
+        layers = merge_values(QUIET, {"format": {"chroma_lag": float(lag)}})
+        r = Renderer(scene, W, H, FPS, layers, seed=11)
+        return scene, [r.render_frame(t) for t in range(frames)]
+
+    def chroma(rgb: np.ndarray):
+        g = rgb @ COEF
+        return (rgb[..., 2] - g) * 0.564, (rgb[..., 0] - g) * 0.713
+
+    #: The window for the **flash** test: the patch's own middle, so the horizontal band limit -- which spreads a
+    #: *spatial* step over about 23 px -- is not what is being measured.
+    FLASH_WINDOW = np.zeros((H, W), dtype=bool)
+    FLASH_WINDOW[:, FLASH[0] + 5:FLASH[1] - 5] = True
+    FLASH_WINDOW &= (np.arange(H)[:, None] > 8) & (np.arange(H)[:, None] < H - 8)
+    #: The window for the **leading-edge** test: the moving bar's own middle, same reasoning.
+    WINDOW = _columns(W * 0.5, BAR - 10)
+    WINDOW &= (np.arange(H)[:, None] > 8) & (np.arange(H)[:, None] < H - 8)
+
+    # --- 1. the single-frame colour flash: colour shown once, and the channel's memory of it
+    #
+    # **This is the assertion that cannot be satisfied by a spatial filter**, which is why it leads. A one-frame
+    # colour flash is, to a spatial filter, nothing: the frame after it has the same cyan field and the same cyan bar
+    # in the same place, and filtering that leaves it unchanged. Only a mechanism with memory across frames can put
+    # the flash's colour into frame 7 at all. So the value at frame 7 is not a calibrated threshold, it is a
+    # **presence** -- 0.00000 against something.
+    #
+    # **The two scenes differ in one frame and in one region, and nothing else in either picture ever moves.** The
+    # scene here has **no bar**: it is a cyan field and a stationary cyan patch, and the patch is red on one frame.
+    # Every earlier version compared two scenes that also differed in where something was, and each time that leaked
+    # into the measurement -- 0.12968 and then 0.01846 at `chroma_lag = 0`, with the mechanism switched off.
+    flash = {}
+    plain = {}
+    for k in (0.0, 0.3, 0.6):
+        _, plain[k] = run(k, flash_at=None, bar=False)
+        _, out = run(k, flash_at=IMPULSE_AT, bar=False)
+        # **The measurement starts one frame AFTER the flash, and that is deliberate.** The flash frame's own
+        # difference is not the mechanism: the display stage's frequency response has a delay line in it (the
+        # `constant_k` filter's group delay is about 23 px at the chroma cutoff), so the two scenes differ on the
+        # flash frame in columns 0..4 as well as the patch's own 40..63 -- measured through the whole chain, the
+        # camera's own output already has the difference at columns 31..36, displaced by the lens's chromatic
+        # aberration. The lag-0 column at the flash frame is therefore **0.01846**, which is an impulse response and
+        # not a leak. What only a memory across frames can produce is a difference on the frames *after* it, and
+        # there the lag-0 column is exactly zero.
+        flash[k] = [float(np.sqrt(((chroma(out[t])[0] - chroma(plain[k][t])[0])[FLASH_WINDOW] ** 2
+                                   + (chroma(out[t])[1] - chroma(plain[k][t])[1])[FLASH_WINDOW] ** 2).mean()))
+                    for t in range(IMPULSE_AT + 1, IMPULSE_AT + 5)]
+    present = flash[0.3][0] > 1e-4 and flash[0.6][0] > 1e-3
+    record("a one-frame colour flash leaves a tail in later frames",
+           "a spatial filter cannot do this at all: the frames after the flash have the same bar in the same place "
+           "and the same colour, so filtering them changes nothing, and the flash's colour appearing in frame t+1 can "
+           "only come from a memory across frames. This is the assertion a 'colour smeared sideways' measurement "
+           "could never make",
+           "rms chroma carried past the flash, frames %d..%d, lag 0.00: %s; lag 0.30: %s; lag 0.60: %s"
+           % (IMPULSE_AT + 1, IMPULSE_AT + 4,
+              " ".join("%.5f" % v for v in flash[0.0]),
+              " ".join("%.5f" % v for v in flash[0.3]),
+              " ".join("%.5f" % v for v in flash[0.6])),
+           present and max(flash[0.0]) < 1e-6 and flash[0.3][2] > 1e-5,
+           "the two scenes compared are the flash and the same scene without it -- no bar at all in either, so the "
+           "only thing anywhere in the picture that changes is the patch's colour on one frame. The lag-0 column is "
+           "exactly zero on all four measured frames, so the assertion is an equality rather than a threshold")
+
+    # --- 2. the tail is geometric, which is what makes it a trail rather than a ghost
+    t1, t2 = flash[0.6][0], flash[0.6][1]
+    ratio = (t2 / t1) if t1 > 1e-9 else float("nan")
+    record("the lag is recursive, so the tail outlives one frame",
+           "a two-tap blend gives exactly one non-zero frame and then nothing, which reads as a double image. A "
+           "first-order IIR carries k**2 into the second frame and decays geometrically, which is what a channel "
+           "with memory does",
+           "lag 0.60 flash: frame+1 %.5f, frame+2 %.5f, ratio %.3f (k = 0.60)" % (t1, t2, ratio),
+           t1 > 1e-4 and 0.25 < ratio < 1.0 and t2 > 1e-5,
+           "the ratio is the recursion coefficient itself, so this also pins the *mechanism* rather than merely "
+           "detecting it: a two-tap blend would give a ratio of 0.000, and a one-frame delay would give a ratio of "
+           "0.000 as well")
+
+    # --- 3. what it does to a moving object: the band the object has just arrived in
+    #
+    # The quantity is the **direction** of what the lag added, not its size. `D = lagged - straight` is what the
+    # mechanism contributed; `R = previous - current` is what it would contribute if it were exactly the previous
+    # frame's colour. Their cosine is 1.0 when the lag adds the previous frame's chroma and nothing else.
+    #
+    # The first version of this correlated `lagged` against `previous` directly and reported values of **12.75 and
+    # 16.19** -- correlations above one, which is the instrument saying it divided by nearly nothing. A normalised
+    # correlation is only a statement about direction where both vectors have length, and at the leading edge of an
+    # object the previous frame's chroma over the window is close to cancelling. Differencing first removes the
+    # division by a near-zero reference.
+    scene, straight = run(0.0)
+    bands = {t: (_columns(scene.centre(t)) & ~_columns(scene.centre(t - 1)))
+             for t in range(2, FRAMES)}
+    bands = {t: m for t, m in bands.items() if int(m.sum()) >= 30}
+    if bands:
+        rows = []
+        for k in (0.0, 0.3, 0.6):
+            _, out = run(k)
+            cosines = []
+            for t in sorted(bands):
+                m = bands[t]
+                di = chroma(out[t])[0] - chroma(straight[t])[0]
+                dq = chroma(out[t])[1] - chroma(straight[t])[1]
+                ri = chroma(straight[t - 1])[0] - chroma(straight[t])[0]
+                rq = chroma(straight[t - 1])[1] - chroma(straight[t])[1]
+                den = float(np.sqrt((di[m] ** 2 + dq[m] ** 2).sum()
+                                    * (ri[m] ** 2 + rq[m] ** 2).sum()))
+                if den > 1e-12:
+                    cosines.append(float((di[m] * ri[m] + dq[m] * rq[m]).sum()) / den)
+            rows.append((k, float(np.mean(cosines)) if cosines else float("nan"),
+                         len(cosines)))
+        cos6 = rows[-1][1]
+        record("what the lag adds is the previous frame's colour",
+               "the impulse proves there is memory; this proves the memory is pointed at the right frame and at the "
+               "right pixels -- what the mechanism adds to a moving object must be the difference between where the "
+               "object was and where it is, which is what makes the colour trail rather than spread",
+               "band %d px, %d frames scored; " % (int(max(b.sum() for b in bands.values())), rows[-1][2])
+               + "; ".join("lag %.2f: cosine with (previous - current) %s"
+                           % (r[0], "n/a" if r[1] != r[1] else "%.3f" % r[1]) for r in rows),
+               rows[-1][2] >= 5 and cos6 > 0.8 and abs(cos6 - rows[1][1]) < 0.05 and rows[0][2] == 0,
+               "**the frame count is asserted, because the first version of this assertion was vacuous**: with a "
+               "20 px step and a 24 px bar every frame's band overlapped its predecessor's completely, the band was "
+               "empty on every frame, and the row passed by scoring nothing. At lag 0 the difference is identically "
+               "zero, so the cosine has no denominator -- the lag-0 row reporting 0 frames scored is the instrument "
+               "saying there is nothing to score, which is stronger than a floor. At 0.30 and 0.60 it scores %.3f "
+               "and %.3f, so what the mechanism adds is the previous frame's colour to within about 2%%"
+               % (rows[1][1], rows[2][1]))
+    else:
+        record("what the lag adds is the previous frame's colour",
+               "the leading-edge band must contain pixels the object has just arrived in",
+               "no frame produced a band of 30 px or more, so nothing could be measured", False,
+               "the scene geometry changed; fix the check rather than the mechanism")
+
+    # --- 4. zero is exactly a no-op, on every frame
+    _, out0 = run(0.0)
+    identical = all(np.array_equal(a, b) for a, b in zip(out0, straight))
+    record("chroma_lag 0 leaves every frame bit-identical",
+           "the mechanism must be skipped rather than approximated at zero, or the default is a small change to "
+           "every measurement in this repository",
+           "12 frames identical: %s" % identical, identical,
+           "and it is applied at the chroma channel's output, before ACC, so with it off the arithmetic is the "
+           "arithmetic that was there before")
+
+    # --- 5. the negative control: a still object, where lag must do nothing
+    #
+    # Measured on a frame the object is actually *in* for both rows: at `FRAMES - 3` the moving bar has long since
+    # left the 176 px frame, so the "moving" reading would have been taken on the same empty field as the still one
+    # and read 0.00000 -- passing the assertion for the wrong reason. The frame is named once and used for both.
+    WATCH = FRAMES // 2 + 2
+    _, still0 = run(0.0, moving=False)
+    _, still6 = run(0.6, moving=False)
+    _, moved0 = run(0.0, moving=True)
+    _, moved6 = run(0.6, moving=True)
+    d_still = float(np.abs(still6[WATCH] - still0[WATCH]).max())
+    d_moved = float(np.abs(moved6[WATCH] - moved0[WATCH]).max())
+    record("a stationary object is not touched by the lag",
+           "the mechanism can only act on what changed between frames, so with consecutive frames identical it must "
+           "be a no-op -- which is what separates a temporal channel from a spatial blur",
+           "frame %d: still object max|delta| %.5f; moving object max|delta| %.5f"
+           % (WATCH, d_still, d_moved),
+           d_still < 1e-6 and d_moved > 0.02,
+           "a spatial blur would move both, and would move the still one most, because a still object is what a "
+           "blur has to work with")
 if __name__ == "__main__":
     raise SystemExit(main())

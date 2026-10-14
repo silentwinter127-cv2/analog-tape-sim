@@ -53,11 +53,86 @@ row("1", "YUV/YIQ processing of the residue", "PRESENT",
     "the chain separates and re-modulates chroma: %s" % ", ".join(sorted(_present)[:5]))
 
 # --- A2: temporal chroma lag ---------------------------------------------------------------------------------------
-_has_lag_param = "nv_chroma_lag" in SCHEMA.layer("camera").keys()
-#: is there any per-frame chroma state?  the spec's own fields say whether the term could exist
-_spec_fields = [f for f in NightVisionSpec.__dataclass_fields__]
-row("2", "temporal chroma lag (C(t-1) blended in)", "ABSENT" if not _has_lag_param else "PRESENT",
-    "no `nv_chroma_lag` in the schema; the spec carries %d fields and none is a previous-frame chroma"
+#: **The parameter is `format.chroma_lag`, not `nv_chroma_lag`, and that is a decision rather than an oversight.**
+#: The note asks for this as part of the chroma-damage model (its section 2) and treats the NightShot behaviour as a
+#: separate half of the file, so the mechanism belongs to the chroma *channel* -- the same channel in a VHS deck, a
+#: Hi8 camcorder and a NightShot DV path.  An `nv_*` name would have put it under `nv_mode`'s gate and repeated the
+#: fault `REVIEW.md` section 3.4 names: confining a sensor or channel parameter to one display mode, when the physics
+#: does not know which mode the camera is in.
+_has_lag_param = "chroma_lag" in SCHEMA.layer("format").keys()
+#: the audit answers the question by **running it**, not by reading the schema: the parameter could be declared,
+#: resolve cleanly and be wired to nothing, which is the failure this file exists to catch.
+_lag_effect = None
+if _has_lag_param:
+    from atsim.core.params import merge_values as _merge                          # noqa: E402
+    from atsim.render.renderer import Renderer as _Renderer                       # noqa: E402
+
+    _FRAMES = 14
+    _HOT = (0.90, 0.12, 0.10)
+    _CYAN = (0.16, 0.55, 0.56)
+
+    class _Flash:
+        """A cyan field and one patch, red on a single frame: nothing else in the picture ever changes."""
+
+        def __init__(self, flash_at):
+            self.width, self.height, self.fps, self.frame_count = 176, 128, 25.0, _FRAMES
+            self.flash_at = flash_at
+
+        def frame(self, index):
+            a = np.zeros((self.height, self.width, 3), np.float32)
+            a[..., 0], a[..., 1], a[..., 2] = _CYAN
+            if self.flash_at is not None and int(index) == int(self.flash_at):
+                a[:, 30:54] = _HOT
+            return a
+
+    def _carried(lag):
+        """rms chroma in the patch's own columns, two frames after the flash, against the same scene without it."""
+        def run(flash_at):
+            base = _merge(FACTORY_PRESETS["broadcast_1992_weak"]["layers"],
+                          {"display": {"enabled": 0.0},
+                           "camera": {"sensor_noise": 0.0, "noise_grain": 0.0, "fixed_pattern": 0.0,
+                                      "bloom_amount": 0.0, "lens_flare": 0.0, "flare_amount": 0.0,
+                                      "halation": 0.0, "chroma_aberration": 0.0, "longitudinal_ca": 0.0,
+                                      "motion_blur": 0.0, "ae_enabled": 0.0, "awb_enabled": 0.0,
+                                      "af_enabled": 0.0},
+                           "format": {"color_noise": 0.0, "cross_color": 0.0, "cross_luma": 0.0,
+                                      "edge_boost": 0.0, "burst_phase_error": 0.0, "chroma_lag": float(lag)},
+                           "player": {"color_noise": 0.0, "cross_color": 0.0, "cross_luma": 0.0,
+                                      "transport_jitter": 0.0, "head_wear": 0.0, "frequency_response": 0.0},
+                           "tape": {"line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0,
+                                    "noise_floor": 0.0, "head_switching": 0.0, "dropout_rate": 0.0,
+                                    "vertical_instability": 0.0, "wear": 0.0, "drum_speed": 1.0,
+                                    "binder_loss": 0.0}})
+            r = _Renderer(_Flash(flash_at), 176, 128, 25.0, base, seed=11)
+            return [r.render_frame(t) for t in range(_FRAMES)]
+
+        clean, fired = run(None), run(6)
+        win = np.zeros((128, 176), bool)
+        win[8:-8, 35:49] = True
+
+        def ch(rgb):
+            g = rgb @ np.array([0.299, 0.587, 0.114], np.float32)
+            return (rgb[..., 2] - g) * 0.564, (rgb[..., 0] - g) * 0.713
+
+        di = ch(fired[8])[0] - ch(clean[8])[0]
+        dq = ch(fired[8])[1] - ch(clean[8])[1]
+        return float(np.sqrt((di[win] ** 2 + dq[win] ** 2).mean()))
+
+    _zero = _carried(0.0)
+    _half = _carried(0.45)
+    _lag_effect = (_zero, _half)
+row("2", "temporal chroma lag (C(t-1) blended in)", "PRESENT" if _has_lag_param else "ABSENT",
+    ("`format.chroma_lag` default %.2f, **and the verdict was measured rather than read off the schema**: a one-frame "
+     "colour flash on a still picture leaves **%.5f** of chroma in the patch's own columns two frames later, against "
+     "**%.5f** with the weight at 0.00 -- the lag-0 figure being exactly zero, which is what makes it a presence test "
+     "rather than a threshold. The tail decays by the recursion coefficient itself (measured ratio 0.60 at weight "
+     "0.60). **It is a `format` parameter and not an `nv_*` one on purpose**, so it applies to every branch rather "
+     "than only under `nv_mode`"
+     % (SCHEMA.layer("format").specs["chroma_lag"].default if _has_lag_param else 0.0,
+        _half if _half is not None else float("nan"),
+        _zero if _zero is not None else float("nan")))
+    if _has_lag_param else
+    "no `chroma_lag` in the schema; the spec carries %d fields and none is a previous-frame chroma"
     % len(_spec_fields))
 
 # --- A3: chroma resolution limit -----------------------------------------------------------------------------------
