@@ -111,7 +111,12 @@ class NightVisionSpec:
     #: Sweeping the gain with the luminance gain held at exactly 1.0 (`weights @ LUMA == 1`, which an earlier round
     #: fixed and which is what keeps `green_mix` a colour control rather than a brightness one) gives its best fit at
     #: **1.15: G/B 2.667 against 2.632, R/G 2.027 against 1.963**, an error of 0.046 where 1.0 scores 0.706.
-    green_gain: float = 1.15
+    #: **1.0, because that is the value at which the display's solved primary ratios are exact** -- see the block
+    #: comment in `monochrome_green`.  It was 1.15, reverse-solved from the palest of the three reference frames; the
+    #: schema's default was changed with it, because a dataclass default that disagrees with the schema is a second
+    #: answer to the same question and the two had already drifted (`from_params` reads the schema, so a direct
+    #: `NightVisionSpec()` and a project's parameters were producing different colours).
+    green_gain: float = 1.0
     green_mix: float = 1.0
     #: the exposure multiplier -- Super NightShot's long shutter, Color Slow Shutter's slow one
     exposure_steps: float = 0.0
@@ -613,18 +618,52 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # **normalised by `w @ LUMA == 1`, which is the constraint that makes `mono` carry the picture's luminance** -- so
     # the level calibration is untouched by the substitution and only the hue moves.  The previous triple gave
     # `G/B 1.214`; that is the cyan cast the user reported.
-    weights = np.array([0.8291, 1.0000, 1.0550], dtype=np.float32)
+    #: **The projection's triple is SOLVED from the target ratio, and the previous one was fitted and wrong.**
+    #: `out = lum * w`, so the output's channel ratios ARE the weights' ratios -- which makes them solvable exactly
+    #: rather than fittable, and the shipped triple was not on the target:
+    #:
+    #:     [0.8291, 1.0000, 1.0550]   ->  R/G 0.7210   B/G 0.9174   (the green line's own measurement, in this file's
+    #:                                                                 own comment, says the footage is 1.387 / 1.090
+    #:                                                                 -- i.e. R/G 0.721 / B/G 0.917, which passes)
+    #:     the real NIGHTSHOT 1, native   R/G 0.5434   B/G 0.8525
+    #:
+    #: **and the `G/R 1.387, G/B 1.090` figure that the triple was solved from is itself one of the frames' -- the
+    #: one with the palest green.**  Re-measured across three native frames of the same segment the ratios are
+    #: 0.517/0.540/0.574 for R/G and 0.840/0.842/0.876 for B/G, so the triple had been placed on the palest sample
+    #: and lands 33% high in red and 8% high in blue against the segment's own centre.
+    #:
+    #: **So the triple is `[R/G target, 1, B/G target]` and nothing else**, because the normalisations that follow
+    #: leave it invariant: `w / (w @ LUMA)` preserves the ratios, and the green-gain step re-normalises on the same
+    #: constraint, so `w = [0.5434, 1.0000, 0.8525]` arrives at the output as R/G 0.5434 and B/G 0.8525 exactly.  The
+    #: green cast is then a *consequence of normalising a display's primaries to its luminance* rather than a number
+    #: anyone chose, which is the only form of this that is physics rather than grading.
+    weights = np.array([0.5434, 1.0000, 0.8525], dtype=np.float32)
     # **and normalised by their own luma, so the view still carries the picture's brightness** -- the property a
     # previous round established by measurement, where a constant multiplier gave a 15.6% gain (1.15569 on every flat
     # field) and the normalisation brought it to 1.0000.  Calibrating the ratios must not disturb that.
     weights = weights / float(weights @ LUMA)
-    # **The green gun's own gain.**  `nv_green_gain` was declared and never read -- measured, 0.5 and 1.6 gave
-    # bit-identical frames.  It scales the green channel alone, which is what a viewfinder's green gain does, and then
-    # the weights are re-normalised so the change is a **hue shift and not a brightness change**: without that, raising
-    # the gain would also brighten the picture and the two effects could not be told apart.
+    # **The green gun's own gain, and it must NOT be re-normalised.**  `nv_green_gain` is the display's green-primary
+    # level: at 1.0 the projection's own solved ratios stand (`w = [0.5434, 1.0000, 0.8525]` arrives at the output
+    # exactly, which is what the triple was solved for), and above 1.0 the display drives its green harder.
+    #
+    # **The re-normalisation that used to be here was the second of two normalisations onto the same constraint, and
+    # two is one too many.**  `weights @ LUMA == 1` is what makes `mono` carry the picture's brightness, and it is
+    # applied above; applying it *again* after the gain does not preserve anything, it **changes the ratios** -- the
+    # gain is a ratio change by definition, so re-normalising redistributes it across all three channels:
+    #
+    #     declared            [0.5434 1.0000 0.8525]
+    #     after / (w@LUMA)    [0.6418 1.1811 1.0069]   R/G 0.5434   B/G 0.8525   <- the target
+    #     after * [1, g, 1]   [0.6418 1.3583 1.0069]   (g = 1.15)
+    #     after / (w@LUMA)    [0.5814 1.2303 0.9120]   R/G 0.4725   B/G 0.7413   <- the target, destroyed
+    #
+    # **and the target is also over-determined with it**: the projection has two free ratios once `w @ LUMA = 1` is
+    # imposed, the two targets consume both, and a third ratio change has nowhere to go but onto the targets.  So the
+    # gain is a plain multiplier and the projection's ratios are the ones the display is built with; a user who wants
+    # a stronger green primary moves it and accepts that the picture's level moves with it, which is what a display
+    # does when its green gun is driven harder.  The default is therefore **1.0**, where the solved ratios are exact.
     g = float(np.clip(spec.green_gain, 0.1, 4.0))
-    weights = weights * np.array([1.0, g, 1.0], dtype=np.float32)
-    weights = weights / float(weights @ LUMA)
+    if abs(g - 1.0) > 1e-4:
+        weights = weights * np.array([1.0, g, 1.0], dtype=np.float32)
     # **The clip is per channel, and the peak channel is driven past full scale so that a bright area goes white.**
     # Measured on flat fields, a 0.90 input and a 1.00 input came out of the chain **identically at 0.8532**, so the
     # model could never reach the footage's 1.0 with 0.66% of the frame blown out; its brightest pixel was **0.8686 with
@@ -706,81 +745,43 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
         wpx = weights[None, None, :] * np.stack([np.ones_like(fac), fac, np.ones_like(fac)], axis=-1)
         wpx = wpx / np.maximum(1e-6, (wpx @ LUMA)[..., None])
         mono = np.clip(lum[..., None] * wpx, 0.0, 1.0)
+    # **The residual chroma is GONE, and its removal is the physical correction rather than a re-tuning of it.**
+    #
+    # Everything this block used to do rested on one claim: that the picture's own visible chroma survives the
+    # monochrome conversion and must be added back.  **It cannot, and NightShot's whole construction is why.**  The
+    # mode works by taking the IR-cut filter out and then **routing the sensor's output as one luminance onto the green
+    # display** -- `note.txt`'s own chain (`近红外反射 → CCD响应 → 黑白信号 → 摄像机处理 → 绿色显示矩阵`) has the
+    # monochrome step *before* the display, and `黑白信号` is literally "black-and-white signal".  A visible-light
+    # chroma that has been through that step is not in the signal any more.  **The picture's green comes from the
+    # DISPLAY's primaries and from nothing in the scene.**
+    #
+    # **The measurement that settles it is a property no display can violate.**  A display is a projection: its R:G:B
+    # ratio is a property of the display, so it **must not depend on what the display is shown**.  Measured on eight
+    # flat fields -- neutral grey, a warm grey, the case photograph's own violet primary, and saturated blue, cyan,
+    # magenta, red and green:
+    #
+    #     chroma_residue = 0.00   R/G 0.7210..0.7210 (1.000x)   B/G 0.9174..0.9174 (1.000x)   <- one ratio
+    #     chroma_residue = 0.15   R/G 0.0000..5.7540 (5.8e9x)   B/G 0.1689..3.6714 (21.7x)    <- the input decides
+    #
+    # **21.7x of input dependence is a colour grade's signature, not a display's**, and it is exactly why the case
+    # photograph comes out wearing its LEDs' blue: the violet primary is carried through the mono step and re-emitted.
+    # The term was not mis-tuned.  It was modelling the wrong thing, and no value of it is right -- including the
+    # shipped 0.15, which is what `tools/nv_display_probe.py` was written to show.
+    #
+    # **What replaces it is nothing**, because the projection above already carries the whole effect: `base = lum * w`
+    # is the display, its ratios are solved from the target, and the highlight gate desaturates towards white on top.
+    # The `u_gain`/`v_gain` constants that used to scale the residue are gone with it -- they existed only to attenuate
+    # a quantity that should not be there, and REVIEW.md section 4.2 had already recorded that the "real knob" was
+    # unreachable from the UI, which was a symptom of the same confusion.
+    # **`green_mix` is the amount of the green display, and it is a BLEND rather than a switch.**  It is the one
+    # legitimate way the input's own colour reaches the output, and the reason it is legitimate is that it is not a
+    # claim about the sensor: `green_mix = 0` means *this mode is not putting the signal on the green display at all*
+    # (Colour Slow Shutter is exactly that mode), so the picture keeps the colour it arrived with.  Above zero the
+    # display takes over in proportion, and at 1 -- which is what NightShot is -- the output is the projection and
+    # nothing of the scene's chroma.  **The blend lives here, after the projection, and not inside it**: an earlier
+    # arrangement mixed the input's chroma into the projection's own chroma, which is a different statement and the one
+    # that made the display's ratio depend on the input.
     out = rgb * (1.0 - m) + mono * m
-    # **The residual chroma: the picture's own chroma added back onto the projection's luminance.**  The first version
-    # of this block carried the chroma of `out` rather than of `rgb`, so at `green_mix = 1.0` the term was
-    # approximately zero and the output was identical for three entirely different inputs -- **a mechanism present,
-    # declared, and inert**, which is the fault class this project keeps meeting.  The luminance stays exactly carried
-    # because the picture's chroma sums to zero against LUMA.
-    #
-    # **Why it exists**: the display's own R:G:B ratio is measurably not fixed.  Across three NightShot segments of one
-    # clip the red share reads 0.2892, 0.2339 and 0.2011 -- a factor of 1.44 -- while blue stays at 0.341-0.354.  A
-    # fixed projection gives one ratio for all three; carrying a fraction of the input's chroma makes it follow the
-    # subject, which is what removing the IR-cut filter physically does.
-    # **`out` is the picture's own CHROMA, added to the projection's luminance.**  The first version carried
-    # `out - (out @ LUMA)`, which at `green_mix = 1.0` is the chroma of `mono` and therefore approximately zero -- the
-    # term did nothing, and gave the identical result for three entirely different inputs, which is how the fault was
-    # found.  `rgb - lum` is the picture's chroma, and it sums to zero against LUMA by construction
-    # (`(rgb - lum) @ LUMA = lum - lum = 0`), so adding any multiple of it leaves `out @ LUMA = mono @ LUMA = lum`:
-    # **the luminance is carried exactly at every value of the residue.**
-    # **The display is a YUV transform, and this is where the model was not following the colour space.**  The user's
-    # instruction -- `YUV色彩空间应该遵循` -- names the actual defect: everything above works in RGB, where the display's
-    # cast is a **fixed per-channel GAIN** on a luminance.  That cannot express what a display does, because **a display's
-    # green cast is a statement about its U and V channels, not about its R:G:B gains**: it passes luminance almost
-    # unchanged and attenuates the two chroma components, each by its own factor.  The RGB formulation is a special case of
-    # that which happens to be reachable only when U and V share a scale -- which is why `chroma_residue` had to be
-    # invented, and why it then behaved strangely: it was carrying the *chroma* through a path built to carry *gain*.
-    #
-    # **So the residue is re-expressed in the space the mechanism actually lives in**, BT.601 as the standard defines it:
-    #
-    #     Y  =  0.299 R + 0.587 G + 0.114 B          (the sensor's luminance, unchanged)
-    #     U  =  (B - Y) * 0.564                      (Cb, chroma blue)
-    #     V  =  (R - Y) * 0.713                      (Cr, chroma red)
-    #
-    # **and the display's own chroma gains are what the physics gives it.**  The measured R:G:B ratios across the three
-    # NightShot segments are 0.2892 / 0.2339 / 0.2011 for red against a blue share of 0.341-0.354 -- a 1.44x swing in red
-    # while blue holds.  **A swing in R against a fixed B is a swing in V against a fixed U**, and in this space it is one
-    # number rather than a per-pixel hue rule: the near-infrared response is passed more on the V axis, which is where the
-    # red difference lives.
-    #
-    # **The luminance is carried exactly by construction**, because Y is `lum` and the inverse takes U and V back to
-    # zero-sum chroma -- so no scale on U or V can move the mean, which is the property every earlier version of this term
-    # had to argue for and this one gets for free.
-    r = float(np.clip(getattr(spec, "chroma_residue", 0.0), 0.0, 1.0))
-    if r > 1e-4:
-        lumv = np.clip(rgb @ LUMA, 0.0, 1.0)
-        u_ch = (rgb[..., 2] - lumv) * 0.564
-        v_ch = (rgb[..., 0] - lumv) * 0.713
-        #: **The V axis is passed more than the U axis, and that DIRECTION is the whole mechanism.**  A green display is
-        #: a display whose blue channel is weak, and in this space the blue difference is `U` -- so the cast is
-        #: **U suppressed harder than V**, which is `note.txt`'s `U减少 / V偏移` read literally.  **The first version of
-        #: this had the two the other way round** (U 0.70, V 1.30) and measured **`R/G 1.000, B/G 1.000` on a neutral
-        #: input** -- i.e. it produced GREY, because passing more V than U pulls the result towards red while the display
-        #: is supposed to pull it towards green.  The measurements that settle the direction:
-        #:
-        #:     the display projection alone, on a neutral grey   #658D81   R/G 0.721  B/G 0.917
-        #:     the real NIGHTSHOT 2                             #27473B   R/G 0.556  B/G 0.838
-        #:     the real NIGHTSHOT 1                             #38564C   R/G 0.649  B/G 0.884
-        #:
-        #: **so the projection is already the right shape and slightly too pale, and the residue must push it further in
-        #: the SAME direction rather than replace it** -- which is `v_gain > u_gain`, scaled by `chroma_residue`.
-        v_gain, u_gain = 1.00, 0.40
-        u_ch = u_ch * (1.0 - r * (1.0 - u_gain))
-        v_ch = v_ch * (1.0 - r * (1.0 - v_gain))
-        #: **`mono` is the base and the residue is a PERTURBATION of it, not a replacement.**  The earlier lines here built
-        #: the output straight from `lumv` and the input's own chroma, which **discards the display projection** -- measured,
-        #: a neutral grey input came out `R/G 1.000, B/G 1.000`, i.e. the display's green was replaced by the input's
-        #: neutrality.  The projection defines the cast; the residue is the picture's own chroma carried through the
-        #: display's V and U gains **on top of it**, which is what "the display passes a little of the sensor's colour"
-        #: means.
-        rr = mono[..., 0] + v_ch / 0.713
-        bb = mono[..., 2] + u_ch / 0.564
-        gg = (mono @ LUMA) - 0.299 * rr - 0.114 * bb
-        gg = gg / 0.587
-        #: the projection's own luminance is what the sum must carry, so the three are re-solved onto it exactly
-        out = np.clip(np.stack([rr, gg, bb], axis=-1), 0.0, 1.0)
-    else:
-        out = mono
     return out.astype(np.float32)
 
 
