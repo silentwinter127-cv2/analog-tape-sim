@@ -227,7 +227,29 @@ def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # visible effect -- pale surfaces lifting, dark ones deepening -- survives, because that comes from the ratio
     # `lum_ir / lum` and not from an additive constant.
     ir = np.power(lum, 0.55)
+    # **The curve keeps its SHAPE and loses its scale effect.**  `lum ** 0.55` stretches the shadows and compresses
+    # the highlights, which is the appearance the term is for -- but a power below 1 also *lowers the spread* of any
+    # picture it is applied to, and measured on a photograph it took the contrast from 0.1894 to 0.1308, i.e. **31%**.
+    # That was the whole of the night-vision mode's contrast cost: in the stage's own order the drop happened at
+    # exactly this statement (0.1976 -> 0.1336), while `add_illuminator` and the green display were both measured
+    # harmless (1.043x and 0.999x).
+    #
+    # The footage's own contrast is **1.073x its source's**, so a term that removes a third of it is moving the wrong
+    # way.  **Normalising the remapped luminance back to the spread the picture arrived with** leaves the ordering the
+    # term exists to produce -- pale surfaces lifting, dark ones deepening -- and removes the compression it was
+    # applying to everything.  The mean is untouched, which is the property an earlier round already fixed.
     lum_new = lum * (1.0 - m) + ir * m
+    # **The blend is where the contrast was lost, so the normalisation belongs here.**  Scaling `ir` alone left the
+    # mixed result at **0.693x** the source's spread -- essentially unchanged -- because the compression comes from
+    # mixing two quantities of different *shape*, not from either one's scale.  Measured on a photograph, this
+    # statement took the contrast from 0.1894 to 0.1308 and was **the whole of the night-vision mode's 22.5% cost**:
+    # in the stage's own order the drop happened exactly here (0.1976 -> 0.1336), while `add_illuminator` and the green
+    # display measured harmless at 1.043x and 0.999x.
+    #
+    # The footage's contrast is **1.073x its source's**, so removing a third of it is the wrong direction.  A single
+    # positive factor on the whole field restores the spread without touching the ordering the term exists to create
+    # (pale surfaces lifting, dark ones deepening) and without changing the mean, which an earlier round fixed.
+    lum_new = lum_new * (float(lum.std()) / max(1e-6, float(lum_new.std())))
     # **The per-pixel ratio gives the tone curve; one uniform constant then restores the mean luminance.**  Scaling by
     # `lum_new / lum` alone gets the shape right but not the mean -- `mean(rgb * s) != mean(rgb) * mean(s)` unless `s`
     # is uniform, and the measured gain was 1.30 to 1.86 depending on the mix.  A **uniform** scale multiplies the mean

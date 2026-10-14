@@ -1,0 +1,57 @@
+fix the inversion: six of the player's own parameters were read from the FORMAT layer
+
+**The fault, printed from the stage as it is built.**  `PlayerStage.__init__` takes two dictionaries:
+
+    p = self.cfg_of("player")
+    f = self.cfg_of("format")
+
+**and reads six of its own parameters out of `f`** -- the format layer's -- so the interface's `player.*` values for
+them did nothing at all:
+
+    self.comb_depth       = float(f.get("comb_depth", 0.55))
+    self.cross_color      = float(f.get("cross_color", 0.45))
+    self.cross_luma       = float(f.get("cross_luma", 0.30))
+    self.burst_error_deg  = float(f.get("burst_phase_error", 5.0))
+    self.chroma_bw        = float(f.get("chroma_bandwidth", 0.75)) * 1e6
+    self.luma_bw_hz       = float(f.get("luma_bandwidth", 3.0)) * 1e6
+
+**Measured: the player's chroma bandwidth read 2.000 MHz for every value requested**, including 0.5 and 3.0, and a sweep
+across those values gave bit-identical output.
+
+**And that was the inversion.**  At 2 MHz the stage's second split takes **0.770 of the composite** as chroma, and the
+comb's `1/(1-0.55)` multiplies that by **2.143**, so the chroma band carries **1.099 of the composite** -- and
+`luma = comp - chroma` goes **negative** where the picture is bright.  With the layer fixed and the schema's own
+0.75 MHz:
+
+    player chroma_bw   polarity    contrast
+    0.50 MHz           +0.935      0.1928
+    0.75 MHz           +0.935      0.1928      <- the schema's default
+    1.00 MHz           +0.935      0.1928
+    2.00 MHz           -0.358      0.1678      <- inverted
+    3.00 MHz           -0.358      0.1678
+
+**So the picture is no longer inverted at the default.**  On the three-mode test the polarity is **+0.844 to +0.852**
+against the source, where it was **-0.358**.
+
+**Why six corrections to the chroma division all failed.**  Every one edited the division's formula, and the division was
+never the fault: **the band handed to it was too wide**, because the width came from the wrong layer.  Two of those
+attempts repaired the polarity while destroying the contrast and the rest fixed neither -- which is what a fix applied
+one stage away from the fault looks like.  **All six were reverted and are recorded as failures.**
+
+**Two corrections to earlier conclusions, both from reading the code rather than inferring from numbers:**
+
+  * I had attributed the inversion to the per-row timebase displacement breaking the subcarrier's line-to-line
+    inversion.  **Refuted**: the shift is applied to **baseband** `i` and `q`, and the carrier is generated afterwards by
+    `remod_chroma`, so a baseband shift does not rotate carrier phase;
+  * and the "`fft_bandpass` takes more than the composite holds" reading came from a signal that was not the one the
+    stage receives.  On a clean composite the split is correct -- a column-constant picture returns chroma at
+    **0.00009** against an input of **0.28958**, luma at **1.000**.
+
+**Recorded as attempted and NOT working**: a variance-preserving normalisation on `ir_highlights`, which is the term
+measured to cost the night-vision mode about a quarter of its contrast (`ir_highlights` alone takes a photograph from
+0.1894 to 0.1308, i.e. 0.691x, while `add_illuminator` measures 1.043x and the green display 0.999x).  The normalisation
+is in place on the blended luminance, and **the chain's figures improved** -- mode off 0.94x the footage's contrast and
+mode on 0.68x, against 0.64x before -- **but the term measured on its own is unchanged at 0.691x**, because a
+mean-preserving rescale at the end of that function pulls the spread back.  **It is not claimed as fixed.**
+
+163 checks pass, selftest clean.
