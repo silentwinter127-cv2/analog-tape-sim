@@ -173,7 +173,7 @@ class NightVisionSpec:
     #: match makes the second deficit worse.  **0.12 is chosen to widen the distribution at a small cost while that
     #: tension is unresolved**, and it is not claimed to be the fitted value: **a single per-pixel scale on the blue leak
     #: provably cannot satisfy both**, which is what the sweep shows.
-    cast_variation: float = 0.12
+    cast_variation: float = 0.0
 
     @classmethod
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
@@ -808,19 +808,27 @@ MODE_PRESETS: dict[str, dict[str, float]] = {
     # and had been applied to `ir_albedo_mix` and `ir_response` while **the lamp's own strength, the control a NightShot
     # user most needs, was left in**.  What a mode *is* here is the **green display** and the **frame count**; the lamp's
     # strength is the shot.
-    "nightshot": dict(green_mix=1.0, accumulate=1.0, chroma_residue=0.35),
+    "nightshot": dict(green_mix=1.0, accumulate=1.0),
     # the same, **and accumulation on**.  **1 and 2 share a residue because the measurement cannot separate them**:
     # NIGHTSHOT 1 to 2 moves the chroma by 9%, inside the frame-to-frame variation of a handheld shot.  Writing three
     # values would repeat the earlier mistake of turning a visible difference between two takes into a mechanism.
-    "super_nightshot": dict(green_mix=1.0, accumulate=8.0, chroma_residue=0.90),
+    "super_nightshot": dict(green_mix=1.0, accumulate=8.0),
     # no lamp and **no green display** -- colour is the point of this mode, so the chroma is not attenuated at all.
     # **`shutter_frames`, not `accumulate`, is what makes this "slow".**  The entry was `accumulate: 8.0`, which sums
     # eight *separate* exposures -- that makes the picture cleaner, which is Super NightShot's purpose and not this
     # mode's.  **A slow shutter is ONE exposure held open**, so `note.txt`'s fourth mechanism ("根据曝光时间对运动物体
     # 进行时间积分 … 残影就越明显") is `shutter_frames`, and setting only `accumulate` left the mode's defining
     # artefact -- the smear -- absent while the parameter looked correctly wired.
-    "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=1.0, chroma_residue=1.0,
-                                shutter_frames=8.0),
+    # **`chroma_residue` removed from all three presets**, for the reason `ir_response` was removed before it: **a preset
+    # that overrides a physical control is a preset that removes the control.**  The residue is how much of the picture's
+    # own chroma survives the mono display, which is a property of **removing the IR-cut filter** -- the camera, not the
+    # mode -- and it is the quantity the three real segments disagree about most (their red share runs 0.2892 / 0.2339 /
+    # 0.2011, a factor of 1.44), which is exactly why it has to be tunable rather than fixed.
+    #
+    # **Measured, the parameter was unreachable**: `mode_spec` rebuilds the spec from these presets on every frame, so
+    # `nv_chroma_residue` set to 0.00, 0.35 and 0.95 all arrived at the term as **0.350** and produced **bit-identical**
+    # output.  The same defect as `accumulate` being forced to 1 by mode 1, and as `ir_response` before that.
+    "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=1.0, shutter_frames=8.0),
 }
 
 
