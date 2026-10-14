@@ -723,29 +723,64 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # found.  `rgb - lum` is the picture's chroma, and it sums to zero against LUMA by construction
     # (`(rgb - lum) @ LUMA = lum - lum = 0`), so adding any multiple of it leaves `out @ LUMA = mono @ LUMA = lum`:
     # **the luminance is carried exactly at every value of the residue.**
+    # **The display is a YUV transform, and this is where the model was not following the colour space.**  The user's
+    # instruction -- `YUV色彩空间应该遵循` -- names the actual defect: everything above works in RGB, where the display's
+    # cast is a **fixed per-channel GAIN** on a luminance.  That cannot express what a display does, because **a display's
+    # green cast is a statement about its U and V channels, not about its R:G:B gains**: it passes luminance almost
+    # unchanged and attenuates the two chroma components, each by its own factor.  The RGB formulation is a special case of
+    # that which happens to be reachable only when U and V share a scale -- which is why `chroma_residue` had to be
+    # invented, and why it then behaved strangely: it was carrying the *chroma* through a path built to carry *gain*.
+    #
+    # **So the residue is re-expressed in the space the mechanism actually lives in**, BT.601 as the standard defines it:
+    #
+    #     Y  =  0.299 R + 0.587 G + 0.114 B          (the sensor's luminance, unchanged)
+    #     U  =  (B - Y) * 0.564                      (Cb, chroma blue)
+    #     V  =  (R - Y) * 0.713                      (Cr, chroma red)
+    #
+    # **and the display's own chroma gains are what the physics gives it.**  The measured R:G:B ratios across the three
+    # NightShot segments are 0.2892 / 0.2339 / 0.2011 for red against a blue share of 0.341-0.354 -- a 1.44x swing in red
+    # while blue holds.  **A swing in R against a fixed B is a swing in V against a fixed U**, and in this space it is one
+    # number rather than a per-pixel hue rule: the near-infrared response is passed more on the V axis, which is where the
+    # red difference lives.
+    #
+    # **The luminance is carried exactly by construction**, because Y is `lum` and the inverse takes U and V back to
+    # zero-sum chroma -- so no scale on U or V can move the mean, which is the property every earlier version of this term
+    # had to argue for and this one gets for free.
     r = float(np.clip(getattr(spec, "chroma_residue", 0.0), 0.0, 1.0))
     if r > 1e-4:
         lumv = np.clip(rgb @ LUMA, 0.0, 1.0)
-        chroma = rgb - lumv[..., None]
-        # **The residue is attenuated where RED is what the chroma consists of.**  The user's report is
-        # "红色根本没有这么显著", and it is measured: the input photograph is lit by red, magenta and pink emitters, so its
-        # own chroma carries them, and the residue puts them back on the mono display.  Measured, the render's red 99th
-        # percentile is **0.6120 against the footage's 0.5725** while its `R/B` is **0.6779 against 0.8361** -- **so the
-        # red is not merely present, it is concentrated and bright**, which is what the eye notices, and dropping the
-        # residue entirely removes it but also removes the cast variation the user asked for in the other direction
-        # ("实拍图片并不是均匀的绿").
-        #
-        # **So the two are separated rather than traded.**  A night-vision display's cast varies, and the variation comes
-        # from what the picture's own chroma is; **but a GREEN cast varying does not require red to come through**, because
-        # the IR-cut filter is what let this chroma past and it passes green and blue far more than red.  The mask is zero
-        # where green leads (so the green-cast variation is untouched) and rises as red takes over:
-        #
-        #     red mask = clip(rgb_R - rgb_G, 0, 1) / 0.15     ->  0 while the cast is green, 1 once red leads by 0.15
-        #
-        # **The luminance is still carried exactly** -- the mask scales the chroma term, and `(rgb - lum) @ LUMA == 0` at
-        # every scale, so `out @ LUMA == mono @ LUMA == lum` holds as before.
-        rmask = np.clip((rgb[..., 0] - rgb[..., 1]) / 0.15, 0.0, 1.0)
-        out = np.clip(mono + chroma * (r * (1.0 - rmask))[..., None], 0.0, 1.0)
+        u_ch = (rgb[..., 2] - lumv) * 0.564
+        v_ch = (rgb[..., 0] - lumv) * 0.713
+        #: **The V axis is passed more than the U axis, and that DIRECTION is the whole mechanism.**  A green display is
+        #: a display whose blue channel is weak, and in this space the blue difference is `U` -- so the cast is
+        #: **U suppressed harder than V**, which is `note.txt`'s `U减少 / V偏移` read literally.  **The first version of
+        #: this had the two the other way round** (U 0.70, V 1.30) and measured **`R/G 1.000, B/G 1.000` on a neutral
+        #: input** -- i.e. it produced GREY, because passing more V than U pulls the result towards red while the display
+        #: is supposed to pull it towards green.  The measurements that settle the direction:
+        #:
+        #:     the display projection alone, on a neutral grey   #658D81   R/G 0.721  B/G 0.917
+        #:     the real NIGHTSHOT 2                             #27473B   R/G 0.556  B/G 0.838
+        #:     the real NIGHTSHOT 1                             #38564C   R/G 0.649  B/G 0.884
+        #:
+        #: **so the projection is already the right shape and slightly too pale, and the residue must push it further in
+        #: the SAME direction rather than replace it** -- which is `v_gain > u_gain`, scaled by `chroma_residue`.
+        v_gain, u_gain = 1.00, 0.40
+        u_ch = u_ch * (1.0 - r * (1.0 - u_gain))
+        v_ch = v_ch * (1.0 - r * (1.0 - v_gain))
+        #: **`mono` is the base and the residue is a PERTURBATION of it, not a replacement.**  The earlier lines here built
+        #: the output straight from `lumv` and the input's own chroma, which **discards the display projection** -- measured,
+        #: a neutral grey input came out `R/G 1.000, B/G 1.000`, i.e. the display's green was replaced by the input's
+        #: neutrality.  The projection defines the cast; the residue is the picture's own chroma carried through the
+        #: display's V and U gains **on top of it**, which is what "the display passes a little of the sensor's colour"
+        #: means.
+        rr = mono[..., 0] + v_ch / 0.713
+        bb = mono[..., 2] + u_ch / 0.564
+        gg = (mono @ LUMA) - 0.299 * rr - 0.114 * bb
+        gg = gg / 0.587
+        #: the projection's own luminance is what the sum must carry, so the three are re-solved onto it exactly
+        out = np.clip(np.stack([rr, gg, bb], axis=-1), 0.0, 1.0)
+    else:
+        out = mono
     return out.astype(np.float32)
 
 
