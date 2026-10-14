@@ -378,10 +378,31 @@ class CameraStage(Stage):
         # requirement is 0.
         from ..codecs.nightvision import mode_spec
         self.nv = mode_spec(self.nv)
-        # **The mode's DSP level, adopted onto the stage.**  `mode_spec` resolves what the mode settles on -- the
-        # green display, the frame count, and now the gain and black level, which come from NightShot material and
-        # must not be applied to a mode that is not NightShot.  `_dsp_level` runs at the very end of the chain, after
-        # every call to `_night_vision`, so reading them here is reading them once per frame in time.
+        # **The mode's DSP level, adopted onto the stage -- but a value the USER moved wins over the mode's.**
+        # The two calibrated values (0.75, 0.009) live on the NightShot presets rather than in the schema, because
+        # putting them in the schema darkened every ordinary visible-light render (five checks failed).  **But
+        # `mode_spec` applies a preset by `dataclasses.replace`, so a value in it is not a default -- it is a value the
+        # user cannot change.**  Measured after the preset was added: `dsp_gain` at 1.0, at 0.75 and `dsp_black` at 0.0
+        # all gave a **bit-identical frame** (p1 0.0485, dark mean 0.1403) -- two more controls read and then replaced
+        # before use, which is the fourth time this shape has appeared in this file.  `mode_spec`'s own docstring
+        # records the first two (`ir_response`, then `ir_albedo`/`ir_depth`).
+        #
+        # **"The user moved it" is decided against the SCHEMA's default, not against a neutral constant**, because the
+        # config this reads is the fully resolved one: every parameter is present whether or not anyone chose it, so a
+        # test for "is it neutral" cannot tell a deliberate 1.0 from an untouched one.  Comparing with the schema's own
+        # default can, and it is the same distinction `nv_nir_grid`'s deprecation note relies on.
+        try:
+            from ..core.profiles import SCHEMA
+            _specs = SCHEMA.layer("camera")
+            for _name in ("dsp_gain", "dsp_black"):
+                _s = _specs.specs[_name]
+                _want = float(getattr(self, _name, _s.default))
+                if abs(_want - float(_s.default)) > 1e-6:
+                    setattr(self.nv, _name, _want)
+        except Exception:                                          # noqa: BLE001
+            # a missing schema entry must not take the render down; the mode's own value then stands, which is the
+            # behaviour this had before the override existed
+            pass
         self.dsp_gain = float(np.clip(float(getattr(self.nv, "dsp_gain", 1.0)), 0.1, 4.0))
         self.dsp_black = float(np.clip(float(getattr(self.nv, "dsp_black", 0.0)), -0.5, 0.5))
         if stage == "scene":
