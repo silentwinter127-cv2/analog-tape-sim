@@ -63,14 +63,28 @@ def main() -> int:
         "version": 1,
         "exported": _dt.datetime.now().isoformat(timespec="seconds"),
         "name": "NightShot -- Sony DCR-TRV310E",
-        "standard": "broadcast_1992_weak",
+        #: **`ntsc`, not the preset's name.**  The first version of this file wrote `"standard": "broadcast_1992_weak"`,
+        #: which is a **preset**, not a standard, and the import died with
+        #: `KeyError: "unknown standard 'broadcast_1992_weak'; known: ['ntsc', 'pal']"`.  The two are different dimensions
+        #: and this field takes the standard; the preset is recorded below as information.
+        #:
+        #: **And the value is measured rather than assumed.**  The clip is a `TRV310E` -- the E is the European model --
+        #: and its own frames are 1440x1080, so `pal` looked right; **`ffprobe` reports `avg_frame_rate=30/1`**, and
+        #: 30 fps is 29.97, i.e. **NTSC**.  A pal camcorder cannot produce 30 fps, so the recording is NTSC whatever the
+        #: model number says, and the frame rate is the harder fact of the two.
+        "standard": "ntsc",
         "seed": 20240101,
         "params": changed,
         #: **the same handoff block the snapshot carries**, because this file may be the only one a reviewer opens
         "_what_this_is": "The analog tape simulator's NightShot calibration, as a DIFF against the schema defaults -- "
                          "so every number here is one the reproduction actually depends on.",
+        "_factory_preset_this_was_built_on": "broadcast_1992_weak  (apply it with POST /api/preset before or instead of "
+                                             "this file; it is a PRESET, not a standard, and the two are separate "
+                                             "fields -- writing it into `standard` is what made the first version of this "
+                                             "file fail to import)",
         "_calibrated_against": {
             "source": "Sony DCR-TRV310E, C:\\Users\\Administrator\\Downloads\\10月13日.mp4",
+            "source facts": "HEVC 1440x1080, avg_frame_rate 30/1 -- which is NTSC",
             "cut_map": "23s normal -> mode 1; 45-52s normal; 52-53s mode 1; 54-68s NIGHTSHOT 1; 68-83s NIGHTSHOT 2",
             "the footage's own range": {"mean": [0.11, 0.39], "std": [0.09, 0.26], "R/G": [0.37, 0.85],
                                         "p1": [0.024, 0.055]},
@@ -129,6 +143,28 @@ def main() -> int:
         print("      %s.%s came back as %r, expected %r" % (layer, k, got, want))
     if bad:
         print("   **FAILED: a settings file that loses or alters a value is worse than no file.**")
+        return 1
+
+    # --- and the header fields the parameter check CANNOT see --------------------------------------------------------
+    #: **This is the check that would have caught the actual failure and did not exist.**  The first exported profile
+    #: carried `"standard": "broadcast_1992_weak"` -- a PRESET name in a field that takes `ntsc` or `pal` -- and the
+    #: import died with `KeyError: "unknown standard 'broadcast_1992_weak'; known: ['ntsc', 'pal']"`.  **The parameter
+    #: round trip passed cleanly throughout**, because `standard` is not a parameter: it is a project field, and a
+    #: validator that only looks at `params` cannot see a header that makes the whole file unusable.
+    from atsim.core.standards import STANDARDS
+    head_bad = []
+    if back.get("standard") not in STANDARDS:
+        head_bad.append(("standard", back.get("standard"), sorted(STANDARDS)))
+    if back.get("kind") != "atsim.config":
+        head_bad.append(("kind", back.get("kind"), "atsim.config"))
+    if not isinstance(back.get("params"), dict):
+        head_bad.append(("params", type(back.get("params")).__name__, "dict"))
+    print("   header: standard %r of %s, kind %r -- %d problem(s)"
+          % (back.get("standard"), sorted(STANDARDS), back.get("kind"), len(head_bad)))
+    for f, got, want in head_bad:
+        print("      **%s is %r, must be one of %r**" % (f, got, want))
+    if head_bad:
+        print("   **FAILED: the file would not import, however correct its parameters are.**")
         return 1
     return 0
 

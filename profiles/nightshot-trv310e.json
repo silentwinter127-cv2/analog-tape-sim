@@ -1,9 +1,9 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-14T23:03:51",
+  "exported": "2026-10-14T23:09:22",
   "name": "NightShot -- Sony DCR-TRV310E",
-  "standard": "broadcast_1992_weak",
+  "standard": "ntsc",
   "seed": 20240101,
   "params": {
     "camera": {
@@ -23,8 +23,10 @@
     }
   },
   "_what_this_is": "The analog tape simulator's NightShot calibration, as a DIFF against the schema defaults -- so every number here is one the reproduction actually depends on.",
+  "_factory_preset_this_was_built_on": "broadcast_1992_weak  (apply it with POST /api/preset before or instead of this file; it is a PRESET, not a standard, and the two are separate fields -- writing it into `standard` is what made the first version of this file fail to import)",
   "_calibrated_against": {
     "source": "Sony DCR-TRV310E, C:\\Users\\Administrator\\Downloads\\10月13日.mp4",
+    "source facts": "HEVC 1440x1080, avg_frame_rate 30/1 -- which is NTSC",
     "cut_map": "23s normal -> mode 1; 45-52s normal; 52-53s mode 1; 54-68s NIGHTSHOT 1; 68-83s NIGHTSHOT 2",
     "the footage's own range": {
       "mean": [

@@ -1,0 +1,33 @@
+fix the profile's `standard` field, and add the header check that would have caught it
+
+**The user's error was mine, and it is a clean one.**  The exported profile carried
+
+    "standard": "broadcast_1992_weak"
+
+**which is a PRESET, not a standard**, and the import died with `KeyError: "unknown standard
+'broadcast_1992_weak'; known: ['ntsc', 'pal']"`.  The two are separate dimensions -- a preset is a set of parameter values,
+a standard is a signal format -- and `broadcast_1992_weak` had been taken from the preset name I had been building the
+layer values on and put into the format field.
+
+**And the value is measured rather than chosen by the model number.**  The camera is a `TRV310E` -- E for the European
+model -- and its frames are **1440x1080**, which is the PAL frame size, so `pal` looked right.  **`ffprobe` reports
+`avg_frame_rate=30/1`, and 30 fps is 29.97, i.e. NTSC.**  A PAL camcorder cannot record 30 fps, so the recording is NTSC
+whatever the model number suggests, **and the frame rate is the harder of the two facts.**  The file now says `ntsc`, records
+the preset name in `_factory_preset_this_was_built_on` as information, and notes that applying it is a separate call
+(`POST /api/preset`).
+
+**Verified end to end**: `/api/import` returns **HTTP 200** and the live project comes back with `standard: ntsc` and
+`camera.nv_mode 2.0`.
+
+**And the more important fix is to the validator, because it passed throughout.**  `tools/export_profile.py` round-tripped
+all **253 parameters with zero disagreements** while the file was **unable to import at all** -- because `standard` is a
+*project field*, not a parameter, and **a validator that only inspects `params` cannot see a header that makes the whole
+file unusable.**  It now also checks that `standard` is one of the engine's own standards, that `kind` is `atsim.config`,
+and that `params` is a dict, and it fails loudly on any of them.  **Tested against a copy carrying the old broken value**: the
+parameter check still passes and the new header check reports FAIL, so it catches the exact failure the user hit.
+
+**That is the second time in three rounds that a check of mine was blind to the thing that actually broke** -- the first
+being the audit that reported `blooming` absent because it looked in the wrong module.  **Both were found by running the
+instrument rather than reading it**, and both now have a check aimed at the field the failure lived in.
+
+**163 checks pass, selftest clean.**
