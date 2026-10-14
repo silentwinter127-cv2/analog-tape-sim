@@ -191,6 +191,18 @@ class NightVisionSpec:
     #: drives its channel to full scale and clips there**, which is `note.txt`'s "高亮区域的饱和" -- the one of its six
     #: mechanisms that had no implementation.  1.0 is the undriven projection; the default and the sweep decide the rest.
     highlight_saturation: float = 4.0
+    #: **The DSP's output level, carried on the spec so the MODE can set it -- and it belongs to the mode rather than
+    #: to the camera, which the first version of this got wrong.**  `dsp_gain` and `dsp_black` were added as camera
+    #: parameters with the calibrated values (0.75, 0.009) as their *schema defaults*, and that pushed a NightShot
+    #: calibration onto every other mode: five checks failed, all of them about an ordinary visible-light picture --
+    #: "a 2.5x source peaks at 0.837 with 0 pixels at or above 1.0", "the sensor's white point follows its dynamic
+    #: range" (0.837 at every range).  **The values came from NightShot material, so they are the gain and the black
+    #: level THAT MODE settles on**, which is exactly the kind of thing `MODE_PRESETS` exists for.
+    #:
+    #: The schema defaults stay neutral (1.0, 0.0), so a project that has not chosen a mode is untouched and an
+    #: ordinary visible-light render is unchanged -- which is what the five checks were measuring.
+    dsp_gain: float = 1.0
+    dsp_black: float = 0.0
 
     @classmethod
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
@@ -215,10 +227,13 @@ class NightVisionSpec:
             shot_noise=float(cfg.get("nv_shot_noise", 0.0)),
             cast_variation=float(cfg.get("nv_cast_variation", 0.0)),
             highlight_saturation=float(cfg.get("nv_highlight_saturation", 4.0)),
+            dsp_gain=float(cfg.get("dsp_gain", 1.0)),
+            dsp_black=float(cfg.get("dsp_black", 0.0)),
         )
 
 
-def albedo_map(h: int, w: int, labelled: dict | None, fallback: np.ndarray | None = None) -> np.ndarray:
+def albedo_map(h: int, w: int, labelled: dict | None, fallback: np.ndarray | None = None,
+               guide: np.ndarray | None = None) -> np.ndarray:
     """
     Turn material labels into a per-pixel near-IR albedo, in the units `IR_ALBEDO` uses and normalised about its mean.
 
@@ -277,45 +292,105 @@ def albedo_map(h: int, w: int, labelled: dict | None, fallback: np.ndarray | Non
     # unknown -- which is exactly true at an 8x8 labelling of a 533x400 frame, and is a far smaller error than a 7.5x
     # step at a guessed line.  **The labels themselves are unchanged**: this is the map's rendering, not the model's
     # classification.
-    big = _resample(mixed, h, w)
+    big = _resample(mixed, h, w, guide=guide)
     m = float(big.mean())
     return (big / m if m > 1e-6 else big).astype(np.float32)
 
 
-def _resample(cell: np.ndarray, h: int, w: int) -> np.ndarray:
+def lum_guide(rgb: np.ndarray) -> np.ndarray:
     """
-    Carry a coarse grid to the frame smoothly, so a label boundary is a gradient rather than a step.
+    The image the material lattice is interpolated *along*.
 
-    Kept separate and named, because the choice it makes -- interpolate, not repeat -- is the whole of a defect that took
-    nine statistics to find and that the picture showed immediately once it was written out.
+    Its own function rather than an inline expression because it is the one quantity the guided upsampling trusts, and
+    a guide that is not what it claims to be is the failure this project records most often -- a channel picked by
+    accident, a luma computed against the wrong coefficients, an array of the wrong shape.
+    """
+    return np.clip(np.asarray(rgb, np.float32) @ LUMA, 0.0, 1.0)
+
+
+def _resample(cell: np.ndarray, h: int, w: int, guide: np.ndarray | None = None) -> np.ndarray:
+    """
+    Carry a coarse lattice to the frame, **along the image's own structure where there is any**.
+
+    **Why this is guided rather than plain interpolation.**  A material boundary in the scene is an edge in the picture
+    -- the metal of a case against the plastic of its front panel, a lamp against the wall behind it.  The lattice is
+    coarse (one cell per 66 px by default), so a cell straddles several such edges, and the interpolator has to decide
+    where inside the cell the value changes.  Plain bilinear places that change **at the cell's edge**, because the
+    cell's edge is the only geometry it knows: the result is a straight, axis-aligned step at a location chosen by the
+    grid rather than by the scene.  That is what the user photographed as blocks of light.
+
+    **Joint bilateral upsampling** answers the question the interpolator is actually being asked: a pixel's albedo is
+    the weighted mean of the nearby cells' values, with the weight falling off in **space** and in **picture
+    brightness**.  So a step in the albedo lands where the picture has a step, and inside a flat region the value is
+    the smooth average of the surrounding cells.  This is the standard method for upsampling a sparse signal with a
+    full-resolution guide, and it is what "the material boundaries coincide with the image's boundaries" means
+    operation by operation.
+
+    **Bilinear with a smoothstep remains the fallback** when there is no guide, which keeps every existing caller --
+    and the check that measured the smoothstep's own effect on the row structure -- working unchanged.
+
+    The four nearest cell centres are used rather than every cell: the spatial term is a Gaussian at the cell's own
+    scale, so anything beyond the neighbours contributes under a percent, and taking all of them would make the cost
+    quadratic in the lattice size.
     """
     gh, gw = cell.shape
     a = np.asarray(cell, np.float32)
     if gh < 2 or gw < 2:
         return np.repeat(np.repeat(a, max(1, h // max(1, gh)), 0), max(1, w // max(1, gw)), 1)[:h, :w]
     # the cell centres, mapped onto the frame's pixel grid
-    ys = (np.arange(h, dtype=np.float32) + 0.5) * (gh / float(h)) - 0.5
-    xs = (np.arange(w, dtype=np.float32) + 0.5) * (gw / float(w)) - 0.5
-    y0 = np.clip(np.floor(ys).astype(np.int32), 0, gh - 2)
-    x0 = np.clip(np.floor(xs).astype(np.int32), 0, gw - 2)
-    fy = np.clip(ys - y0, 0.0, 1.0)[:, None]
-    fx = np.clip(xs - x0, 0.0, 1.0)[None, :]
-    a00 = a[np.ix_(y0, x0)]
-    a01 = a[np.ix_(y0, x0 + 1)]
-    a10 = a[np.ix_(y0 + 1, x0)]
-    a11 = a[np.ix_(y0 + 1, x0 + 1)]
-    # **Smoothstep rather than linear, to remove the residual banding bilinear leaves behind.**  Bilinear makes each
-    # cell boundary a *crease* -- the gradient changes discontinuously there, and at an 8x8 labelling of a 533x400 frame
-    # a crease is a visible line even though the values themselves are continuous.  **Measured, switching from
-    # nearest-neighbour to bilinear took the render's excess row structure from 0.13124 to 0.11036 against the source's
-    # 0.12737, which is most of it and not all of it.**  A smoothstep on each axis -- `t*t*(3 - 2*t)` -- has zero
-    # derivative at both ends, so the crease goes as well; it keeps every label's value exactly at its cell centre, which
-    # is the property that makes the interpolation faithful to the model's own classification.
-    fy = (fy * fy * (3.0 - 2.0 * fy)).astype(np.float32)
-    fx = (fx * fx * (3.0 - 2.0 * fx)).astype(np.float32)
-    top = a00 * (1.0 - fx) + a01 * fx
-    bot = a10 * (1.0 - fx) + a11 * fx
-    return (top * (1.0 - fy) + bot * fy).astype(np.float32)
+    cy = (np.arange(gh, dtype=np.float32) + 0.5) * (h / float(gh))
+    cx = (np.arange(gw, dtype=np.float32) + 0.5) * (w / float(gw))
+    ys = (np.arange(h, dtype=np.float32) + 0.5)
+    xs = (np.arange(w, dtype=np.float32) + 0.5)
+    y0 = np.clip(np.floor(ys / (h / float(gh)) - 0.5).astype(np.int32), 0, gh - 2)
+    x0 = np.clip(np.floor(xs / (w / float(gw)) - 0.5).astype(np.int32), 0, gw - 2)
+
+    if guide is None or np.asarray(guide).shape[:2] != (h, w):
+        fy = np.clip(ys / (h / float(gh)) - 0.5 - y0, 0.0, 1.0)[:, None]
+        fx = np.clip(xs / (w / float(gw)) - 0.5 - x0, 0.0, 1.0)[None, :]
+        #: smoothstep rather than linear: bilinear leaves a *crease* at the cell boundary, and at a coarse lattice a
+        #: crease is a visible line even though the values themselves are continuous.
+        fy = (fy * fy * (3.0 - 2.0 * fy)).astype(np.float32)
+        fx = (fx * fx * (3.0 - 2.0 * fx)).astype(np.float32)
+        top = a[np.ix_(y0, x0)] * (1.0 - fx) + a[np.ix_(y0, x0 + 1)] * fx
+        bot = a[np.ix_(y0 + 1, x0)] * (1.0 - fx) + a[np.ix_(y0 + 1, x0 + 1)] * fx
+        return (top * (1.0 - fy) + bot * fy).astype(np.float32)
+
+    g = np.asarray(guide, np.float32)
+    #: **The two scales come from the lattice and the picture, not from constants.**
+    #:
+    #: The spatial scale is one cell, so the kernel covers the distance between cell centres and no more.
+    #:
+    #: The range scale is **a robust measure of the picture's own contrast**, and the first version of this used
+    #: `0.12 * std(guide)` -- which **diverged**: measured on the reference photograph the map came out with
+    #: **min 0.0000 and max 5.4600**, where `IR_ALBEDO` itself only spans 0.28 to 2.10.  `std` is inflated by a
+    #: scene's few blown highlights (a case lit by LEDs has plenty), so `sig_r` came out 0.0133 -- narrow enough that
+    #: the range weight between a cell centre and a pixel two materials away is effectively zero while the *spatial*
+    #: weight at 66 px is also small.  Two near-zero weights leave `sum(w)` near zero and `sum(w*v)/sum(w)` has
+    #: nothing holding it down.
+    #:
+    #: The interquartile range is the robust replacement: it describes the bulk of the picture rather than its
+    #: extremes, so a handful of blown pixels cannot narrow the kernel.  And a floor on the total weight means the
+    #: division can never be by almost nothing -- the failure mode is then the plain spatial average, which is what a
+    #: bilinear interpolator would have given anyway, rather than an arbitrary large value.
+    sig_s = 0.85 * (h / float(gh))
+    iqr = float(np.subtract(*np.percentile(g, [75, 25])))
+    sig_r = max(2e-3, 0.75 * iqr)
+    acc = np.zeros((h, w), np.float32)
+    wsum = np.zeros((h, w), np.float32)
+    for dj, di in ((0, 0), (0, 1), (1, 0), (1, 1)):
+        yy = np.clip(y0 + dj, 0, gh - 1)
+        xx = np.clip(x0 + di, 0, gw - 1)
+        val = a[np.ix_(yy, xx)]
+        dy = ys - cy[yy]
+        dx = xs - cx[xx]
+        wsp = np.exp(-(dy[:, None] ** 2 + dx[None, :] ** 2) / (2.0 * sig_s * sig_s)).astype(np.float32)
+        wrg = np.exp(-((g - val) ** 2) / (2.0 * sig_r * sig_r)).astype(np.float32)
+        wgt = wsp * wrg
+        acc += wgt * val
+        wsum += wgt
+    #: the floor is a fraction of what a full-weight set of neighbours would give, so it is scale-free
+    return (acc / np.maximum(0.05, wsum)).astype(np.float32)
 
 
 def mode_of(spec: NightVisionSpec) -> str:
@@ -981,11 +1056,11 @@ MODE_PRESETS: dict[str, dict[str, float]] = {
     # and had been applied to `ir_albedo_mix` and `ir_response` while **the lamp's own strength, the control a NightShot
     # user most needs, was left in**.  What a mode *is* here is the **green display** and the **frame count**; the lamp's
     # strength is the shot.
-    "nightshot": dict(green_mix=1.0, accumulate=1.0),
+    "nightshot": dict(green_mix=1.0, accumulate=1.0, dsp_gain=0.75, dsp_black=0.009),
     # the same, **and accumulation on**.  **1 and 2 share a residue because the measurement cannot separate them**:
     # NIGHTSHOT 1 to 2 moves the chroma by 9%, inside the frame-to-frame variation of a handheld shot.  Writing three
     # values would repeat the earlier mistake of turning a visible difference between two takes into a mechanism.
-    "super_nightshot": dict(green_mix=1.0, accumulate=8.0),
+    "super_nightshot": dict(green_mix=1.0, accumulate=8.0, dsp_gain=0.75, dsp_black=0.009),
     # no lamp and **no green display** -- colour is the point of this mode, so the chroma is not attenuated at all.
     # **`shutter_frames`, not `accumulate`, is what makes this "slow".**  The entry was `accumulate: 8.0`, which sums
     # eight *separate* exposures -- that makes the picture cleaner, which is Super NightShot's purpose and not this
@@ -1001,7 +1076,8 @@ MODE_PRESETS: dict[str, dict[str, float]] = {
     # **Measured, the parameter was unreachable**: `mode_spec` rebuilds the spec from these presets on every frame, so
     # `nv_chroma_residue` set to 0.00, 0.35 and 0.95 all arrived at the term as **0.350** and produced **bit-identical**
     # output.  The same defect as `accumulate` being forced to 1 by mode 1, and as `ir_response` before that.
-    "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=1.0, shutter_frames=8.0),
+    "colour_slow_shutter": dict(illuminator=0.0, green_mix=0.0, accumulate=1.0, shutter_frames=8.0,
+                                dsp_gain=1.0, dsp_black=0.0),
 }
 
 

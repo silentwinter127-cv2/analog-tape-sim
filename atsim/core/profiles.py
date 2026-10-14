@@ -333,6 +333,42 @@ def build_schema() -> ParamSchema:
                help="格子边长的上限之外，再封一个块数上限，避免超大画面上判定耗时失控。"
                     "实测标注耗时 8×8 约 10.8 s、16×16 约 16.5 s、24×24 约 33 s、32×32 约 55 s，"
                     "而不确定占比在 16×16 之后就不再下降。")
+    # ---- the DSP's output level ---------------------------------------------------------------------------------
+    #: **Two parameters, because the measurement needs two and one brightness cannot supply them.**  Against the
+    #: clip's own frames at native resolution the model was wrong in a specific, *asymmetric* way -- p1 0.0368 after
+    #: the guided albedo (it had been 0.0162), p50 0.2431 vs 0.1619, p99 0.9041 vs 0.8451.  A gain moves p50 and p99
+    #: together but pushes p1 the wrong way, and a gamma sets one ratio while leaving the rest to follow.  The two
+    #: independent operations are a pedestal (setup) and a gain, and both exist in a camcorder's DSP.
+    #:
+    #: **The schema defaults are NEUTRAL and the calibrated values live on the NightShot modes.**  The first version
+    #: put 0.75 and 0.009 here, and that pushed a NightShot calibration onto every other mode: five checks failed, all
+    #: about an ordinary visible-light picture ("a 2.5x source peaks at 0.837 with 0 pixels at or above 1.0", "the
+    #: sensor's white point follows its dynamic range" -- 0.837 at every range).  **The values were solved from
+    #: NightShot material, so they are the gain and black level THAT MODE settles on**, which is what `MODE_PRESETS`
+    #: is for.  A project that has not chosen a mode is untouched, and so is every visible-light measurement here.
+    cam.define("dsp_gain", "DSP 增益", 1.0, 0.1, 4.0, unit="x", group=g,
+               phys_min=0.5, phys_max=2.0,
+               source="NightShot 两个模式取 0.75（反解自素材原生帧的 p1 与 p50 两锚点）；其余模式中立",
+               help="**DSP 稳定下来的增益**，乘在信号上、加黑电平之前。\n"
+                    "**为什么必须与黑电平分开**：与素材自己的原生帧比，模型的 p1（黑）曾经是 0.0162 而素材 0.0368"
+                    "（**模型黑得太低**），p50（中灰）0.2572 而素材 0.1619（**中灰太高**）。"
+                    "**一个增益修不了这两个，伽马也修不了**——`x ** p` 定下一个比值，其余只能跟着走，"
+                    "所以对上中灰会把黑压得更低。两个自由度是必要的，因为物理上确实是两件独立的事。\n"
+                    "**`ae_enabled` 默认是关的，所以这不代表自动曝光回路**：这是固定增益摄像机施加的那一档。\n"
+                    "**0.75 是两个锚点联立解出来的**，而且它**放在 NightShot 的模式预设里而不是这里**，"
+                    "因为它来自 NightShot 素材——放进 schema 默认值会让普通可见光模式也被压暗"
+                    "（实测 2.5× 输入的峰值只剩 0.837、全画面无像素到 1.0）。")
+    cam.define("dsp_black", "DSP 黑电平（setup）", 0.0, -0.2, 0.3, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.10,
+               source="NightShot 两个模式取 0.009（反解自素材 p1 与 p50）；其余模式中立",
+               help="**基座电平（setup / pedestal）**：摄像机不把最暗的场景像素记在码值零上，"
+                    "而是放在消隐电平之上——**这样噪声底不会被削掉，画面也有一个黑参考**。\n"
+                    "**这就是素材第 1 百分位是 0.037 而不是 0.000 的原因**：量的是摄像机的输出，"
+                    "而摄像机的输出有黑电平。Sony 自己的 DV 黑电平是码值 16（全范围意义上约 0.063），"
+                    "比这份素材略高。\n"
+                    "**顺序是「先增益、后黑电平」，这是物理顺序**：基座加在已经放大过的信号上，即在数字化之后。"
+                    "反过来会把基座也一起缩放，于是 `dsp_black` 在每个增益下含义都不同、两个控制分不开。\n"
+                    "**与 `dsp_gain` 一样，0.009 放在 NightShot 的模式预设里。**")
     #: **Kept so an existing project still loads, and inert because the cell size now decides.**  A stale value here
     #: would otherwise silently override the physical parameter, which is the "preset that removes a control" fault
     #: this file records three times.

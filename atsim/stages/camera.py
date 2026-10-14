@@ -158,6 +158,13 @@ class CameraStage(Stage):
         self.nir_depth_source: str | None = None
         #: whether to infer a depth map, so the illuminator's falloff can be about distance rather than a radius
         self.nir_depth = bool(round(float(cfg.get("nv_nir_depth", 1.0))))
+        #: **The DSP's output level.**  Gain and black level, in the order the camcorder applies them -- see
+        #: `_dsp_level` for why two quantities are needed rather than one brightness, and why both default neutral.
+        #: **These are re-read from the spec in `_night_vision`**, because the MODE is what sets them: the values that
+        #: put the NightShot material's percentiles on target belong to that mode, not to the camera, and using them
+        #: as the schema default darkened every ordinary visible-light render.
+        self.dsp_gain = float(np.clip(cfg.get("dsp_gain", 1.0), 0.1, 4.0))
+        self.dsp_black = float(np.clip(cfg.get("dsp_black", 0.0), -0.5, 0.5))
         self._nir_albedo: np.ndarray | None = None
         self._nir_depth: np.ndarray | None = None
         self._nir_failed = False
@@ -371,6 +378,12 @@ class CameraStage(Stage):
         # requirement is 0.
         from ..codecs.nightvision import mode_spec
         self.nv = mode_spec(self.nv)
+        # **The mode's DSP level, adopted onto the stage.**  `mode_spec` resolves what the mode settles on -- the
+        # green display, the frame count, and now the gain and black level, which come from NightShot material and
+        # must not be applied to a mode that is not NightShot.  `_dsp_level` runs at the very end of the chain, after
+        # every call to `_night_vision`, so reading them here is reading them once per frame in time.
+        self.dsp_gain = float(np.clip(float(getattr(self.nv, "dsp_gain", 1.0)), 0.1, 4.0))
+        self.dsp_black = float(np.clip(float(getattr(self.nv, "dsp_black", 0.0)), -0.5, 0.5))
         if stage == "scene":
             # **The analysis and the attachment are two steps, and an earlier version of this folded them into one and
             # made the distance term inert.**  The analysis is expensive -- a vision model, once per clip -- while the
@@ -527,7 +540,9 @@ class CameraStage(Stage):
                 lum = np.clip(np.asarray(rgb, np.float32) @ np.array([0.299, 0.587, 0.114], np.float32), 0.0, 1.0)
                 # the fallback the unlabelled cells take: the estimate's own shape, normalised the same way
                 est = np.power(lum, 0.55)
-                self._nir_albedo = albedo_map(h, w, labelled, fallback=est)
+                # **The guide is the picture's own luminance**, so the albedo's boundaries land where the image has
+                # boundaries rather than at the cell edges the lattice happens to have.  See `_resample`.
+                self._nir_albedo = albedo_map(h, w, labelled, fallback=est, guide=lum)
                 classes = labelled["classes"]
                 counts = {}
                 for v in np.asarray(labelled["labels"], np.int32).ravel():
@@ -784,6 +799,49 @@ class CameraStage(Stage):
         lum = np.clip(rgb @ LUMA, 0.0, 1.0)
         gain = 1.0 - a * (1.0 - lum) ** 2
         return (rgb * gain[..., None]).astype(np.float32)
+
+    def _dsp_level(self, rgb: np.ndarray) -> np.ndarray:
+        """
+        The DSP's output level: **gain, and the black level it decides on.**
+
+        **Why these two and not one "brightness".**  Measured against the clip's own frames at native resolution, the
+        model's picture is wrong in a specific way, and it is not a brightness error:
+
+            percentile     the model    the real frames    ratio
+            p1  (black)      0.0162        0.0368          0.44x   <- the model's black is TOO LOW
+            p50 (mid)        0.2572        0.1619          1.59x   <- and its mid is too HIGH
+            p99 (white)      0.9067        0.8451          1.07x
+
+        **A single gain cannot do both, and neither can a gamma** -- `x ** p` sets one ratio and leaves the others to
+        follow, so matching the mid-tone would push the black further down while matching the black pushes the mid up.
+        Two independent quantities are needed because two independent things are happening, and both are real
+        operations in a camcorder's DSP:
+
+          * **`dsp_black`** is the *setup* / pedestal level.  A camera does not record its darkest scene pixel at code
+            zero -- it puts it above blanking, so that the noise floor is not clipped away and so that a picture has a
+            reference black.  **This is why the footage's 1st percentile is 0.037 and not 0.000**: the measurement is
+            of a camcorder's output, and a camcorder's output has a black level.  Sony's own DV black is code 16
+            (0.063 in full-range terms), a little above what this material carries.
+          * **`dsp_gain`** is the gain the DSP settles on.  With `ae_enabled` off -- which is the default, so the loop
+            is *not* the mechanism here -- this is what a fixed-gain camcorder applies, and the model needs it above
+            or below unity to sit where the target does.
+
+        **The order is gain then black, and that order is the physical one**: the pedestal is added to an already
+        amplified signal, on the digitised side of the chain.  Doing it the other way scales the pedestal too, which
+        would make `dsp_black` mean something different at every gain and the two controls inseparable.
+
+        **Both default to neutral** (`gain = 1.0`, `black = 0.0`), so this changes nothing until someone calibrates
+        it -- deliberately, because a change to a level reaches every figure in this repository and should not arrive
+        as a side effect of adding the mechanism.  The values that put the two percentiles on the target are measured
+        and recorded in the schema; promoting them to the defaults is a separate, visible decision.
+        """
+        g = float(getattr(self, "dsp_gain", 1.0))
+        b = float(getattr(self, "dsp_black", 0.0))
+        if abs(g - 1.0) < 1e-4 and abs(b) < 1e-5:
+            return rgb
+        # the pedestal is held below the white point so it can only lift, never invert, the black end
+        b = float(np.clip(b, -0.5, 0.5))
+        return np.clip(rgb * g + b, 0.0, 2.0).astype(np.float32)
 
     def _color_science(self, rgb: np.ndarray) -> np.ndarray:
         """
@@ -1201,6 +1259,11 @@ class CameraStage(Stage):
                     rgb.shape[0], rgb.shape[1],
                     derive_seed(self.ctx.seed, "camera", "dead_sites"))
             rgb = apply_defect_sites(rgb, self._sites)
+
+        # --- the DSP's output level ---------------------------------------
+        # Last, and after the readout defects, because it is the stage that sets what the recorded signal *is*: the
+        # gain the camera settles on and the black level it puts under it.  Everything before this is the signal.
+        rgb = self._dsp_level(rgb)
 
         return FrameBuffer(np.clip(rgb, 0.0, 2.0).astype(np.float32), None,
                            buf.index, buf.time, buf.std, dict(buf.meta))
