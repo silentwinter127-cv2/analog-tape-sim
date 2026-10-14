@@ -227,9 +227,19 @@ class App:
                 p.params = merge_values(p.params or {}, merged)
             elif _bare:
                 p.params = merge_values(p.params or {}, {k: payload[k] for k in _bare})
-            if "seed" in payload:
+            # **`and payload["seed"] is not None`, because a key that exists holding None is not a value.**  Measured:
+            # `import_config` builds its payload with `"seed": payload.get("seed")`, so **any imported configuration that
+            # does not carry a `seed` key of its own reaches this line as None and raises**
+            # `TypeError: int() argument must be ... not 'NoneType'` -- and the import fails entirely, with the values
+            # never applied.  **The user's report "导入失败 配置里没有 params" was this**, not the missing `params`, which
+            # was a second and separate fault in the file itself.
+            #
+            # The same guard is applied to the other optional fields below: each is set only when the payload actually
+            # carries a value, so a complete-looking payload with None-filled gaps cannot overwrite a project with
+            # `str(None)` or an empty name.
+            if payload.get("seed") is not None:
                 p.seed = int(payload["seed"])
-            if "standard" in payload:
+            if payload.get("standard") is not None:
                 p.standard = str(payload["standard"])
             if "environment" in payload and isinstance(payload["environment"], dict):
                 p.environment = dict(payload["environment"])
@@ -238,7 +248,7 @@ class App:
             if "unit_identities" in payload and isinstance(payload["unit_identities"], dict):
                 # an empty string means the nominal model, and the key is the device class
                 p.unit_identities = {str(k): str(v) for k, v in payload["unit_identities"].items()}
-            if "name" in payload:
+            if payload.get("name") is not None:
                 p.name = str(payload["name"])
             if "source" in payload:
                 p.source = payload["source"]
@@ -337,15 +347,15 @@ class App:
 
         # reset first, then merge -- so the file is complete on its own
         self.set_project({"reset_params": True})
-        applied = self.set_project({
-            "params": params,
-            "seed": payload.get("seed"),
-            "standard": payload.get("standard"),
-            "environment": payload.get("environment"),
-            "keyframes": payload.get("keyframes"),
-            "unit_identities": payload.get("unit_identities"),
-            "name": payload.get("name"),
-        })
+        # **Only the keys the file actually carries are forwarded.**  Passing `payload.get(k)` for every optional field
+        # puts `None` under each key the file omits, and `set_project` then has to defend against a value that is not
+        # there -- which is how a configuration without a `seed` failed to import at all.  **A key that is absent should
+        # be absent**, so the forwarding is built from what is present rather than from a fixed list.
+        forward = {"params": params}
+        for opt in ("seed", "standard", "environment", "keyframes", "unit_identities", "name"):
+            if payload.get(opt) is not None:
+                forward[opt] = payload[opt]
+        applied = self.set_project(forward)
         applied["imported"] = {
             "from": payload.get("exported"),
             "version": version,

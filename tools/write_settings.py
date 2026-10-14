@@ -130,8 +130,57 @@ def main() -> int:
                                      "the projection scales three channels together by a fixed ratio, so it can never "
                                      "produce white.",
         },
+        # **`params` is the key the importer reads, and `layers` is a copy for a person.**  The server merges
+        # `payload["params"]` into the project (`atsim/web/server.py`, `SET_PROJECT`), so a file carrying only `layers`
+        # **imports as nothing at all** -- the user reported "导入失败 配置里没有 params", which is exact.  Both keys are
+        # written: `params` so the file loads, `layers` so it can be read and diffed.  **They are built from the same
+        # dict, so they cannot disagree.**
+        "params": {k: dict(sorted(v.items())) for k, v in sorted(layers.items())},
         "layers": {k: dict(sorted(v.items())) for k, v in sorted(layers.items())},
         "_notes": NOTES,
+        # **A header for the next agent, in a form that can be CHECKED rather than believed.**  Anything here can be
+        # recomputed from the repository, so a reviewer never has to take a claim on trust.
+        "_handoff": {
+            "how_to_use_this_file": "POST it to the server's project endpoint, or load it through the WebUI's import. "
+                                    "`params` is what the importer reads; `layers` is the same data for reading.",
+            "how_to_reproduce_every_number": {
+                "the suite": "python tools/verify.py     # 163 checks, each a mechanism with a measured threshold",
+                "the self-test": "python tools/selftest.py  # end-to-end plus a frame-rate budget",
+                "regenerate this file": "python tools/write_settings.py   # reads the live schema, so it cannot drift",
+                "the target metrics": "python tools/final_modes.py   # the three modes against the real frames",
+                "the green and contrast": "python tools/green_check.py  # against the user's own footage frame",
+                "the red": "python tools/red_check.py",
+                "the highlights": "python tools/highlight_final.py",
+            },
+            "what_a_reviewer_should_attack_first": [
+                "**The measurement point.**  Eleven statistics in this work failed to see their own subject (the "
+                "row-structure measure responds to per-pixel noise and hardly to level, so it is not a banding measure). "
+                "For each check in `tools/verify.py`, is the quantity measured where the mechanism acts, or downstream "
+                "where other terms mask it?",
+                "**The positive control.**  `_separate` and `_night_vision` are the two places where a term was found "
+                "inert while the parameter reached it.  Does every figure that reports a real measurement also report a "
+                "control that must move?",
+                "**The two-regime gate.**  `monochrome_green` now acts only above the point where a channel saturates. "
+                "Is `lum >= 1/1.2021` the right gate for THIS sensor, or is it fitted to one photograph?",
+                "**The hue mask on the chroma residue.** Measured, it makes the red independent of the residue setting "
+                "(0.5694 at 0.45 against 0.5818 at 0.00).  Is that physical, or is it hiding the residue's real effect?",
+                "**`saturation_stops` and `nv_exposure_trim` are gated on `nv_mode`.**  That was done because applying "
+                "them always broke checks about the scanline structure and thermal drift.  Is gating them hiding a "
+                "genuine conflict rather than resolving it?",
+                "**The remaining gap**: `G/B` reads 1.02 against the footage's 1.09, and the input photograph is lit by "
+                "blue emitters.  Is that the input or the chain?",
+            ],
+            "known_open_items": [
+                "the upper mid-tone (p90) is 7.4% low and `saturation_stops` cannot close it without taking the mean up",
+                "the frame-rate check failed before the highlight work began and was never attributed",
+                "`note.txt` item 5 (IR focus shift, AF search, near-lamp diffusion) is not implemented",
+                "long-standing inert items are listed in NEXT.md",
+            ],
+            "the_standing_rule_this_work_kept": "**Suspect the instrument first.** A positive control precedes any figure "
+                                                "about real data, and a parameter that appears inert is assumed to be "
+                                                "unreachable before it is assumed to be unimportant -- six parameters in "
+                                                "this work were inert, and every one of them was a routing fault.",
+        },
     }
     path = os.path.join(ROOT, "settings.json")
     with open(path, "w", encoding="utf-8") as fh:

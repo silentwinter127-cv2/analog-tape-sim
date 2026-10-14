@@ -1,0 +1,40 @@
+fix the import (two separate faults) and write the review handoff
+
+**The user's report "导入失败 配置里没有 params" was two independent faults, and both are real.**
+
+**1. The file used `layers` where the importer reads `params`.**  `atsim/web/server.py`'s `import_config` reads
+`payload["params"]` and raises its own message when it is missing -- so `settings.json` was generated in a shape the
+importer could not read.  **`tools/write_settings.py` now writes both keys from the same dict**, so they cannot disagree:
+`params` for the importer, `layers` for a person to read and diff.  Verified end to end: **POST to `/api/import` returns
+HTTP 200 and the live project afterwards holds the file's values** (`nv_mode 2.0`, `saturation_stops 0.3`,
+`nv_exposure_trim -0.1`, `nv_chroma_residue 0.15`, `nv_highlight_saturation 4.0`, `nv_illuminator 1.2`).
+
+**2. And the server could not import ANY configuration that omits `seed`.**  `import_config` built a fixed payload with
+`"seed": payload.get("seed")`, so an absent key arrived as `None` and `set_project`'s `int(payload["seed"])` raised
+`TypeError: int() argument must be a string ... not 'NoneType'` -- **with the values never applied at all**.  Fixed in two
+places, because either alone would leave the fault reachable from the other direction:
+
+  * `set_project` now tests `payload.get("seed") is not None`, and the same guard is applied to `standard` and `name`, so a
+    payload with `None`-filled gaps cannot set `str(None)` or an empty name;
+  * `import_config` builds its forwarding dict from **the keys the file actually carries** rather than from a fixed list.
+
+**A key that is absent should be absent** -- that is the principle, and the second fix is the one that expresses it.
+
+**`REVIEW.md` is written as a request for independent verification**, and it is organised so a reviewer never has to take a
+claim on trust:
+
+  * **seven commands that regenerate every number** in the document, with the baseline clip, its cut points, the
+    measurement window and the target table all given;
+  * **five judgements separated out and marked as judgements rather than measurements**, each with the counter-argument
+    spelled out -- the `SCHEMA.resolve_all` conclusion (is it over-generalised?), the two-regime gate (is it the sensor's
+    property or fitted to one photograph?), the `nv_mode` gating (does it resolve a conflict or hide one?), the
+    "best combined error across two inputs" criterion (is it the right criterion?), and the residual `G/B` gap (input or
+    chain?);
+  * **the outstanding items with what has already been excluded**, so the reviewer does not repeat them;
+  * **and the one systemic weakness named as the first thing to suspect**: eleven statistics in this work failed to see
+    their own subject, so the instrumentation is a more likely fault than the mechanism.
+
+**It also records the server bug as its own section and asks whether the fix masks a deeper problem** -- that callers
+should not be passing `None` at all -- rather than presenting it as closed.
+
+**163 checks pass, selftest clean, and all seven reproduction commands were run to confirm the document's figures.**
