@@ -114,13 +114,17 @@ class CameraStage(Stage):
         sat = float(cfg.get("saturation_stops", 0.0))
         self.saturation_stops = sat if float(cfg.get("nv_mode", 0.0)) >= 0.5 else 0.0
         #: **The night-vision mode's own exposure offset, and it must NOT be the global `exposure`.**  Measured, the
-        #: highlight calibration wants a **-0.10 stop** trim to bring the mean onto the footage's (0.2480 against
-        #: 0.2346, where the same configuration untrimmed reads 0.2657).  **Setting the global `exposure` default to
-        #: -0.10 broke a check that has nothing to do with night vision** -- "a cold machine renders differently from a
-        #: warm one", whose largest mean difference fell to 0.0008 -- because `exposure` is the camera's own control and
-        #: the AE loop, the spot sizes and the thermal drift are all measured through it.  **A trim belonging to one mode
-        #: belongs to that mode**, exactly as the saturation point does, so it is applied here and nowhere else.
-        self.nv_exposure_trim = (-0.10 if float(cfg.get("nv_mode", 0.0)) >= 0.5 else 0.0)
+        #: highlight calibration wants a **-0.10 stop** trim to bring the mean onto the footage's.  **Setting the global
+        #: `exposure` default to -0.10 broke a check that has nothing to do with night vision** -- "a cold machine renders
+        #: differently from a warm one", whose largest mean difference fell to 0.0008 -- because `exposure` is the camera's
+        #: own control and the AE loop, the spot sizes and the thermal drift are all measured through it.  **A trim
+        #: belonging to one mode belongs to that mode**, exactly as the saturation point does.
+        #:
+        #: **Read from the config rather than hard-coded**, so it can be tuned: the first version of this line was a
+        #: literal -0.10 and two subsequent attempts to sweep it changed nothing, which is this work's own "declared,
+        #: reachable, inert" fault class -- a parameter that exists and cannot be reached.
+        trim = float(cfg.get("nv_exposure_trim", -0.10))
+        self.nv_exposure_trim = (trim if float(cfg.get("nv_mode", 0.0)) >= 0.5 else 0.0)
         # **The near-IR material labelling, and whether this machine can do it at all.**  `note.txt`'s second mechanism
         # asks for near-IR albedo per material rather than an RGB-to-grey conversion, and a vision-language model can
         # supply it; where none is installed the estimate is used, **which is not a degraded mode but the documented
@@ -1034,6 +1038,13 @@ class CameraStage(Stage):
             #     runs correctly and its result is never used -- measured, exactly 0.0000 on a scene
             #     needing +1.5 stops.
             self.exposure = float(np.clip(self._ae.update(rgb, dt, self._weights), -3.0, 3.0))
+            # **The mode's own trim is added AFTER the loop, because the loop REPLACES this value.**  Measured: setting
+            # `nv_exposure_trim` to -0.10, -0.6, -1.0, -1.4 and -1.8 all gave bit-identical output, and the reason is
+            # this assignment -- `self.exposure = ...update(...)` overwrites whatever the constructor put there, so the
+            # trim was computed, stored, read by `_nv_exposure_bias` and then discarded one line later.  **`self.exposure`
+            # is an ATTRIBUTE and this is the last statement that writes it**, so the trim belongs here, where the value
+            # is finally settled, rather than in the constructor where the loop can still take it away.
+            self.exposure = float(np.clip(self.exposure + float(getattr(self, "nv_exposure_trim", 0.0)), -3.0, 3.0))
         if self.awb_enabled:
             self._awb_gains = self._awb.update(rgb, dt)
 

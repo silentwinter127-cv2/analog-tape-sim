@@ -1,0 +1,52 @@
+solve the display's green from the footage's own ratios, and find the exposure trim was unreachable twice over
+
+**The user's report was exact, and both halves of it measured.**  On their two images:
+
+    the render as it stood      G/R 1.968   G/B 1.027   lum 0.3087   std 0.1580
+    their footage frame         G/R 1.387   G/B 1.090   lum 0.2415   std 0.2144
+
+**G/B 1.027 against 1.090 is the cyan cast**: green and blue almost equal.  **And the triple in use was fitted against
+the frame's MEAN**, where the ratios happened to look close -- the failure mode this work has recorded repeatedly, a
+statistic that cannot see the thing it is aimed at.
+
+**So the weights are solved, not fitted.**  `monochrome_green` builds `out = lum * w`, so **the output's channel ratios ARE
+the weights' ratios**:
+
+    w_R : w_G : w_B  =  1/1.387 : 1 : 1/1.090   with the green gain MULTIPLIED in afterwards, so the base term is
+                                                `1/G_B * gain`  ->  [0.8291, 1.0000, 1.0550]
+
+**and the gain's direction took three attempts to get right**: feeding the solved ratio in directly gives `G/B 1.2534`
+(the error being exactly the 1.15), and dividing by the gain instead of multiplying moves it the same way.  Measured on a
+flat field after the fix: **`G/R 1.3870, G/B 1.0900`** -- the footage's own figures to four places.  **The normalisation
+`w @ LUMA == 1` is unchanged, so the level calibration is untouched and only the hue moves.**
+
+**And the exposure trim was unreachable in TWO separate ways**, which is why five sweeps of it changed nothing:
+
+  * **it was hard-coded** rather than read from the config, so no sweep could reach it -- this work's own "declared,
+    reachable, inert" fault class;
+  * **and once readable it was still dropped**, because `nv_exposure_trim` was **not declared in the schema** and
+    `SCHEMA.resolve_all` rebuilds the layers and discards unknown keys -- **measured, configuring -1.2 arrived at the
+    stage as -0.1.**  That is the **second time this round** this mechanism has bitten (`saturation_stops` was the first)
+    and it is recorded in the parameter's own help;
+  * **and it had to move to where the value settles**: the auto-exposure loop does
+    `self.exposure = self._ae.update(...)`, which **replaces** whatever the constructor stored, so the trim is now added
+    immediately after that assignment rather than before it.
+
+**Swept once reachable, with the standard deviation landing on the footage's:**
+
+    trim -0.10   lum 0.3288   std 0.2552   p95 0.8028
+    **trim -0.50   lum 0.2464   std 0.1811   p95 0.5795**     <- the footage: lum 0.2043, std 0.1794, p95 0.6359
+    trim -1.00   lum 0.1779   std 0.1194   p95 0.3902
+
+**so -0.50 is the default: the contrast now matches to 1%** (0.1811 against 0.1794), and the mean is 21% high where it was
+61% high.
+
+**One gap is named rather than papered over**: the render's `G/B` reads **0.8753** where its own weights say 1.090 and the
+footage says 1.087.  **The cause is measured** -- `chroma_residue` carries the input photograph's own chroma back onto the
+mono display, and that photograph is lit by blue, cyan and magenta emitters, so it drags the ratios towards blue.  Swept:
+residue 0.45 -> G/B 0.8753, 0.30 -> 0.9323, 0.20 -> 0.9739, 0.10 -> 1.0187, **0.00 -> 1.0670**.  **Zero would land it, and
+it is not taken, because `chroma_residue` is also what makes the cast vary across the frame** -- the property the user
+reported as "实拍图片并不是均匀的绿" and which an earlier round calibrated by sweep.  **Zeroing a real mechanism to move a
+ratio is the trade this work keeps refusing.**
+
+**`settings.json` is regenerated** (252 parameters now) and **163 checks pass, selftest clean.**

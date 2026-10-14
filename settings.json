@@ -108,6 +108,7 @@
       "nv_chroma_noise": 0.15,
       "nv_chroma_residue": 0.45,
       "nv_exposure_steps": 0.0,
+      "nv_exposure_trim": -0.5,
       "nv_green_gain": 1.15,
       "nv_green_mix": 1.0,
       "nv_highlight_saturation": 4.0,

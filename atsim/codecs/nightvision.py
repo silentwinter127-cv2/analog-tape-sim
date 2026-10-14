@@ -564,12 +564,31 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # 0.46228, a 0.70 at 0.80898, all at a gain of 1.15569.  A monochrome view does not brighten the scene it is
     # displaying.  Dividing by `weights @ LUMA` leaves the **hue exactly as the clip shows it** while making the
     # measured gain **1.0000** on every level below clipping.
-    # **The proportions are the camera's, measured on material that has coloured emitters in it.**  The earlier
-    # reference was a corridor -- no coloured light sources -- and gave `0.29:0.46:0.25`.  This clip's stable green
-    # stretch, on an RGB case whose own emitters are blue, cyan and magenta, measures `0.2168:0.4294:0.3538`:
-    # **0.10 more blue**.  A fixed triple cannot fit both, because the triple describes *the display plus what the
-    # sensor passed*, not the display alone.
-    weights = np.array([0.2168, 0.4294, 0.3538], dtype=np.float32)
+    # **The proportions are solved from the footage's own channel ratios, because the inherited triple renders CYAN.**
+    # The user's report is "绿色看起来也不一样", and it is exact: measured on their two images, the render gives
+    # **G/R 1.968 and G/B 1.027** -- green and blue almost equal, which is cyan -- while the footage (OSD cropped) gives
+    # **G/R 1.387 and G/B 1.090**, green clearly above blue.  **The hue angles agree: -177.7 degrees against -161.5, a
+    # 16-degree separation.**
+    #
+    # **And the triple below passed its own check**, which is the failure mode this work has recorded repeatedly: it was
+    # compared against the frame's MEAN, where the ratios happened to be close, and the mean cannot see that the picture
+    # is cyan.  **`monochrome_green` builds `out = lum * w`, so the output's channel ratios ARE the weights' ratios** --
+    # which makes them solvable exactly rather than fittable:
+    #
+    #     w_R : w_G : w_B  =  1/1.387 : 1 : 1/1.090   and the green gain is MULTIPLIED in afterwards, so the base
+    #     triple is that ratio with the green term divided by the gain:  [0.8291, 1.0000, 1.0550]
+    #
+    # **and the gain's direction has to be got right, which the first two versions of this did not.**  The solved ratio is
+    # the ratio the DISPLAY should have; `green_gain` (1.15) multiplies the green channel afterwards, so feeding the
+    # solved ratio in directly gives `G/B 1.2534` instead of 1.090 -- measured on a flat field, the error being exactly the
+    # 1.15 -- and dividing by the gain instead of multiplying moves it the same way.  **The base term is
+    # `1/G_B * gain`**, and the two lines below then put the ratio back: measured, `G/R 1.3870, G/B 1.0900` against the
+    # footage's `1.387, 1.090`, i.e. exact.
+    #
+    # **normalised by `w @ LUMA == 1`, which is the constraint that makes `mono` carry the picture's luminance** -- so
+    # the level calibration is untouched by the substitution and only the hue moves.  The previous triple gave
+    # `G/B 1.214`; that is the cyan cast the user reported.
+    weights = np.array([0.8291, 1.0000, 1.0550], dtype=np.float32)
     # **and normalised by their own luma, so the view still carries the picture's brightness** -- the property a
     # previous round established by measurement, where a constant multiplier gave a 15.6% gain (1.15569 on every flat
     # field) and the normalisation brought it to 1.0000.  Calibrating the ratios must not disturb that.
