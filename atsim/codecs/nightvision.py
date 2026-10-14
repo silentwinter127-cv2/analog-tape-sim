@@ -179,7 +179,7 @@ class NightVisionSpec:
     #: full-scale luminance can never put any channel past 0.43 and the output's own ceiling is 0.853.  **A viewfinder
     #: drives its channel to full scale and clips there**, which is `note.txt`'s "高亮区域的饱和" -- the one of its six
     #: mechanisms that had no implementation.  1.0 is the undriven projection; the default and the sweep decide the rest.
-    highlight_saturation: float = 1.0
+    highlight_saturation: float = 2.0
 
     @classmethod
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
@@ -202,7 +202,7 @@ class NightVisionSpec:
             shutter_frames=float(cfg.get("nv_shutter_frames", 1.0)),
             shot_noise=float(cfg.get("nv_shot_noise", 0.0)),
             cast_variation=float(cfg.get("nv_cast_variation", 0.0)),
-            highlight_saturation=float(cfg.get("nv_highlight_saturation", 1.0)),
+            highlight_saturation=float(cfg.get("nv_highlight_saturation", 2.0)),
         )
 
 
@@ -594,7 +594,17 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # at a luminance where the green channel reaches 1.0 the other two are at 0.505 and 0.824 of it, so the result is a
     # **desaturated near-white** with a luminance of **0.958** -- which is what a viewfinder actually does, and what
     # `note.txt`'s "高亮区域的饱和" asks for.
-    gain = float(np.clip(getattr(spec, "highlight_saturation", 1.0), 0.0, 2.0))
+    # **The two regimes, and the gate is derived rather than guessed.**  The display drives `lum * w`, so a channel
+    # saturates where `lum * w == 1`; measured, the normalised weights are **[0.6069, 1.2021, 0.9904]**, so green pins at
+    # **lum 0.832**, blue at 1.010 and red at 1.648 -- **and the brightest luminance the scene branch delivers is 0.8225,
+    # so the gate sits within 1% of the picture's peak and a small drive opens it.**
+    #
+    # **Below the gate the projection is exact**, so the mid-tones keep the measured R:G:B and the calibration that was
+    # fitted to the footage is untouched.  **Above it the strongest channel is pinned and cannot rise, while the others
+    # keep climbing with the drive** -- so the pixel **desaturates towards white** and its luminance leaves the ratio's
+    # own ceiling.  **That is a highlight going white**, which is `note.txt`'s "高亮区域的饱和" and the one of its six
+    # mechanisms that had no implementation.  The desaturation is not added by hand: it follows from the clip.
+    gain = float(np.clip(getattr(spec, "highlight_saturation", 1.0), 0.0, 4.0))
     cd = getattr(spec, "cast_variation", 0.0)
     sp = float(np.clip(cd, 0.0, 1.0))
     dep = getattr(spec, "ir_depth", None)
@@ -608,9 +618,22 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
         fac = 1.0 - sp * t
         wpx = weights[None, None, :] * np.stack([np.ones_like(fac), fac, np.ones_like(fac)], axis=-1)
         wpx = wpx / np.maximum(1e-6, (wpx @ LUMA)[..., None])
-        mono = np.clip(lum[..., None] * wpx * gain, 0.0, 1.0)
+        base = lum[..., None] * wpx
     else:
-        mono = np.clip(lum[..., None] * weights[None, None, :] * gain, 0.0, 1.0)
+        base = lum[..., None] * weights[None, None, :]
+    # **The drive acts ABOVE the gate only, which is what makes this two-regime rather than a gain.**  Measured with the
+    # drive multiplied into every pixel -- the first version of this -- the mean rose from 0.2370 to 0.3493 across
+    # gain 1.0 to 1.6, i.e. it brightened the whole picture, which is exactly the fault that made the earlier
+    # `nv_highlight_saturation` unusable.  **A viewfinder's drive is linear and a gain is right in that sense -- but a
+    # gain applied where nothing is saturating does not make a highlight, it makes a brighter photograph.**
+    #
+    # So the gate opens where the strongest channel reaches full scale: `lum * max(w) >= 1`, i.e. `lum >= 0.832` for the
+    # normalised weights.  **Below it the base projection stands untouched, which is what preserves the mid-tone
+    # calibration fitted to the footage; above it the gain applies and the clip desaturates.**
+    gate = 1.0 / max(1e-6, float(np.max(np.asarray(wpx).reshape(-1, 3)[:, 1] if sp > 1e-4 and dep is not None
+                                        else weights[1])))
+    over = np.clip((lum - gate) / max(1e-6, 1.0 - gate), 0.0, 1.0)
+    mono = np.clip(base * (1.0 + (gain - 1.0) * over[..., None]), 0.0, 1.0)
     # **The cast is not UNIFORM across the frame, and a fixed projection makes it so.**  The user's report is exactly
     # this: "实拍图片并不是均匀的绿".  Every pixel here takes the same weights, so a rigid projection gives one hue
     # everywhere and only the brightness varies -- and **measured, that is what the model does**: its hue spread is
