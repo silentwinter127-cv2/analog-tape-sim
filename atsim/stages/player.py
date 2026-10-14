@@ -96,13 +96,13 @@ class PlayerStage(Stage):
         # different receivers and each chose its own design
         # stored numerically in the schema, converted here to the name the separator takes
         self.separation_kind = separation_kind_name(p.get("separation_kind", 0.0))
-        self.comb_depth = float(f.get("comb_depth", 0.55))
+        self.comb_depth = float(p.get("comb_depth", 0.55))
         self.chroma_vert_blend = float(p.get("chroma_vert_blend", 0.5))
-        self.cross_color = float(f.get("cross_color", 0.45))
-        self.cross_luma = float(f.get("cross_luma", 0.30))
-        self.burst_error_deg = float(f.get("burst_phase_error", 5.0))
-        self.chroma_bw = float(f.get("chroma_bandwidth", 0.75)) * 1e6
-        self.luma_bw_hz = float(f.get("luma_bandwidth", 3.0)) * 1e6
+        self.cross_color = float(p.get("cross_color", 0.45))
+        self.cross_luma = float(p.get("cross_luma", 0.30))
+        self.burst_error_deg = float(p.get("burst_phase_error", 5.0))
+        self.chroma_bw = float(p.get("chroma_bandwidth", 0.75)) * 1e6
+        self.luma_bw_hz = float(p.get("luma_bandwidth", 3.0)) * 1e6
         self.color_noise = float(f.get("color_noise", 0.25))
         self.std: VideoStandard = ctx.std
 

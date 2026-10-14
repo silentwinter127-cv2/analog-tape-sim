@@ -79,8 +79,10 @@ CHAIN = {
                "sensor_noise": 0.0, "noise_grain": 0.0, "fixed_pattern": 0.0, "spike_spread": 0.0,
                "motion_blur": 0.0, "stuck_fraction": 0.0, "bloom_threshold": 0.0, "overflow_width": 0.0,
                "sharpness": 1.0},
-    "format": {"chroma_bandwidth": 3.0, "luma_bandwidth": 6.0},
-    "player": {"chroma_bandwidth": 3.0, "luma_bandwidth": 6.0},
+    # **the schema's own bandwidths**, because 2 MHz and above made the player's second split take 0.770 of the
+    # composite as chroma and invert the picture; the default 0.75 MHz is the value that keeps `comp - chroma` a luma
+    "format": {"chroma_bandwidth": 0.75, "luma_bandwidth": 3.0},
+    "player": {"chroma_bandwidth": 0.75, "luma_bandwidth": 3.0},
     "codec": {"dv_enabled": 0.0},
     "display": {"enabled": 0.0},
 }
