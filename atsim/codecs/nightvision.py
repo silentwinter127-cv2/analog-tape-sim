@@ -179,7 +179,7 @@ class NightVisionSpec:
     #: full-scale luminance can never put any channel past 0.43 and the output's own ceiling is 0.853.  **A viewfinder
     #: drives its channel to full scale and clips there**, which is `note.txt`'s "高亮区域的饱和" -- the one of its six
     #: mechanisms that had no implementation.  1.0 is the undriven projection; the default and the sweep decide the rest.
-    highlight_saturation: float = 2.0
+    highlight_saturation: float = 4.0
 
     @classmethod
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
@@ -202,7 +202,7 @@ class NightVisionSpec:
             shutter_frames=float(cfg.get("nv_shutter_frames", 1.0)),
             shot_noise=float(cfg.get("nv_shot_noise", 0.0)),
             cast_variation=float(cfg.get("nv_cast_variation", 0.0)),
-            highlight_saturation=float(cfg.get("nv_highlight_saturation", 2.0)),
+            highlight_saturation=float(cfg.get("nv_highlight_saturation", 4.0)),
         )
 
 
