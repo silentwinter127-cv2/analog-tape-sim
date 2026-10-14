@@ -423,15 +423,33 @@ class CameraStage(Stage):
             # applied to it, in the physical order: the sensor integrates the light first, the read-out sums exposures.
             shut = int(round(float(np.clip(self.nv.shutter_frames, 1.0, 64.0))))
             want = max(n, shut)
+            #: **The read noise, and there are two placements because there are two mechanisms.**
+            #:
+            #: **An accumulating mode needs it BEFORE the sum.**  Read noise is added per frame, so N frames add it N
+            #: times in quadrature while the signal adds N times coherently, and the ratio improves as `sqrt(N)` --
+            #: that is the entire content of Super NightShot.  **Measured with a single noise call after the sum, mode
+            #: 2 reads 0.982 of one frame's noise against `1/sqrt(8) = 0.354`**, i.e. the mode removes nothing, which
+            #: is the same inertness `tools/accum_check.py` was written to catch the first time.  So the frames are
+            #: noised individually and then summed.
+            #:
+            #: **A single-frame mode needs it at the END, and that is where it was wrong.**  It used to run before
+            #: `add_illuminator` and `ir_highlights`, and **`ir_highlights` ate it**: that function carries a
+            #: variance-preserving normalisation (`lum_new * std(lum) / std(lum_new)`, which exists because
+            #: `lum ** 0.55` compresses the picture's own contrast by 31%), and noise is variance, so the
+            #: normalisation removes it.  Measured, `nv_read_noise = 0.06` with `nv_chroma_noise = 0.35` gave a
+            #: dark-band hue spread of **0.0308 against the 0.0455 the picture has with no noise at all** -- adding
+            #: noise to a dark region made it *smoother*, which is the signature of a term being normalised away.
+            #:
+            #: **And it is why `nv_chroma_noise` looked inert.**  That term is scaled by `read_noise` inside
+            #: `read_noise()` (`chan = normal(0, a * cn)`) and `nv_read_noise` defaults to 0, so `nv_chroma_noise` at
+            #: 0.15, 0.35 and 0.95 gave **bit-identical frames** -- exactly what the module's own comment predicts
+            #: ("with `read_noise` at zero there is no noise at all whatever this is set to").  The coupling is kept,
+            #: because with `read_noise` at its default the picture must stay the clean one the calibration was taken
+            #: on; but the single-frame path now applies it where nothing downstream can cancel it.
             out = rgb
             if want > 1:
                 stack = self._nv_source_frames(want, index)
                 if len(stack) > 1:
-                    # **The mode's read noise is added to each frame BEFORE the sum**, so accumulation reduces it --
-                    # which is the whole reason Super NightShot exists.  Read noise adds per frame at the sensor, so N
-                    # frames add it N times in quadrature while the signal adds N times coherently and the ratio
-                    # improves as sqrt(N).  Applied after the sum it would not fall at all, and the model could not
-                    # show why the camera has an accumulating mode.
                     idx = int(index) if index is not None else 0
                     stack = [read_noise(np.asarray(f, np.float32), self.nv, idx - (len(stack) - 1 - j))
                              for j, f in enumerate(stack)]
@@ -441,12 +459,10 @@ class CameraStage(Stage):
                     if shut > 1:
                         stack = [shutter_integrate(stack, self.nv)]
                     out = accumulate(stack, self.nv) if n > 1 else stack[0]
-                else:
-                    out = read_noise(out, self.nv, int(index) if index is not None else 0)
-            else:
-                out = read_noise(out, self.nv, int(index) if index is not None else 0)
             out = add_illuminator(out, self.nv)
             out = ir_highlights(out, self.nv)
+            # the single-frame path's read noise, after the term that would otherwise normalise it away
+            out = read_noise(out, self.nv, int(index) if index is not None else 0)
             return out
         # the display stage
         out = monochrome_green(rgb, self.nv)
