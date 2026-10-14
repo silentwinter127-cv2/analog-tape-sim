@@ -1,0 +1,41 @@
+calibrate the green display's channel weights against the footage's per-channel chroma, and correct a cross-configuration reading
+
+**The fault, and why this one could be verified rather than argued about.**  Per-channel mean absolute chroma, the model
+against the reference frames, both at 533x400 below the OSD band:
+
+    the real NIGHTSHOT 0        [0.0479  0.0244  0.0213]      G/B 1.150   R/G 1.962
+    the real NIGHTSHOT 1        [0.1209  0.0601  0.0162]      G/B 3.714   R/G 2.011
+    the real NIGHTSHOT 2        [0.1319  0.0688  0.0227]      G/B 3.034   R/G 1.917
+    the model, before           [0.0728  0.0240  0.0955]      -- blue 4.48x, green 1.00x
+
+**so the total was roughly right and the DISTRIBUTION was inverted**: the footage's green is well above its blue
+(G/B 1.15 to 3.71) while the model's blue was four times its green.  **And this is the one item of `note.txt`'s six with
+a target recovered from the footage itself**, which is why it can be checked instead of demonstrated.
+
+**The mechanism is the projection, not the residue.**  `monochrome_green` projects through the green-display weights, and
+**those weights fix the R:G:B ratio of everything that survives them** -- the luminance and the chroma residue alike,
+since `out = mono + (rgb - lum) * r` carries the same weights in both terms.  **So no value of `chroma_residue` could have
+moved the ratio**, which is what makes this a structural fault rather than a mistuned parameter.
+
+**The weights were solved, not guessed**, with two things held: the **luminance gain stays exactly 1.0**
+(`weights @ LUMA == 1`, which an earlier round fixed and which is what keeps `green_mix` a colour control rather than a
+brightness one), and the resulting ratios match the footage's.  Sweeping the one free parameter under that constraint
+gives its best fit at **`green_gain` 1.15: G/B 2.667 against 2.632, R/G 2.027 against 1.963 -- error 0.046, where 1.0
+scores 0.706.**  That is now the default, in both the schema and `from_params`; the parameter remains the user's.
+
+**Measured end to end, at the same configuration:**
+
+    green_gain 1.00   [0.0715 0.0309 0.0330]   G/B 0.936   R/G 2.311   error 0.183
+    green_gain 1.15   [0.0829 0.0405 0.0205]   G/B 1.974   R/G 2.048   error 0.150
+
+**so the ratio moves from blue-above-green to inside the footage's own range** (1.150 to 3.714) and the error falls.  It
+is not exact, and the honest bound is the target's own spread: the three segments disagree with each other by a factor
+of 3.2, so **this footage cannot pin the weights down more tightly than that**, and the fit is as close as it allows.
+
+**And a correction to a figure I took while making this change.**  The first end-to-end reading compared a **mode-2**
+model output (`chroma_residue` 0.90) against a **mode-1** seam trace (0.35) and reported G/B 0.480 -- a figure that
+contradicted the seam trace two lines above it.  **The two modes carry different residues and are not comparable**;
+re-measured at one mode, both agree.  **This is the third cross-configuration reading in this work**, and the seam trace
+is what caught it.
+
+163 checks pass, selftest clean.

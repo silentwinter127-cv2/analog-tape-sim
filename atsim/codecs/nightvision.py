@@ -87,7 +87,25 @@ class NightVisionSpec:
     #: however large it is set** -- a different fault from being mistuned.  0 is luminance-only noise, 1 gives each
     #: channel its own independent draw.
     chroma_noise: float = 0.15
-    green_gain: float = 1.0
+    #: **The green gun's own gain, and its default is measured rather than asserted.**  It sets the R:G:B ratio of
+    #: everything that survives the mono projection -- the luminance *and* the chroma residue, since both carry these
+    #: weights -- so it is a colour control as much as a brightness one.
+    #:
+    #: **The footage gives the target.**  Per-channel mean absolute chroma on the three NIGHTSHOT frames:
+    #:
+    #:     NIGHTSHOT 0   [0.0479 0.0244 0.0213]   G/B 1.150   R/G 1.962
+    #:     NIGHTSHOT 1   [0.1209 0.0601 0.0162]   G/B 3.714   R/G 2.011
+    #:     NIGHTSHOT 2   [0.1319 0.0688 0.0227]   G/B 3.034   R/G 1.917
+    #:
+    #: **and the projection at 1.0 gave R:G:B [0.505 1.000 0.824] -- G/B 0.824**, i.e. **blue above green where the
+    #: footage has green well above blue**, and the model's own frame measured `[0.0728 0.0240 0.0955]` against the
+    #: footage's `[0.0479 0.0244 0.0213]` -- **blue at 4.48x and green at 1.00x**.  **No value of `chroma_residue`
+    #: could have fixed it**, because `out = mono + (rgb - lum) * r` carries the same weights in both terms.
+    #:
+    #: Sweeping the gain with the luminance gain held at exactly 1.0 (`weights @ LUMA == 1`, which an earlier round
+    #: fixed and which is what keeps `green_mix` a colour control rather than a brightness one) gives its best fit at
+    #: **1.15: G/B 2.667 against 2.632, R/G 2.027 against 1.963**, an error of 0.046 where 1.0 scores 0.706.
+    green_gain: float = 1.15
     green_mix: float = 1.0
     #: the exposure multiplier -- Super NightShot's long shutter, Color Slow Shutter's slow one
     exposure_steps: float = 0.0
@@ -138,7 +156,7 @@ class NightVisionSpec:
             beam_angle=float(cfg.get("nv_beam_angle", 0.55)),
             ir_response=float(cfg.get("nv_ir_response", 0.0)),
             ir_albedo_mix=float(cfg.get("nv_ir_albedo", 0.0)),
-            green_gain=float(cfg.get("nv_green_gain", 1.0)),
+            green_gain=float(cfg.get("nv_green_gain", 1.15)),
             chroma_residue=float(cfg.get("nv_chroma_residue", 0.35)),
         chroma_noise=float(cfg.get("nv_chroma_noise", 0.15)),
             green_mix=float(cfg.get("nv_green_mix", 0.0)),
