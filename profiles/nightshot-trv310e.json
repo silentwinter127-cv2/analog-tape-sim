@@ -1,0 +1,58 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "exported": "2026-10-14T23:03:51",
+  "name": "NightShot -- Sony DCR-TRV310E",
+  "standard": "broadcast_1992_weak",
+  "seed": 20240101,
+  "params": {
+    "camera": {
+      "nv_mode": 2.0
+    },
+    "rf": {
+      "adjacent_channel": 0.2,
+      "broadcast_noise": 0.45,
+      "signal_dbm": -74.0
+    },
+    "tape": {
+      "dropout_rate": 0.6,
+      "noise_floor": 0.3
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  },
+  "_what_this_is": "The analog tape simulator's NightShot calibration, as a DIFF against the schema defaults -- so every number here is one the reproduction actually depends on.",
+  "_calibrated_against": {
+    "source": "Sony DCR-TRV310E, C:\\Users\\Administrator\\Downloads\\10月13日.mp4",
+    "cut_map": "23s normal -> mode 1; 45-52s normal; 52-53s mode 1; 54-68s NIGHTSHOT 1; 68-83s NIGHTSHOT 2",
+    "the footage's own range": {
+      "mean": [
+        0.11,
+        0.39
+      ],
+      "std": [
+        0.09,
+        0.26
+      ],
+      "R/G": [
+        0.37,
+        0.85
+      ],
+      "p1": [
+        0.024,
+        0.055
+      ]
+    },
+    "the fair test": "bare photographs only -- a camcorder frame is already the chain's own output, so feeding it back asks the chain to preserve a transformation rather than perform one"
+  },
+  "_reproduce": {
+    "the suite": "python tools/verify.py",
+    "the self-test": "python tools/selftest.py",
+    "the full snapshot": "python tools/write_settings.py",
+    "this file": "python tools/export_profile.py",
+    "bare inputs": "python tools/bare_inputs.py",
+    "the note audit": "python tools/note_audit.py"
+  },
+  "_note_on_color_cast": "**`color_cast`'s help text had its two directions reversed** and is corrected: measured on a neutral grey field through the chain, c -0.50 gives B/R 0.8369 (warm) and c +0.50 gives 1.1892 (cool), so **POSITIVE is cool/cyan and NEGATIVE is warm**.  The user spotted the contradiction between the label and the picture."
+}

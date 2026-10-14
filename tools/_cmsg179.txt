@@ -1,0 +1,45 @@
+correct color_cast's reversed help text, and write the settings to a non-default path
+
+**The user is right about both, and the first one is a documentation defect with a measurable direction.**
+
+**`color_cast`'s help text had its two directions reversed.**  It read "负值偏青蓝（Sony 消费级常见），正值偏暖", and the
+code has always done the opposite: `_color_cast` applies
+
+    gains = [1 - 0.16c,  1 + 0.03c,  1 + 0.20c]      (R, G, B)
+
+so `c > 0` lowers R and raises B -- **cooler** -- and `c < 0` raises R and lowers B -- **warmer**.  Measured on a neutral
+grey field through the whole chain, the blue-to-red ratio is the clean reading:
+
+    c -0.50 -> B/R 0.8369   (warm)
+    c -0.25 -> B/R 0.9152
+    c  0.00 -> B/R 0.9995
+    c +0.25 -> B/R 1.0906
+    c +0.50 -> B/R 1.1892   (cool)
+
+**so positive is cool and negative is warm, and the text said the reverse.**  The help now states the correct direction,
+keeps the gain expression so the claim can be checked against the code, and records that the user spotted the contradiction
+between the label and the picture.  **A parameter whose label points the wrong way is worse than an unlabelled one**, because
+the interface is then actively misleading about a control that works.
+
+**The settings are now written to `profiles/nightshot-trv310e.json`**, not the repository root, and **in the server's own
+`/api/export` shape: a diff against the schema defaults** rather than a full snapshot.  The exporter's own docstring gives
+the reason -- a full dump of every layer "says nothing about which of them a reproduction depended on" -- and the two shapes
+are kept apart so neither can be confused with the other:
+
+    profiles/nightshot-trv310e.json    2,040 bytes    4 layers, 7 parameters in the diff
+    settings.json (repo root)         25,369 bytes    253 parameters, every layer
+
+**And the round trip is a measurement, not a claim**: the file is written, read back, merged over `SCHEMA.resolve_all({})`
+-- **the state an import actually resets to** -- and compared with the live project across all 253 parameters, with **zero
+disagreements**.  The check fails loudly if any value changes, because a settings file that silently loses a value is worse
+than no file, and it tolerates `overlay.text` being a string rather than calling `float()` on everything.
+
+**One belief of my own was measured and dropped.**  I briefly concluded the file was losing the NightShot calibration,
+because the diff has only 7 entries and none is `nv_illuminator` or the rest.  **Measured, it is not losing anything**: the
+reason those values are absent from the diff is that **they are the schema defaults now** -- `nv_illuminator 1.2`,
+`nv_chroma_residue 0.15`, `nv_highlight_saturation 4.0`, `nv_ir_focus_shift 1.5` and `nv_exposure_trim -0.1` are all
+declared in `profiles.py`, so a fresh project already carries them.  **The count was right and the inference was wrong**,
+which is the same shape as the audits that called `blooming` absent because they looked in the wrong module, and the
+comment in the generator now says so instead of carrying the disproven version.
+
+**163 checks pass, selftest clean.**
