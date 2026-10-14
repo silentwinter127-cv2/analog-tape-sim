@@ -423,49 +423,52 @@ class CameraStage(Stage):
             # applied to it, in the physical order: the sensor integrates the light first, the read-out sums exposures.
             shut = int(round(float(np.clip(self.nv.shutter_frames, 1.0, 64.0))))
             want = max(n, shut)
-            #: **The read noise, and there are two placements because there are two mechanisms.**
-            #:
-            #: **An accumulating mode needs it BEFORE the sum.**  Read noise is added per frame, so N frames add it N
-            #: times in quadrature while the signal adds N times coherently, and the ratio improves as `sqrt(N)` --
-            #: that is the entire content of Super NightShot.  **Measured with a single noise call after the sum, mode
-            #: 2 reads 0.982 of one frame's noise against `1/sqrt(8) = 0.354`**, i.e. the mode removes nothing, which
-            #: is the same inertness `tools/accum_check.py` was written to catch the first time.  So the frames are
-            #: noised individually and then summed.
-            #:
-            #: **A single-frame mode needs it at the END, and that is where it was wrong.**  It used to run before
-            #: `add_illuminator` and `ir_highlights`, and **`ir_highlights` ate it**: that function carries a
-            #: variance-preserving normalisation (`lum_new * std(lum) / std(lum_new)`, which exists because
-            #: `lum ** 0.55` compresses the picture's own contrast by 31%), and noise is variance, so the
-            #: normalisation removes it.  Measured, `nv_read_noise = 0.06` with `nv_chroma_noise = 0.35` gave a
-            #: dark-band hue spread of **0.0308 against the 0.0455 the picture has with no noise at all** -- adding
-            #: noise to a dark region made it *smoother*, which is the signature of a term being normalised away.
-            #:
-            #: **And it is why `nv_chroma_noise` looked inert.**  That term is scaled by `read_noise` inside
-            #: `read_noise()` (`chan = normal(0, a * cn)`) and `nv_read_noise` defaults to 0, so `nv_chroma_noise` at
-            #: 0.15, 0.35 and 0.95 gave **bit-identical frames** -- exactly what the module's own comment predicts
-            #: ("with `read_noise` at zero there is no noise at all whatever this is set to").  The coupling is kept,
-            #: because with `read_noise` at its default the picture must stay the clean one the calibration was taken
-            #: on; but the single-frame path now applies it where nothing downstream can cancel it.
             out = rgb
             if want > 1:
                 stack = self._nv_source_frames(want, index)
                 if len(stack) > 1:
-                    idx = int(index) if index is not None else 0
-                    stack = [read_noise(np.asarray(f, np.float32), self.nv, idx - (len(stack) - 1 - j))
-                             for j, f in enumerate(stack)]
                     # **One exposure held open, then the separate exposures summed.**  The integration is applied to
-                    # the noisy frames because a long exposure's smear and its noise are both in the light the sensor
-                    # collects, before anything is read out of it.
+                    # the frames because a long exposure's smear is in the light the sensor collects, before anything
+                    # is read out of it.
                     if shut > 1:
                         stack = [shutter_integrate(stack, self.nv)]
                     out = accumulate(stack, self.nv) if n > 1 else stack[0]
             out = add_illuminator(out, self.nv)
             out = ir_highlights(out, self.nv)
-            # the single-frame path's read noise, after the term that would otherwise normalise it away
-            out = read_noise(out, self.nv, int(index) if index is not None else 0)
             return out
-        # the display stage
+        #: **The display's own chroma noise, and it is not the sensor's.**  The chain above ends with
+        #: `monochrome_green`, which maps every pixel onto the display's primary ratios and therefore **removes chroma
+        #: noise by construction** -- measured on the camcorder's own frame, the dark band's hue spread arrives at
+        #: 0.212, reaches 0.951 after the sensor's read noise, and then comes out of the green matrix as **0.000**.
+        #: So a chroma term added on the sensor side is deleted by the next step; that is the fifth time in this work a
+        #: value has been produced and then annihilated before use.
+        #:
+        #: **And it belongs here physically.**  A camcorder's read noise is one number per photosite, sensor-side.
+        #: What makes a *near-black* pixel's hue wander is the chroma channel's signal-to-noise ratio, and in a
+        #: NightShot camera the chroma path is downstream of the mono conversion -- the display's own channels are
+        #: where colour stops being defined.  **It is weighted by darkness rather than by brightness**, which is the
+        #: opposite of shot noise: the first version reused `read_noise`, whose shot term grows as `sqrt(lum)`, and
+        #: measured, the bright band's hue spread went to **1.314 against the footage's 0.211** -- noise where the
+        #: picture has none.  A display's chroma S/N is worst where the signal is smallest.
+        #:
+        #: **The magnitude is `nv_chroma_noise` alone, and decoupling it from `nv_read_noise` is the point.**  The
+        #: sensor-side term scales its chroma component by `read_noise` (`chan = normal(0, a * cn)` inside
+        #: `read_noise()`), which is self-consistent for a sensor but wrong here: **a display's chroma channel does not
+        #: have a noise floor of zero because the sensor's read noise is zero.**  They are two amplifiers.  The first
+        #: version kept the coupling and the term was therefore skipped entirely at the default -- measured, the dark
+        #: band stayed at 0.037 with the term "on".
         out = monochrome_green(rgb, self.nv)
+        cn = float(np.clip(getattr(self.nv, "chroma_noise", 0.0), 0.0, 1.0))
+        if cn > 1e-6:
+            lum = np.clip(out @ np.array([0.299, 0.587, 0.114], np.float32), 0.0, 1.0)
+            # darkness weight: one at black, falling to zero by mid-grey
+            wdark = np.clip(1.0 - lum / 0.35, 0.0, 1.0)[..., None]
+            rng = np.random.default_rng(0x9E3779B9 ^ ((int(index) if index is not None else 0) * 2654435761 & 0xFFFFFFFF))
+            chan = rng.normal(0.0, 1.0, out.shape).astype(np.float32)
+            # zero mean across the channels, so it is chroma and not brightness -- the same construction the
+            # sensor-side term uses, and the reason it can be added without moving the level
+            chan = chan - chan.mean(axis=-1, keepdims=True)
+            out = np.clip(out + chan * (0.35 * cn) * wdark, 0.0, 1.0)
         return out
 
     def _grid_for(self, h: int, w: int) -> tuple[int, int]:
