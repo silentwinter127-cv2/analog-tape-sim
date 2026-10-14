@@ -250,24 +250,30 @@ def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # positive factor on the whole field restores the spread without touching the ordering the term exists to create
     # (pale surfaces lifting, dark ones deepening) and without changing the mean, which an earlier round fixed.
     lum_new = lum_new * (float(lum.std()) / max(1e-6, float(lum_new.std())))
-    # **The per-pixel ratio gives the tone curve; one uniform constant then restores the mean luminance.**  Scaling by
-    # `lum_new / lum` alone gets the shape right but not the mean -- `mean(rgb * s) != mean(rgb) * mean(s)` unless `s`
-    # is uniform, and the measured gain was 1.30 to 1.86 depending on the mix.  A **uniform** scale multiplies the mean
-    # luminance exactly, so applying one after the shape makes the term brightness-preserving by construction:
+    # **The per-pixel ratio gives the tone curve; the level is then carried exactly.**
     #
     #     shape = lum_new / lum          which pixels lift and which deepen -- the visible IR character
-    #     out   = rgb * shape            the appearance, at the wrong overall level
-    #     out  *= mean(lum) / mean(out)  one constant, and the mean luminance is carried exactly
+    #     out   = rgb * shape            the appearance
     #
-    # **Both jobs are needed**: without the shape there is no tone curve, and without the constant the term brightens,
-    # which is what the previous version did by adding `ir` to the picture and what the version before it did by
-    # scaling with a non-uniform constant.
+    # **But `out`'s level was then restored with a single multiplicative constant, and that undid the spread.**  It
+    # was written as `out *= mean(lum) / mean(out)`, which carries the mean exactly and **scales the spread by the same
+    # factor** -- so the variance-preserving step three lines above was annulled, and `ir_highlights` measured **0.691x**
+    # the source's contrast on a photograph (0.1894 -> 0.1308) both before and after that step was added.  A ratio of
+    # means cannot hold one moment fixed without holding the other.
+    #
+    # **So the projection is affine instead of linear**: two constants, applied to the whole field, that place the mean
+    # and the standard deviation on the picture's own.  It is still a global operation with no per-pixel decision, so
+    # the ordering the term exists to produce is untouched -- and now both moments are carried rather than one.
     shape = (lum_new / np.maximum(lum, 1e-4))[..., None]
     out = rgb * shape
-    target = float(lum.mean())
-    got = float(np.clip(out @ LUMA, 0.0, 1.0).mean())
-    if got > 1e-6 and target > 1e-6:
-        out = out * (target / got)
+    for _ in range(6):
+        cur = np.clip(out @ LUMA, 0.0, 1.0)
+        target, got = float(lum.mean()), float(cur.mean())
+        sd_t, sd_g = float(lum.std()), float(cur.std())
+        a = (sd_t / sd_g) if sd_g > 1e-6 else 1.0
+        out = out * a + (target - a * got)
+        if abs(a - 1.0) < 1e-4:
+            break
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 

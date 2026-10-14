@@ -1,0 +1,57 @@
+fix the night-vision mode's contrast: a mean-preserving rescale was undoing a variance-preserving one
+
+**The measurement that named the term.**  Each statement of the scene branch applied alone to a photograph:
+
+    the source                        luma 0.1973   contrast 0.1894
+    add_illuminator alone             luma 0.2331   contrast 0.1976   (1.043x)   harmless
+    **ir_highlights alone**           luma 0.2128   contrast **0.1308** **(0.691x)**  <-- the loss
+    monochrome_green alone            luma 0.1973   contrast 0.1892   (0.999x)   harmless
+
+**and in the stage's own order the drop happened at exactly that statement** (0.1976 -> 0.1336), so the whole of the
+night-vision mode's contrast cost was one term.  The mechanism is in the term's shape: it estimates near-IR albedo as
+`lum ** 0.55`, and **a power below 1 stretches the shadows and compresses the highlights, which lowers the spread of any
+picture it is applied to.**
+
+**The fault in the fix, which took two attempts to see.**  The term's arithmetic is a per-pixel ratio for the tone curve
+followed by a constant for the level:
+
+    shape = lum_new / lum
+    out   = rgb * shape
+    out  *= mean(lum) / mean(out)      <- a RATIO OF MEANS
+
+**and a ratio of means cannot hold one moment fixed without holding the other**: it carries the mean exactly and scales
+the spread by the same factor.  So adding a variance-preserving normalisation three lines above it changed nothing --
+measured at **0.691x both before and after**, which is what an inert edit looks like.  **The first attempt to fix this
+made the same mistake in a different place**: it rescaled `ir` before the blend, and the blend is itself compressing, so
+the term still measured 0.693x.
+
+**The fix projects both moments instead of one**: two constants applied to the whole field, placing the mean *and* the
+standard deviation on the picture's own, iterated to convergence.  It is still a global operation with no per-pixel
+decision, so the ordering the term exists for -- pale surfaces lifting, dark ones deepening -- is untouched.
+
+**Measured after:**
+
+    ir_highlights alone                 contrast 0.1858   (0.981x of the source, was 0.691x)
+    after add_illuminator               0.1976   (1.043x)
+    after ir_highlights                 0.1972   (**1.041x**, was 0.705x)
+    after monochrome_green              0.1971   (1.041x)
+    the mode's level                    0.2355 against the footage's 0.2346  (+0.4%)
+
+**so the term now costs 0.2% of the contrast where it cost 32%.**
+
+**A correction to the previous round's own claim.**  I reported that `nv_accumulate` did nothing because Super NightShot
+rendered identically to NightShot.  **That was my test script's fault, not the model's**: `nv_mode` selects the preset and
+an explicit `nv_accumulate` *overrides* it, and the script passed both.  Measured on a static scene, mode 2's temporal
+noise is **0.291** of mode 1's against the **0.354** that eight accumulated frames predict, so **accumulation works**.
+
+**The three-mode test at the schema's own settings:**
+
+    mode           luma      contrast   polarity
+    NIGHTSHOT 0    0.1992    0.1915     +0.852
+    NIGHTSHOT 1    0.2385    0.2002     +0.852    luma +1.7%, contrast 0.985x
+    NIGHTSHOT 2    0.2390    0.2004     +0.851    luma +1.9%, contrast 0.986x
+    the real frame 0.2346    0.2032
+
+**and the polarity is +0.85 where it was -0.358**, so the picture is no longer inverted.
+
+163 checks pass, selftest clean.
