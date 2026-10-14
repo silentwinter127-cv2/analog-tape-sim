@@ -343,7 +343,7 @@ def build_schema() -> ParamSchema:
                     "**`chroma_residue` 无论取何值都修不了**，因为 out = mono + (rgb − lum)·r 两项带同一套权重。\n"
                     "在【亮度增益精确钉在 1.0】的约束下扫描：1.15 给出 G/B 2.667（目标 2.632）、"
                     "R/G 2.027（目标 1.963），误差 0.046，而 1.0 的误差是 0.706。")
-    cam.define("saturation_stops", "饱和点 (低于白点几档)", 0.0, 0.0, 3.0, unit="stops", group=g,
+    cam.define("saturation_stops", "饱和点 (低于白点几档)", 0.30, 0.0, 3.0, unit="stops", group=g,
                phys_min=0.0, phys_max=2.0,
                help="**传感器的饱和点——它决定画面亮部能否被打爆。**\n"
                     "实测：模型最亮的像素是 **0.8686，全画面没有任何像素被裁切**，"

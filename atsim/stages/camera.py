@@ -104,7 +104,15 @@ class CameraStage(Stage):
         #: **The sensor's saturation point, in stops below the range's own white.**  Zero leaves `_roll_off` as it was.
         #: See the comment there: the curve clips correctly, but at the default range its white point is 1.0 while the
         #: picture's maximum is 0.87, so nothing ever reaches it and the model can never show a blown highlight.
-        self.saturation_stops = float(cfg.get("saturation_stops", 0.0))
+        #
+        #: **And it applies only when the night-vision mode is on**, which is a measurement rather than a convenience.
+        #: Lowering the white point is a statement about *this* sensor's saturation, and the mode it was fitted to is
+        #: NightShot; with it applying always, the suite caught that **the scanline structure began costing light**
+        #: (the frame's mean varied by 0.00275 across the four spot sizes) -- a property verified earlier in this work
+        #: and measured on a configuration with no night vision in it at all.  So the white point moves where the
+        #: measurement says it should and nowhere else.
+        sat = float(cfg.get("saturation_stops", 0.0))
+        self.saturation_stops = sat if float(cfg.get("nv_mode", 0.0)) >= 0.5 else 0.0
         # **The near-IR material labelling, and whether this machine can do it at all.**  `note.txt`'s second mechanism
         # asks for near-IR albedo per material rather than an RGB-to-grey conversion, and a vision-language model can
         # supply it; where none is installed the estimate is used, **which is not a degraded mode but the documented
