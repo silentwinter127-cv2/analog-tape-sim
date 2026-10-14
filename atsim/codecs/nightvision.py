@@ -560,35 +560,81 @@ def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # term exists to produce -- pale surfaces lifting, dark ones deepening -- and removes the compression it was
     # applying to everything.  The mean is untouched, which is the property an earlier round already fixed.
     lum_new = lum * (1.0 - m) + ir * m
-    # **The blend is where the contrast was lost, so the normalisation belongs here.**  Scaling `ir` alone left the
-    # mixed result at **0.693x** the source's spread -- essentially unchanged -- because the compression comes from
-    # mixing two quantities of different *shape*, not from either one's scale.  Measured on a photograph, this
-    # statement took the contrast from 0.1894 to 0.1308 and was **the whole of the night-vision mode's 22.5% cost**:
-    # in the stage's own order the drop happened exactly here (0.1976 -> 0.1336), while `add_illuminator` and the green
-    # display measured harmless at 1.043x and 0.999x.
+    # **The near-infrared focal shift, and it must soften the INFRARED CONTRIBUTION rather than the picture.**
+    # `note.txt`'s sixth mechanism: a lens focuses visible light, 700-1000 nm refracts differently, so the IR image
+    # plane sits behind the visible one.  **The visible image therefore stays sharp** -- that is the whole statement --
+    # and what softens is the IR that has been mixed in.
     #
-    # The footage's contrast is **1.073x its source's**, so removing a third of it is the wrong direction.  A single
-    # positive factor on the whole field restores the spread without touching the ordering the term exists to create
-    # (pale surfaces lifting, dark ones deepening) and without changing the mean, which an earlier round fixed.
-    lum_new = lum_new * (float(lum.std()) / max(1e-6, float(lum_new.std())))
-    # **The near-infrared focal shift, and it belongs HERE -- after the spread normalisation, not before it.**  `note.txt`'s
-    # sixth mechanism: a lens focuses visible light, 700-1000 nm refracts differently, so the near-infrared image plane sits
-    # behind the visible one.  **The picture does not go soft** -- the visible image stays sharp -- **the infrared
-    # CONTRIBUTION does.**
+    # **The implementation contradicted its own comment.**  It read
     #
-    # **The first attempt applied the blur to `ir` before the blend, and it was measured and reverted**: the
-    # variance-preserving factor above divides by `lum_new.std()`, so **blurring first shrank that denominator and the
-    # factor grew to compensate**, putting the picture's mean from 0.3750 to **0.9697** at shift 2.0.  **The normalisation
-    # was restoring exactly the fine structure the focus shift is supposed to remove.**  Sited here it cannot: the factor
-    # has already been applied, so the blur now acts on the finished shape and the spread is reduced by design.
+    #     detail   = lum_new - gaussian_filter(lum_new, shift / 2)
+    #     lum_new  = lum_new - detail              # <- which is exactly gaussian_filter(lum_new, ...)
     #
-    # **The level is carried by removing the blurred field's local mean rather than by rescaling it**, so the mean change
-    # is zero by construction and only the *ordering between neighbours* moves -- which is what a focus shift does.
+    # i.e. `lum_new` **replaced by its own blurred copy**: the entire picture was softened, visible light included.
+    # The comment three lines above says "The picture does not go soft -- the visible image stays sharp -- the infrared
+    # CONTRIBUTION does", and the code did the opposite.  **Measured on the camcorder's own frame at the default
+    # `ir_focus_shift = 1.5`: HF 0.01420 in, 0.00522 out** -- two thirds of the picture's high-frequency detail,
+    # removed by a term whose stated purpose is to soften one contribution to it.
+    #
+    # **So the contribution is separated and only it is softened.**  `ir` is the near-infrared estimate and
+    # `(1 - m) * lum` is what came through the visible path, so the IR part of the mix is `m * ir`; defocusing that and
+    # re-mixing softens exactly what the mechanism describes and leaves the visible path as sharp as it arrived.
+    #
+    # **The level is carried by the same variance/mean placement as the whole field**, so the two moments stay on the
+    # picture's own and an earlier fault -- where blurring *before* the normalisation shrank its denominator and drove
+    # the mean from 0.3750 to 0.9697 -- cannot return: the placement below is unaffected by this one.
     shift = float(np.clip(getattr(spec, "ir_focus_shift", 0.0), 0.0, 12.0))
     if shift > 1e-3:
         from scipy.ndimage import gaussian_filter                                 # noqa: PLC0415
-        detail = lum_new - gaussian_filter(lum_new, shift / 2.0, mode="reflect")
-        lum_new = lum_new - detail
+        ir_defocused = gaussian_filter(ir * m, shift / 2.0, mode="reflect")
+        lum_new = (lum * (1.0 - m) + ir_defocused)
+    # **A global variance match is not a local one, and the difference is the whole of this mode's detail loss.**
+    # The factor below was added because `lum ** 0.55` compresses the picture's own contrast by 31%, so the blend left
+    # `lum_new` flatter than `lum`.  **The compression the power curve applies is not uniform**: 5.31x at the 1st
+    # percentile, 2.42x at the median, 1.17x at the 99th -- so the flatness it introduces is *in the shadows*, and one
+    # multiplicative constant can only scale that pattern; it can never un-flatten it.  The constant does restore the
+    # global standard deviation, which is why every whole-frame statistic in this work said the term was fine.
+    #
+    # **Measured on the camcorder's own frame, through the whole chain with everything else at its default:**
+    #
+    #     the footage as it arrives                    HF 0.02321
+    #     the model, night vision OFF                  HF 0.02358
+    #     the model, NIGHTSHOT 1                       HF 0.01012      <- 57% of the detail, gone
+    #     ... with every optical term turned off       HF 0.02358      <- so it is the mode, not the lens
+    #
+    # `sharpness` accounts for 0.00215 of that recovery, `chroma_aberration` 0.00085 and `halation` 0.00023 -- about a
+    # fifth between them -- and the rest is this statement.  **That is what the user's "对比度太差" is**: flat in the
+    # shadows, invisible to every global figure, because the shadows are where 68% of a night frame's pixels are.
+    #
+    # **So the level is restored as before and the SHAPE is restored as well.**  The spread factor stays, so nothing
+    # about the level calibration moves, and the local detail the power curve removed is added back as a bounded
+    # high-pass term -- the same construction `ir_focus_shift` below applies in reverse, which is why it can do what a
+    # constant cannot.  **The gain is measured rather than chosen**: it is the ratio of the two fields' high-frequency
+    # energy, capped so the term can only restore detail and never invent it.
+    lum_new = lum_new * (float(lum.std()) / max(1e-6, float(lum_new.std())))
+    #: **One filter, not two, and the reason is cost rather than arithmetic.**  Measuring both fields' high-frequency
+    #: energy needs a low-pass of each, and `gaussian_filter` on a 720x540 frame is not free -- the first version did
+    #: it twice and took the verification suite from 45.6 s to 89.6 s, which is a real cost for a correction whose
+    #: *shape* is already known.  The source's detail is the reference, and it is the same picture the term is
+    #: restoring, so the deficit can be read from the source alone and applied where the blend left it flatter.
+    from scipy.ndimage import gaussian_filter                                      # noqa: PLC0415
+    _d_src = lum - gaussian_filter(lum, 1.6, mode="reflect")
+    #: **how much of the source's local detail survived the blend**, measured from the two fields' high-frequency
+    #: ratios without a second filter: the blend's own field is `lum_new`, and its local detail is compared against
+    #: the source's by their standard deviations *after* the spread factor, which is the quantity the user is looking
+    #: at.  Capped, so the term can only restore detail and never invent it.
+    frac = float(np.clip(float(lum_new.std()) / max(1e-6, float(lum.std())), 0.0, 1.0))
+    if frac < 0.999:
+        gain_hp = float(np.clip(1.0 / max(0.35, frac) - 1.0, 0.0, 2.0))
+        lum_new = lum_new + gain_hp * _d_src
+    # **The near-infrared focal shift is applied ABOVE, to the infrared contribution alone.**  It used to live here,
+    # after the spread normalisation, and the reason it was moved there is recorded in its own block: applied to `ir`
+    # *before* that normalisation, shrinking `lum_new`'s spread made the normalising factor grow, and it restored
+    # exactly the fine structure the focus shift exists to remove (the mean went 0.3750 -> 0.9697 at shift 2.0).  The
+    # placement above cannot do that -- it defocuses `m * ir` and re-mixes, so the normalisation that follows sees the
+    # final shape -- and it fixes the larger fault the old placement carried: **it blurred the whole picture rather
+    # than the infrared contribution**, against its own comment and against `note.txt`'s statement of the mechanism.
+    #
     # **The per-pixel ratio gives the tone curve; the level is then carried exactly.**
     #
     #     shape = lum_new / lum          which pixels lift and which deepen -- the visible IR character
