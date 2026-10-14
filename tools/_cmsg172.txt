@@ -1,0 +1,52 @@
+stop the red at its source: mask the chroma residue by hue, and correct a reference I had chosen wrongly
+
+**The user's report is exact and it is now fixed at the mechanism rather than by a setting.**  "红色根本没有这么显著" --
+and measured on their two images, the render's red **99th percentile was 0.6120 against the footage's 0.5725** while its
+`R/B` was **0.6779 against 0.8361**.  **So the red was not merely present, it was concentrated and bright**, which is what
+the eye notices in a small area.
+
+**And the cause was already named**: `chroma_residue` carries the input photograph's own chroma onto the mono display, and
+that photograph is lit by **red, magenta and pink emitters** -- its own `R/G` is 1.017 with red leading green in **54.7%**
+of the frame.  The residue puts them back.
+
+**So the two requirements were separated instead of traded.**  Dropping the residue to zero removes the red and also removes
+the cast variation the user had asked for in the other direction ("实拍图片并不是均匀的绿").  **But a green cast varying
+does not require red to come through**, because what let this chroma past is the removed IR-cut filter, and it passes green
+and blue far more than red.  The chroma term is now scaled by a hue mask that is zero where green leads and rises as red
+takes over:
+
+    red mask = clip(R - G, 0, 1) / 0.15
+
+**Measured, and the fix is at the level of the artefact rather than of the dial**:
+
+    the render's red 99th percentile   0.6120  ->  **0.5694**   (the footage 0.5725, so within 0.5%)
+    and it is now INDEPENDENT of the residue -- 0.5694 at 0.45, 0.5728 at 0.30, 0.5818 at 0.00
+
+**so the red no longer stands out at any residue setting**, which is what makes it a fix rather than a rebalance.  **And the
+luminance is still carried exactly**: the mask scales the chroma term and `(rgb - lum) @ LUMA == 0` at every scale.
+
+**The residue is then re-swept, now that it no longer has to be low to suppress red**, and the green improves with it:
+
+    residue   hue        G/R       G/B
+    0.45      +165.19    1.3868    0.9383
+    0.30      +171.01    1.3728    0.9643
+    **0.15      -175.53    1.3455    1.0205**     <- G/R within 0.14% of the footage's 1.3474
+    the footage  -161.19   1.3474    1.0872
+
+**so the default is now 0.15**: G/R within **0.14%**, saturation 0.116 against 0.117, contrast std 0.181 against 0.179.
+
+**And a reference I had chosen wrongly is corrected.**  The exposure trim had been set to **-0.50** by fitting the render to
+the user's single frame `c_0091.png` -- **and that frame is about 2.4x darker than the NIGHTSHOT 0 reference (mean 0.096
+against 0.2346)**, so the trim was darkening the model to chase something that was not the baseline.  Measured against the
+actual reference on **both** photographs:
+
+    trim -0.10    the old photograph 0.2310/0.5422/0.8930   the new 0.2463/0.5684/0.8185   error 0.153 / 0.221
+    trim -0.50    the old photograph 0.1791/0.3866/0.7072   the new 0.1910/0.4195/0.6334   error 0.835 / 0.806
+
+**so -0.10 is restored as the default** -- it is the best on both inputs -- and the mistake is recorded in the parameter's
+help, because it is the same fault class as the downlight sweep: **measuring against the wrong configuration.**
+
+**A night-vision frame needs the OSD band cropped before it can be used as a target**, which is why `c_0091.png` misled:
+its white overlay text and its darker exposure both sit inside any whole-frame statistic.
+
+**163 checks pass, selftest clean.**

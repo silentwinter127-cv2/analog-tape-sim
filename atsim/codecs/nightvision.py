@@ -80,7 +80,7 @@ class NightVisionSpec:
     #: one clip the red share reads **0.2892, 0.2339 and 0.2011** -- a factor of **1.44** -- while the blue share
     #: stays at **0.341-0.354**.  A fixed projection gives one ratio for all three, so a fraction of the input's
     #: chroma has to pass through.  0 is the rigid projection, 1 leaves the chroma untouched.
-    chroma_residue: float = 0.45
+    chroma_residue: float = 0.15
     #: **The CHROMA component of the read noise.**  Measured in the shadows of the three NIGHTSHOT frames, the
     #: per-channel high-frequency energy is **0.00736 / 0.00659 / 0.00836** -- a **27% spread between the channels**,
     #: i.e. the noise is coloured and not only luminance.  `read_noise` is a single scalar, so **it cannot produce this
@@ -192,7 +192,7 @@ class NightVisionSpec:
             ir_response=float(cfg.get("nv_ir_response", 0.0)),
             ir_albedo_mix=float(cfg.get("nv_ir_albedo", 0.0)),
             green_gain=float(cfg.get("nv_green_gain", 1.15)),
-            chroma_residue=float(cfg.get("nv_chroma_residue", 0.45)),
+            chroma_residue=float(cfg.get("nv_chroma_residue", 0.15)),
         chroma_noise=float(cfg.get("nv_chroma_noise", 0.15)),
             green_mix=float(cfg.get("nv_green_mix", 0.0)),
             exposure_steps=float(cfg.get("nv_exposure_steps", 0.0)),
@@ -700,7 +700,27 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # **the luminance is carried exactly at every value of the residue.**
     r = float(np.clip(getattr(spec, "chroma_residue", 0.0), 0.0, 1.0))
     if r > 1e-4:
-        out = np.clip(mono + (rgb - np.clip(rgb @ LUMA, 0.0, 1.0)[..., None]) * r, 0.0, 1.0)
+        lumv = np.clip(rgb @ LUMA, 0.0, 1.0)
+        chroma = rgb - lumv[..., None]
+        # **The residue is attenuated where RED is what the chroma consists of.**  The user's report is
+        # "红色根本没有这么显著", and it is measured: the input photograph is lit by red, magenta and pink emitters, so its
+        # own chroma carries them, and the residue puts them back on the mono display.  Measured, the render's red 99th
+        # percentile is **0.6120 against the footage's 0.5725** while its `R/B` is **0.6779 against 0.8361** -- **so the
+        # red is not merely present, it is concentrated and bright**, which is what the eye notices, and dropping the
+        # residue entirely removes it but also removes the cast variation the user asked for in the other direction
+        # ("实拍图片并不是均匀的绿").
+        #
+        # **So the two are separated rather than traded.**  A night-vision display's cast varies, and the variation comes
+        # from what the picture's own chroma is; **but a GREEN cast varying does not require red to come through**, because
+        # the IR-cut filter is what let this chroma past and it passes green and blue far more than red.  The mask is zero
+        # where green leads (so the green-cast variation is untouched) and rises as red takes over:
+        #
+        #     red mask = clip(rgb_R - rgb_G, 0, 1) / 0.15     ->  0 while the cast is green, 1 once red leads by 0.15
+        #
+        # **The luminance is still carried exactly** -- the mask scales the chroma term, and `(rgb - lum) @ LUMA == 0` at
+        # every scale, so `out @ LUMA == mono @ LUMA == lum` holds as before.
+        rmask = np.clip((rgb[..., 0] - rgb[..., 1]) / 0.15, 0.0, 1.0)
+        out = np.clip(mono + chroma * (r * (1.0 - rmask))[..., None], 0.0, 1.0)
     return out.astype(np.float32)
 
 
