@@ -98,7 +98,7 @@ class CameraStage(Stage):
         # --- the night-vision modes ------------------------------------------------
         # Physical reconstruction rather than a colour grade: the illuminator, the removal of the IR-cut
         # filter, the monochrome green display, and frame accumulation.  Built against the reference clip
-        # `绱㈠凹F717澶滆娴嬭瘯`, segmented into its four modes and measured per segment.
+        # `索尼F717夜视测试`, segmented into its four modes and measured per segment.
         from ..codecs.nightvision import NightVisionSpec
         self.nv = NightVisionSpec.from_params(cfg)
         #: **The sensor's saturation point, in stops below the range's own white.**  Zero leaves `_roll_off` as it was.
@@ -173,6 +173,8 @@ class CameraStage(Stage):
         #: as the schema default darkened every ordinary visible-light render.
         self.dsp_gain = float(np.clip(cfg.get("dsp_gain", 1.0), 0.1, 4.0))
         self.dsp_black = float(np.clip(cfg.get("dsp_black", 0.0), -0.5, 0.5))
+        #: the DSP's tone curve, as an offset from the identity -- see `_dsp_level`
+        self.dsp_contrast = float(np.clip(cfg.get("dsp_contrast", 0.0), -0.8, 2.0))
         self._nir_albedo: np.ndarray | None = None
         self._nir_depth: np.ndarray | None = None
         self._nir_failed = False
@@ -902,8 +904,9 @@ class CameraStage(Stage):
         #:     every night-vision function called on white   max 1.0000     <- so it is NOT the mode
         #:
         #: At the NightShot value of 0.75 the model could **never** reach full scale: the DV frame has **6.71%** of its
-        #: pixels above 0.90 and the model had **0.00%**.  **That is the user's "瀵规瘮搴﹀お宸? and their "椋庢墖鍙戝厜閮ㄥ垎
-        #: 搴旇瑕佹洿浜?** -- the fan LEDs are the brightest thing in the frame and the model had nowhere to put them.
+        #: pixels above 0.90 and the model had **0.00%**.  **That is the user's "contrast is too low" and their "the
+        #: fan's lit part should be brighter"** -- the LEDs are the brightest thing in the frame and the model had
+        #: nowhere to put them.
         #:
         #: **The fix is to move the gain into the EXPOSURE rather than to rescale it here.**  A first attempt divided
         #: by `g + b` so that full scale mapped to full scale, which removed the ceiling and **made `dsp_gain` itself
@@ -914,8 +917,29 @@ class CameraStage(Stage):
         #: `nv_exposure_trim` applies `2 ** exposure` **before `_roll_off`**, and `_roll_off` maps the sensor's own
         #: saturation point back to 1.0 -- **so exposure moves everything except the white point, which is what a
         #: camera's exposure does.**  The NightShot presets therefore carry an exposure trim and this stays at unity;
-        #: their equivalence is exact (`2 ** -0.415 = 0.75`), and the difference is that one of them can still record
+        #: their equivalence is exact (`2 ** -0.55 = 0.683`), and the difference is that one of them can still record
         #: a white.
+        #:
+        #: **The contrast curve, and it is here because the model's range is squeezed from both ends.**  Measured on
+        #: the new photograph against the DV frame:
+        #:
+        #:     the DV frame    p1 0.0353   p50 0.1833   p99 1.0000
+        #:     the model       p1 0.0447   p50 0.2052   p99 0.6585
+        #:
+        #: so the model's mid-tone is HIGH while its dark end is HIGH and its white end is LOW -- the whole range is
+        #: compressed towards the middle rather than shifted, which is exactly what a tone curve exists to fix and
+        #: what every consumer camcorder's contrast control did.  The user asked for "高细节高对比"; this is the second
+        #: half of that, and the first half is not here because it is not a level question.
+        #:
+        #: **A power law about 0.5**, so 0.0, 0.5 and 1.0 are all fixed and only the ends move:
+        #: `y = 0.5 * (x / 0.5) ** k`.  `k = 1` is the identity, the control is `dsp_contrast` as an offset from it, and
+        #: the **default is 0 so that nothing in this repository moves until someone asks** -- the same rule the gain
+        #: and the black level follow.  It runs before the gain so the two compose the way a camera's tone and level
+        #: stages do.
+        k = float(getattr(self, "dsp_contrast", 0.0))
+        if abs(k) > 1e-4:
+            kk = float(np.clip(1.0 + k, 0.2, 3.0))
+            rgb = np.clip(0.5 * np.power(np.clip(rgb, 0.0, 1.0) / 0.5, kk), 0.0, 1.0).astype(np.float32)
         return np.clip(rgb * g + b, 0.0, 2.0).astype(np.float32)
 
     def _color_science(self, rgb: np.ndarray) -> np.ndarray:
