@@ -1,0 +1,42 @@
+the highlights never reach the top of the range, and the illuminator reaches its term but changes nothing
+
+**Two findings, both measured on the reference frame, and the first is the one the user reported.**
+
+**1. The highlights are short by a large margin, and the model never saturates at all.**
+
+    the footage, NIGHTSHOT 0    p50 0.1394   p90 0.5870   p99 **0.9511**   max **1.0000**   clipped **0.00657**
+    the model, mode 1           p50 0.1547   p90 0.5394   p99 **0.8011**   max **0.8662**   clipped **0.00000**
+    departure                   +0.0153      -0.0477      **-0.1499**      **-0.1338**      **-0.00657**
+
+**The model's brightest pixel is 0.866 and nothing anywhere in the frame is clipped**, where the footage reaches 1.0 with
+0.66% of the frame blown out.  **And the mean is fine** (0.2298 against 0.2346, +2%), so the shortfall is confined to the
+top of the curve -- **which is why every whole-frame measurement taken in this work agreed while this is badly wrong.**
+That is the tenth statistic here to have been blind to the thing being looked at.
+
+**`note.txt` lists exactly this as a mechanism** -- "加入随曝光和信号强度变化的噪声、暗部读出噪声、固定图样噪声，**以及高亮区域的饱和**"
+-- **and it is the one of its six that has no term implementing it.**  The controls that might have carried it were swept
+and none does:
+
+    illuminator 0.15 .. 3.0        no change at all
+    dynamic_range 8 .. 16          lowers the top (max 0.866 -> 0.735) rather than raising it
+    bloom / halation               raise the top slightly (max 0.900 at halation 0.5) and blow out nothing
+    nv_exposure_steps 1.0          raises the mean to 0.6606 -- a brighter picture, not a saturated one
+
+**so the mechanism is MISSING rather than mistuned**, which is the more serious of the two possibilities and is what the
+sweep shows.
+
+**2. The illuminator reaches its term and changes nothing.**  `nv_illuminator` set to 0.15, 0.30, 0.50, 0.80, 1.20, 2.00
+and 3.00 gives **bit-identical output**, and a probe inside `add_illuminator` shows the value **does arrive** -- 0.15
+reaches the function as 0.150, 0.80 as 0.800, 3.00 as 1.000 (clipped at the parameter's own ceiling).  **So this is not
+the swallow a value has suffered five times before in this work** -- `chroma_residue`, `accumulate`, `ir_response`,
+`ir_albedo`/`ir_depth`, and the player's six parameters all had their values replaced before use.  **Here the value arrives
+and the arithmetic makes it inert**, which is a different fault in the same family: the one this file already records for
+`tbc_enabled` ("the parameter was read; the arithmetic made it inert").
+
+**The candidates are few and the next step is specific**: `illuminator_field` normalises by its own mean and scales by a
+constant, and `add_illuminator` applies the field to the picture -- so either the field is being renormalised downstream,
+or the picture's own brightness is standing in for the lamp's response in a way that cancels the scale.  **Printing the
+field's statistics and the picture's change across two settings would name it**, which is the same probe method that found
+the last five.
+
+**163 checks pass, selftest clean.**
