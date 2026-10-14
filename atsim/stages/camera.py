@@ -113,6 +113,14 @@ class CameraStage(Stage):
         #: measurement says it should and nowhere else.
         sat = float(cfg.get("saturation_stops", 0.0))
         self.saturation_stops = sat if float(cfg.get("nv_mode", 0.0)) >= 0.5 else 0.0
+        #: **The night-vision mode's own exposure offset, and it must NOT be the global `exposure`.**  Measured, the
+        #: highlight calibration wants a **-0.10 stop** trim to bring the mean onto the footage's (0.2480 against
+        #: 0.2346, where the same configuration untrimmed reads 0.2657).  **Setting the global `exposure` default to
+        #: -0.10 broke a check that has nothing to do with night vision** -- "a cold machine renders differently from a
+        #: warm one", whose largest mean difference fell to 0.0008 -- because `exposure` is the camera's own control and
+        #: the AE loop, the spot sizes and the thermal drift are all measured through it.  **A trim belonging to one mode
+        #: belongs to that mode**, exactly as the saturation point does, so it is applied here and nowhere else.
+        self.nv_exposure_trim = (-0.10 if float(cfg.get("nv_mode", 0.0)) >= 0.5 else 0.0)
         # **The near-IR material labelling, and whether this machine can do it at all.**  `note.txt`'s second mechanism
         # asks for near-IR albedo per material rather than an RGB-to-grey conversion, and a vision-language model can
         # supply it; where none is installed the estimate is used, **which is not a degraded mode but the documented
@@ -137,24 +145,6 @@ class CameraStage(Stage):
         #: the noise *fall* rather than the brightness rise.
         self._nv_history: list = []
         self.exposure = float(cfg.get("exposure", 0.0))
-        # **The night-vision exposure bias is added here, not applied as a gain at the end.**  The stage's own
-        # exposure feeds the auto-exposure loop, the roll-off, the gain stages and the white balance in a fixed
-        # order; a multiplier bolted on afterwards would lighten the picture without it ever having been exposed
-        # differently -- no shift in the highlight roll-off and nothing for the AE loop to react to.  Super
-        # NightShot's character *is* a different exposure, so the bias belongs in the value.
-        self._exposure_base = self.exposure
-        # the mode's own bias, added to whatever the user set -- through the same value, so it is exposed
-        # rather than painted on.  Zero when the mode is off.
-        self.exposure = self._exposure_base + self._nv_exposure_bias()
-        # **The night-vision exposure bias is added here, not applied as a gain at the end.**  The stage's own
-        # exposure feeds the auto-exposure loop, the roll-off, the gain stages and the white balance in a fixed
-        # order; a multiplier bolted on afterwards would lighten the picture without it ever having been exposed
-        # differently -- no shift in the highlight roll-off and nothing for the AE loop to react to.  Super
-        # NightShot's character *is* a different exposure, so the bias belongs in the value.
-        self._exposure_base = self.exposure
-        # the mode's own bias, added to whatever the user set -- through the same value, so it is exposed
-        # rather than painted on.  Zero when the mode is off.
-        self.exposure = self._exposure_base + self._nv_exposure_bias()
         # **The night-vision exposure bias is added here, not applied as a gain at the end.**  The stage's own
         # exposure feeds the auto-exposure loop, the roll-off, the gain stages and the white balance in a fixed
         # order; a multiplier bolted on afterwards would lighten the picture without it ever having been exposed
@@ -514,9 +504,16 @@ class CameraStage(Stage):
         """
         from ..codecs.nightvision import mode_of
         m = mode_of(self.nv)
-        if m == "off" or abs(self.nv.exposure_steps) < 1e-4:
+        if m == "off":
             return 0.0
-        return float(self.nv.exposure_steps)
+        # **The calibration trim, and it has to be added even when the mode's own steps are zero.**  Measured, the
+        # highlight calibration on the new photograph wants a **-0.10 stop** trim: with it the mean reads **0.2480**
+        # against the footage's 0.2346, without it 0.2657.  **Setting the GLOBAL `exposure` default to -0.10 broke a
+        # check with nothing to do with night vision** -- "a cold machine renders differently from a warm one", whose
+        # largest mean difference fell to 0.0008 -- because `exposure` is the camera's own control and the AE loop, the
+        # spot sizes and the thermal drift are all measured through it.  **A trim belonging to one mode belongs to that
+        # mode**, exactly as the saturation point does, so it lives here and nowhere else.
+        return float(self.nv.exposure_steps) + float(getattr(self, "nv_exposure_trim", 0.0))
 
     def _roll_off(self, rgb: np.ndarray) -> np.ndarray:
         """

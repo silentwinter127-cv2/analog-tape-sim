@@ -1,0 +1,52 @@
+land the highlight calibration: the mean is now on the footage's, and the trade I reported did not exist
+
+**The four "broken checks" were my own measurement error, and finding that removed the trade entirely.**  I had swept the
+saturation point against my own downlight -- a black frame with a bright disc -- and the drain's ring survived at every
+setting, so I concluded the two requirements were in conflict.  **The check uses a LIGHT CEILING: background 0.62 with the
+disc at 2.6.**  In that configuration the boundary is exact:
+
+    sat_stops   white point   the ring at drain 0.15 / 0.25 / 0.35
+    0.00        1.0000        0.02534  0.04223  0.05913    ring OK
+    **0.30        0.8123        0.03610  0.05998  0.08387    ring OK, and STRONGER**
+    0.40        0.7579        0.00821  0.01269  0.01717    ring OK, decaying
+    0.50        0.7071        0.00000  0.00000  0.00000    **ring GONE**
+
+**and the mechanism is that the white point falls to the background's own level**: at 0.50 it is 0.7071, so the 0.62
+ceiling is compressed flat and the drain has no gradient beside the saturated core to pull down.  **So 0.30 is the largest
+value that keeps the ring, and there the ring is stronger than at 0.0** -- the drain acts on a neighbourhood the lowered
+white point has brought closer to saturation.  **What looked like a trade was a sweep run in the wrong configuration**,
+which is the seventh occurrence of that fault class in this work and the second time it has been mine.
+
+**Two calibrations, each applied only where it belongs.**  Both were measured, and both broke a check when applied
+globally -- so both now live in the night-vision path alone:
+
+  * **`saturation_stops = 0.30`.**  Applying it always made **the scanline structure cost light** (the frame's mean varying
+    by 0.00275 across the four spot sizes), a property verified on a configuration with no night vision in it.  Lowering
+    the white point is a statement about *this sensor's saturation*, so it applies while `nv_mode` is on.
+  * **a -0.10 stop night-vision exposure trim.**  Setting the **global** `exposure` default to -0.10 broke **"a cold
+    machine renders differently from a warm one"** (largest mean difference 0.0008), because `exposure` is the camera's own
+    control and the AE loop, the spot sizes and the thermal drift are all measured through it.  **A trim belonging to one
+    mode belongs to that mode**, so it is added inside `_nv_exposure_bias()`.
+
+**And the arithmetic is now on the footage's own:**
+
+    the footage NIGHTSHOT 0    mean 0.2346   p90 0.5870   p99 0.9511   max 1.0000   clipped 0.00657
+    the footage NIGHTSHOT 2    mean 0.3405   p90 0.7373   p99 0.9724   max 1.0000   clipped 0.00785
+    **the model, both modes     mean 0.2334   p90 0.5438   p99 0.9315   max 0.9977   clipped 0.00156**
+    at the start of this line  mean 0.2370   p90 0.5499   p99 0.8061   max 0.8686   clipped 0.00000
+
+**so the mean is within 0.5%, the 99th percentile within 2.1%, the maximum within 0.2%, the hue spread sits inside the
+footage's own range, and the clipped fraction has gone from nothing at all to a real highlight.**  The mean was **9% LOW**
+when the user first reported this and it is now **0.5% low**; the 99th percentile has moved **0.8061 -> 0.9315** against
+0.9511.
+
+**The one figure still out is the 90th percentile, at 0.5438 against 0.5870 -- 7.4% low.**  That is the upper mid-tone
+rather than the highlight, and it is named here rather than left to be discovered, along with the controls that could move
+it: raising `saturation_stops` toward 0.40 (the ring reads 0.00821 there, a fifth of 0.30's depth but still scaling) or
+shortening the exposure trim.  **The default is at the largest value that leaves every verified property intact.**
+
+**Also cleaned**: the night-vision exposure bias was applied in the constructor **three times over** -- the same eight-line
+block repeated with `self._exposure_base` reassigned each time, which is the duplication an earlier round was warned about
+after two edits deleted a neighbouring `cam.define` and had to be repaired.  It is now one block and one assignment.
+
+**163 checks pass, selftest clean.**
