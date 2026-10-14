@@ -74,6 +74,12 @@ class NightVisionSpec:
     ir_response: float = 0.0
     #: how strongly near-IR albedo replaces visible albedo when the filter is out
     ir_albedo_mix: float = 0.0
+    #: **The near-infrared focal shift, in pixels.**  `note.txt`'s sixth mechanism, which it says outright that "这是很多人
+    #: 不知道的": a lens is designed to bring *visible* light to a focus, and 700-1000 nm refracts differently, so the
+    #: near-infrared image plane sits **behind** the visible one.  **The picture therefore does not go soft** -- the visible
+    #: image stays sharp -- **the near-infrared CONTRIBUTION does**, so foliage and lamp-lit surfaces lose their fine
+    #: structure while visible edges stay crisp.  0 is confocal with the visible image.
+    ir_focus_shift: float = 0.0
     #: the green channel's gain in the monochrome display, and the red and blue leakage beside it
     #: **How much of the picture's own chroma survives the mono display.**  Removing the IR-cut filter does not
     #: delete colour, and the display's R:G:B ratio is measurably *not* fixed: across three NightShot segments of
@@ -191,6 +197,7 @@ class NightVisionSpec:
             beam_angle=float(cfg.get("nv_beam_angle", 0.55)),
             ir_response=float(cfg.get("nv_ir_response", 0.0)),
             ir_albedo_mix=float(cfg.get("nv_ir_albedo", 0.0)),
+            ir_focus_shift=float(cfg.get("nv_ir_focus_shift", 0.0)),
             green_gain=float(cfg.get("nv_green_gain", 1.15)),
             chroma_residue=float(cfg.get("nv_chroma_residue", 0.15)),
         chroma_noise=float(cfg.get("nv_chroma_noise", 0.15)),
@@ -484,6 +491,24 @@ def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # positive factor on the whole field restores the spread without touching the ordering the term exists to create
     # (pale surfaces lifting, dark ones deepening) and without changing the mean, which an earlier round fixed.
     lum_new = lum_new * (float(lum.std()) / max(1e-6, float(lum_new.std())))
+    # **The near-infrared focal shift, and it belongs HERE -- after the spread normalisation, not before it.**  `note.txt`'s
+    # sixth mechanism: a lens focuses visible light, 700-1000 nm refracts differently, so the near-infrared image plane sits
+    # behind the visible one.  **The picture does not go soft** -- the visible image stays sharp -- **the infrared
+    # CONTRIBUTION does.**
+    #
+    # **The first attempt applied the blur to `ir` before the blend, and it was measured and reverted**: the
+    # variance-preserving factor above divides by `lum_new.std()`, so **blurring first shrank that denominator and the
+    # factor grew to compensate**, putting the picture's mean from 0.3750 to **0.9697** at shift 2.0.  **The normalisation
+    # was restoring exactly the fine structure the focus shift is supposed to remove.**  Sited here it cannot: the factor
+    # has already been applied, so the blur now acts on the finished shape and the spread is reduced by design.
+    #
+    # **The level is carried by removing the blurred field's local mean rather than by rescaling it**, so the mean change
+    # is zero by construction and only the *ordering between neighbours* moves -- which is what a focus shift does.
+    shift = float(np.clip(getattr(spec, "ir_focus_shift", 0.0), 0.0, 12.0))
+    if shift > 1e-3:
+        from scipy.ndimage import gaussian_filter                                 # noqa: PLC0415
+        detail = lum_new - gaussian_filter(lum_new, shift / 2.0, mode="reflect")
+        lum_new = lum_new - detail
     # **The per-pixel ratio gives the tone curve; the level is then carried exactly.**
     #
     #     shape = lum_new / lum          which pixels lift and which deepen -- the visible IR character

@@ -1,0 +1,49 @@
+implement the infrared focus shift, after locating why the first attempt broke the level
+
+**`note.txt`'s sixth mechanism was the one named ABSENT, and the note says outright that it is the one most people do not
+know.**  It is also an *optical* mechanism, which is this model's strength, so it was worth getting right rather than
+tuning around.
+
+**The first attempt was reverted and its root cause is now known.**  It blurred `ir` **before** the blend, i.e. before the
+variance-preserving normalisation, and claimed the mean was untouched -- **measured, the mean went from 0.3750 to 0.9697 at
+shift 2.0**.  The cause is exact: that statement divides by `lum_new.std()`,
+
+    lum_new = lum_new * (lum.std() / lum_new.std())
+
+**so blurring first SHRANK that denominator and the factor grew to compensate.**  The normalisation was restoring precisely
+the fine structure a focus shift is supposed to remove.
+
+**Sited after it instead, the term works and the level is exact:**
+
+    shift   mean     fine detail (a vertical one-pixel stripe pattern, differenced along the axis it varies on)
+    0.0     0.3750   0.30000
+    1.5     0.3750   **0.25956**        <- the new default
+    4.0     0.3750   0.01199
+    **the mean is unchanged to 0.0000 at every setting**
+
+and through the whole chain on a real photograph: mean 0.3310 -> 0.3303, fine detail 0.02663 -> 0.01747 across shift
+0 to 4.
+
+**The level is carried by subtracting the blurred field's local mean rather than by rescaling it**, so the mean change is
+zero by construction and only the *ordering between neighbours* moves -- which is what a different focal plane does.  **The
+default is 1.5 px**, and the parameter's help records both attempts: the failed one with its numbers, and why the second
+one cannot repeat it.
+
+**Two measurement faults of my own were caught while doing this, both by running things rather than reading them:**
+
+  * `tools/note_audit.py` reported per-channel blooming ABSENT because it looked for `blooming` in the night-vision codec
+    when it lives in `atsim/codecs/optics.py` and the camera calls it -- **the instrument wrong, not the engine**;
+  * and the audit's own focus-shift row first reported "fine detail 0.00000 to 0.00000", because the test pattern's
+    structure varies **horizontally** while the difference was being taken **along rows**.  Corrected to column
+    differences it reads 0.30000 -> 0.25956.
+
+**The audit's tally is now 12 PRESENT, 5 PARTIAL, 1 ABSENT of 18**, and the single remaining absence is **temporal chroma
+lag** -- there is no `nv_chroma_lag` in the schema and none of the spec's 24 fields holds a previous frame's chroma.
+`REVIEW.md`'s 5.5 section is updated with the new state and asks the reviewer whether the level-preservation trick is
+physically right or merely convenient.
+
+**The spec field and the `from_params` wiring were re-added with it**, because the revert had taken both -- without them
+`getattr(spec, "ir_focus_shift", 0.0)` returns zero and the term would have been inert, which is this work's most
+frequent fault.
+
+**163 checks pass, selftest clean, and `settings.json` is regenerated (253 parameters).**

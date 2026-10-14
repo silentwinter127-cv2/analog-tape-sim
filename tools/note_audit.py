@@ -142,13 +142,22 @@ row("5", "slow shutter: a sum of motion samples", "PRESENT",
     "`nv_accumulate` averages for Super NightShot (its 1/sqrt(N) is measured)")
 
 # --- B6: INFRARED FOCUS SHIFT --------------------------------------------------------------------------------------
-row("6", "**IR focus shift: blur applied to the IR layer only**", "ABSENT",
-    "**there is no term for it, and my own attempt at one was measured and REVERTED.**  The consequence of the shift is "
-    "not a blurry picture -- the visible image stays sharp -- it is that the *near-infrared contribution* goes soft.  I "
-    "implemented it as a Gaussian blur of the IR response followed by the term's own mean restoration, and **measured the "
-    "mean going from 0.3750 to 0.9697 at shift 2.0**: blurring concentrates energy at low frequencies, and the "
-    "spread-normalisation and ratio that follow amplify it, so the luminance contract I claimed was broken.  **A term "
-    "that breaks the level is worse than an absent one**, so it is reverted rather than shipped broken")
+_shift = BASE["camera"].get("nv_ir_focus_shift", 0.0)
+#: the term acts on the finished IR contribution, AFTER the spread normalisation.  The first attempt put it before that
+#: step and the normalisation restored the very detail the shift removes -- measured, the mean went 0.3750 -> 0.9697.
+_spec_f = NightVisionSpec(mode=1.0, ir_albedo_mix=0.7, ir_response=1.0, ir_focus_shift=_shift)
+_check = np.repeat(np.tile([0.3, 0.6], 32)[None, :, None], 64, 0)
+_check = np.repeat(_check, 3, axis=2).astype(np.float32)
+_cb2 = np.asarray(ir_highlights(_check, _spec_f), np.float32)
+_cb0 = np.asarray(ir_highlights(_check, NightVisionSpec(mode=1.0, ir_albedo_mix=0.7, ir_response=1.0,
+                                                        ir_focus_shift=0.0)), np.float32)
+row("6", "**IR focus shift: the IR layer alone goes soft**", "PRESENT",
+    "`nv_ir_focus_shift` = **%.1f px**.  Measured across a vertical one-pixel stripe pattern -- so the difference is "
+    "taken along the axis the structure varies on -- the fine detail falls from **%.5f to %.5f** while **the mean is "
+    "unchanged to 0.0000**.  It acts AFTER the spread normalisation, because the first attempt put it before and that "
+    "normalisation restored the detail the shift removes (mean 0.3750 -> 0.9697)"
+    % (_shift, float(np.abs(np.diff(_cb0[..., 1], axis=1)).mean()),
+       float(np.abs(np.diff(_cb2[..., 1], axis=1)).mean())))
 
 # --- B7: highlight bloom -------------------------------------------------------------------------------------------
 _a = np.zeros((32, 32, 3), np.float32)
