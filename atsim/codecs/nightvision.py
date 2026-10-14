@@ -103,6 +103,16 @@ class NightVisionSpec:
     #: this per-pixel array -- **so near-IR response stops being a function of visible brightness**, which is the thing
     #: `note.txt` says is hardest to fake and which `IR_ALBEDO`'s measured orderings exist to express.
     ir_albedo: "np.ndarray | None" = None
+    #: **A per-pixel RELATIVE depth, 0 nearest to 1 farthest**, from `material.analyse_depth`.  `None` means the
+    #: illuminator keeps its purely radial field, which is what a user without a vision model gets.  **This is the term
+    #: `note.txt`'s first mechanism needs**: a radial falloff can darken the corners of a picture but cannot make a
+    #: distant wall darker than a near floor, and the note's wording is explicitly about distance.
+    ir_depth: "np.ndarray | None" = None
+    #: the near and far distances the relative depth is mapped onto before the inverse-square law, **because 1/d^2
+    #: diverges at zero** -- the near field has to be clamped to a distance the lamp can be held from a surface, and the
+    #: ratio between the two is what sets how strong the falloff is.
+    ir_depth_near: float = 0.25
+    ir_depth_far: float = 4.0
 
     @classmethod
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
@@ -243,6 +253,31 @@ def illuminator_field(h: int, w: int, spec: NightVisionSpec) -> np.ndarray:
     # which puts the reference at 0.0376 / 0.607 = 0.062.
     field = field / max(1e-6, float(field.mean()))
     field = field * 0.062
+    # **The distance term, which is what `note.txt`'s first mechanism is actually about.**  Its wording is "物体距离增加
+    # 后反射光减弱 … 近处物体可能很亮，远处背景却仍然很暗" -- a decline with *distance* -- and everything above is a
+    # falloff about a *point*, which can only ever be a vignette.  Measured, the radial field's default spans **21%**
+    # from the beam's centre to its edge, i.e. it can darken the corners and nothing else.
+    #
+    # **A lamp's irradiance falls as 1/d^2**, so the returned light does too, and with a per-pixel relative depth that
+    # is a per-pixel division.  `ir_depth` runs 0 (nearest) to 1 (farthest) on the model's own arbitrary zero, so it is
+    # mapped to `d_min + (d_max - d_min) * depth` before squaring -- **because 1/d^2 at d = 0 diverges**, and the near
+    # field has to be clamped to a surface the lamp can actually be held away from.
+    #
+    # **Normalised by the mean, like the radial part**, so `illuminator` keeps its meaning as a level and this term
+    # only redistributes it -- the fault the comment above records, where peak-normalising made the parameter's whole
+    # range clip to one value.
+    if spec.ir_depth is not None:
+        dep = np.asarray(spec.ir_depth, np.float32)
+        if dep.shape[:2] != (h, w):
+            dep = np.repeat(np.repeat(dep, max(1, h // max(1, dep.shape[0])), 0),
+                            max(1, w // max(1, dep.shape[1])), 1)[:h, :w]
+            if dep.shape != (h, w):
+                dep = np.resize(dep, (h, w))
+        near = float(np.clip(spec.ir_depth_near, 0.05, 1.0))
+        far = max(near + 1e-3, float(spec.ir_depth_far))
+        d = near + (far - near) * np.clip(dep, 0.0, 1.0)
+        dist = 1.0 / (d * d)
+        field = field * (dist / max(1e-9, float(dist.mean())))
     return field.astype(np.float32)
 def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     """
@@ -595,4 +630,20 @@ def mode_spec(spec: NightVisionSpec) -> NightVisionSpec:
     if not preset:
         return spec
     import dataclasses
-    return dataclasses.replace(spec, **preset)
+    out = dataclasses.replace(spec, **preset)
+    # **The per-pixel arrays are DATA, not settings, and `replace` resets them to their defaults.**  `ir_albedo` and
+    # `ir_depth` are computed once per clip by the vision model and attached to the spec; `mode_spec` then runs **on
+    # every frame**, so `dataclasses.replace` -- which builds a new instance and fills unspecified fields from the
+    # class defaults -- put them back to `None` each time.  **Measured, the distance term was completely inert**:
+    # `nv_nir_depth` on and off gave bit-identical output (luma 0.2390, contrast 0.2004), and the correlation between
+    # the rendered luminance and the inferred depth was **+0.148 either way** where a working term must drive it
+    # negative.  **This is the third time in this work that a value has been read and then replaced before use** --
+    # the same shape as `nv_ir_response` being forced by this very function, which the docstring above records.
+    #
+    # **Carrying them across is not the preset overriding a control**: they are the *scene's* measured content, while
+    # everything in `preset` is what *defines a mode*.  The distinction is the same one the docstring draws.
+    if out.ir_albedo is None:
+        out.ir_albedo = spec.ir_albedo
+    if out.ir_depth is None:
+        out.ir_depth = spec.ir_depth
+    return out

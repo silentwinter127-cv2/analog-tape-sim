@@ -137,3 +137,65 @@ def analyse(rgb: np.ndarray, grid: int = 8, model_dir: str | None = None,
 
     return {"labels": labels, "confidence": conf, "classes": classes, "albedo": alb,
             "source": os.path.basename(path.rstrip("\\/"))}
+
+
+#: **Ordinal depth bins.**  The wording matters more than the count: the model was trained on captions, so these have to
+#: be *ordered phrases a caption would use*, not depth numbers.  Their probabilities are combined into an expectation,
+#: which is what makes the result continuous rather than a class label -- and what makes an unplaceable image degrade to
+#: a mid depth, so the illuminator's falloff stays gentle instead of inventing structure.
+DEPTH_BINS = (
+    "something extremely close to the camera, right in front of the lens",
+    "something very near the camera, within arm's reach",
+    "something a short distance away, a metre or two",
+    "something a few metres away in the middle of the room",
+    "something far away, across the room",
+    "the distant background, far behind everything else",
+)
+
+
+def analyse_depth(rgb: np.ndarray, grid: int = 8, model_dir: str | None = None) -> dict | None:
+    """
+    A per-cell relative depth in [0, 1], where 0 is nearest the camera, from the same vision model.
+
+    **This is what lets `note.txt`'s first mechanism be modelled at all.**  It asks for
+
+        "物体距离增加后反射光减弱 … 近处物体可能很亮，远处背景却仍然很暗"
+
+    and a *radial* illuminator field cannot express a decline with distance -- only a vignette about a point.  **Depth is
+    what the mechanism is about**, and an ordinal expectation over caption-style phrases gives it per pixel with no depth
+    checkpoint.
+
+    **What is calibrated and what is not, stated plainly because it decides how the result may be used.**  The output is
+    a **relative** depth on an arbitrary zero: the bins are equally spaced and the expectation is over their indices, so
+    the scale is that of the phrases rather than of metres.  **It is therefore used for the falloff's *shape*, never for
+    an absolute distance in the physics.**  And on the reference photograph the model places the far wall at 0.80-0.88
+    and the near floor at 0.08-0.21, which matches the picture -- **but there is no depth ground truth for that frame, so
+    the ordering is corroborated by eye and not by measurement.**  The fallback covers the case where even that fails.
+
+    Returns `None` when no model is available, exactly as `analyse` does, so the caller keeps its radial field.
+    """
+    path = find_model(model_dir)
+    if path is None or not available(model_dir):
+        return None
+    from PIL import Image
+
+    prompts = list(DEPTH_BINS)
+    model, proc, torch = _load(path)
+
+    a = np.clip(np.asarray(rgb, np.float32), 0.0, 1.0)
+    h, w = a.shape[:2]
+    pil = Image.fromarray((a * 255.0 + 0.5).astype(np.uint8))
+    cells = []
+    for j in range(grid):
+        for i in range(grid):
+            cells.append(pil.crop((i * w // grid, j * h // grid, (i + 1) * w // grid, (j + 1) * h // grid)))
+
+    with torch.no_grad():
+        inputs = proc(text=prompts, images=cells, padding="max_length", return_tensors="pt")
+        P = model(**inputs).logits_per_image.softmax(dim=-1).cpu().numpy()
+
+    idx = np.arange(len(prompts), dtype=np.float32)
+    depth = ((P * idx).sum(axis=1) / max(1.0, len(prompts) - 1.0)).reshape(grid, grid)
+    conf = P.max(axis=1).reshape(grid, grid)
+    return {"depth": depth.astype(np.float32), "confidence": conf.astype(np.float32),
+            "source": os.path.basename(path.rstrip("\\/"))}

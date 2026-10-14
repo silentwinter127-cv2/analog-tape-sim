@@ -114,7 +114,11 @@ class CameraStage(Stage):
         self.nir_margin_floor = float(cfg.get("nv_nir_margin_floor", 0.02))
         self.nir_grid = int(np.clip(round(float(cfg.get("nv_nir_grid", 8))), 2, 32))
         self.nir_label_source: str | None = None
+        self.nir_depth_source: str | None = None
+        #: whether to infer a depth map, so the illuminator's falloff can be about distance rather than a radius
+        self.nir_depth = bool(round(float(cfg.get("nv_nir_depth", 1.0))))
         self._nir_albedo: np.ndarray | None = None
+        self._nir_depth: np.ndarray | None = None
         self._nir_failed = False
         #: The recent post-exposure frames, so a mode that accumulates has frames to sum.  The module
         #: returns the mean, so the picture stays at the same scale as a single frame -- which is what makes
@@ -344,12 +348,17 @@ class CameraStage(Stage):
         from ..codecs.nightvision import mode_spec
         self.nv = mode_spec(self.nv)
         if stage == "scene":
-            self._attach_ir_albedo(rgb)
-            # **`mode_spec` has just rebuilt the spec from the mode's preset, so the albedo is put back on it here.**
-            # Setting it in `__init__` would be overwritten by that rebuild -- which is exactly the fault class this
-            # project keeps finding, where a value is read, then replaced before it is used.
-            if self._nir_albedo is not None:
-                self.nv.ir_albedo = self._nir_albedo
+            # **The analysis and the attachment are two steps, and an earlier version of this folded them into one and
+            # made the distance term inert.**  The analysis is expensive -- a vision model, once per clip -- while the
+            # attachment is two assignments that must happen **after** `mode_spec`, which runs every frame and rebuilds
+            # the spec.  With one combined method that returned early once the analysis was cached, the assignments were
+            # skipped on every frame including the first, because the cache was filled *by* that same call: measured,
+            # `nv_nir_depth` on and off gave bit-identical output (luma 0.2390, contrast 0.2004) and the correlation
+            # between rendered luminance and inferred depth was **+0.148 either way**, where a working term drives it
+            # negative.
+            self._analyse_scene_nir(rgb)
+            self.nv.ir_albedo = self._nir_albedo
+            self.nv.ir_depth = self._nir_depth
             # **Accumulation comes first, while the picture is still at the scene's own level.**  It ran in the
             # display stage initially -- the last thing to execute -- where it replaced a *processed* picture (mean
             # 0.4886) with the mean of several *source* frames (mean 0.1768), a factor of 3.66.  Then it ran after
@@ -386,7 +395,7 @@ class CameraStage(Stage):
         out = monochrome_green(rgb, self.nv)
         return out
 
-    def _attach_ir_albedo(self, rgb: np.ndarray) -> None:
+    def _analyse_scene_nir(self, rgb: np.ndarray) -> None:
         """
         Label the scene's materials once per clip and put the resulting per-pixel near-IR albedo on the spec.
 
@@ -404,7 +413,17 @@ class CameraStage(Stage):
         **And the provenance is recorded** (`nir_label_source`), so any figure can say whether the albedo came from a
         model or an estimate -- the same discipline the chain's stage traces follow.
         """
-        if not self.nir_material or self._nir_failed or self._nir_albedo is not None:
+        if self._nir_failed:
+            return
+        # **The guard watches the right cache.**  It watched `_nir_albedo`, which the *labelling* fills -- so with
+        # `nv_nir_material = 0` that never filled and the analysis re-ran every frame, and with it on the first frame
+        # filled it and **the depth was never analysed at all**.  Measured, that made `nv_nir_depth` completely inert:
+        # the field came out identical in both settings (min 0.05160, max 0.06731) and the correlation between
+        # luminance and inferred depth was **+0.148 either way**, where a working term must drive it negative.
+        # **So each cache is guarded by its own flag**, and the two analyses are independent, which is what they are.
+        need_albedo = self.nir_material and self._nir_albedo is None
+        need_depth = self.nir_depth and self._nir_depth is None
+        if not (need_albedo or need_depth):
             return
         try:
             from ..codecs import material
@@ -415,28 +434,42 @@ class CameraStage(Stage):
         if not material.available(self.nir_model_dir):
             # **the fallback, taken deliberately**: no model here, so the brightness estimate stands
             self._nir_failed = True
-            self.nir_label_source = "estimate (no vision model found)"
+            if self.nir_label_source is None:
+                self.nir_label_source = "estimate (no vision model found)"
             return
-        try:
-            labelled = material.analyse(rgb, grid=self.nir_grid, model_dir=self.nir_model_dir,
-                                        margin_floor=self.nir_margin_floor)
-        except Exception:                                                       # noqa: BLE001
-            labelled = None
-        if labelled is None:
-            self._nir_failed = True
-            self.nir_label_source = "estimate (labelling failed)"
-            return
-        h, w = rgb.shape[:2]
-        lum = np.clip(np.asarray(rgb, np.float32) @ np.array([0.299, 0.587, 0.114], np.float32), 0.0, 1.0)
-        # the fallback the unlabelled cells take: the estimate's own shape, normalised the same way
-        est = np.power(lum, 0.55)
-        self._nir_albedo = albedo_map(h, w, labelled, fallback=est)
-        classes = labelled["classes"]
-        counts = {}
-        for v in np.asarray(labelled["labels"], np.int32).ravel():
-            counts[classes[v] if v >= 0 else "unsure"] = counts.get(classes[v] if v >= 0 else "unsure", 0) + 1
-        self.nir_label_source = "%s: %s" % (labelled["source"],
-                                            ", ".join("%s %d" % kv for kv in sorted(counts.items(), key=lambda kv: -kv[1])))
+        if need_albedo:
+            try:
+                labelled = material.analyse(rgb, grid=self.nir_grid, model_dir=self.nir_model_dir,
+                                            margin_floor=self.nir_margin_floor)
+            except Exception:                                                   # noqa: BLE001
+                labelled = None
+            if labelled is None:
+                self.nir_label_source = "estimate (labelling failed)"
+            else:
+                h, w = rgb.shape[:2]
+                lum = np.clip(np.asarray(rgb, np.float32) @ np.array([0.299, 0.587, 0.114], np.float32), 0.0, 1.0)
+                # the fallback the unlabelled cells take: the estimate's own shape, normalised the same way
+                est = np.power(lum, 0.55)
+                self._nir_albedo = albedo_map(h, w, labelled, fallback=est)
+                classes = labelled["classes"]
+                counts = {}
+                for v in np.asarray(labelled["labels"], np.int32).ravel():
+                    key = classes[v] if v >= 0 else "unsure"
+                    counts[key] = counts.get(key, 0) + 1
+                self.nir_label_source = "%s: %s" % (
+                    labelled["source"],
+                    ", ".join("%s %d" % kv for kv in sorted(counts.items(), key=lambda kv: -kv[1])))
+        if need_depth:
+            try:
+                dep = material.analyse_depth(rgb, grid=self.nir_grid, model_dir=self.nir_model_dir)
+            except Exception:                                                   # noqa: BLE001
+                dep = None
+            if dep is not None:
+                self._nir_depth = dep["depth"]
+                self.nir_depth_source = ("%s: relative depth %.2f..%.2f (mean %.2f), confidence %.2f..%.2f"
+                                         % (dep["source"], float(dep["depth"].min()), float(dep["depth"].max()),
+                                            float(dep["depth"].mean()), float(dep["confidence"].min()),
+                                            float(dep["confidence"].max())))
 
     def _nv_exposure_bias(self) -> float:
         """

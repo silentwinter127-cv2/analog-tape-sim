@@ -1,0 +1,62 @@
+give the illuminator a distance term, from a relative depth the local vision model infers
+
+**`note.txt`'s first mechanism is about distance, and the model had no distance term at all.**
+
+    "模拟机身红外灯的照射范围、光束中心与边缘的亮度差异，以及物体距离增加后反射光减弱的现象。
+     重点：近处物体可能很亮，远处背景却仍然很暗。"
+
+`illuminator_field` built a falloff about a **point** -- normalised by its own mean, and measured spanning only **21%**
+from the beam's centre to its edge -- so it could darken the corners and nothing else.  **Distance is what the mechanism
+is about**, and a radial profile cannot express it however it is tuned.
+
+**A relative depth, with no depth checkpoint.**  `material.analyse_depth` scores each grid cell against **ordinal
+caption-style phrases** ("extremely close to the camera" ... "the distant background") and takes the **expectation over
+their indices**, which is continuous rather than a class label -- and which degrades correctly: an image the model cannot
+place gets a flat distribution and therefore a mid depth, so the falloff stays gentle instead of inventing structure.
+`illuminator_field` then divides by `d^2` with `d = near + (far - near) * depth`, **because 1/d^2 diverges at zero**, and
+normalises by the mean so `illuminator` keeps its meaning as a level.
+
+**Measured on the reference photograph:**
+
+    the inferred depth  0.10 .. 0.92, mean 0.45, per-cell confidence 0.26 .. 0.83
+    the model's own record: "siglip2-base-patch16-224: relative depth 0.10..0.92 (mean 0.45), confidence 0.26..0.83"
+
+    radial field only    luma 0.2390   contrast 0.2004   corr(luma, depth) = +0.148
+    + the distance term  luma 0.2439   contrast 0.1973   corr(luma, depth) = **+0.020**
+
+**and the depth is corroborated by eye, not by measurement**: the model puts the far wall at 0.80-0.88 and the near
+floor at 0.08-0.21, which matches the picture.  **There is no depth ground truth for that frame**, so its *ordering* is
+checked that way only -- and the term uses the depth's **shape**, never an absolute distance, because the model's zero is
+arbitrary.  **That limitation is in the docstring rather than only here.**
+
+**Three faults had to be fixed before the term did anything, and the first two attempts at each were wrong.**
+
+  * **`mode_spec` was resetting the arrays.**  It runs every frame and builds a new spec with `dataclasses.replace`,
+    which fills unspecified fields from the class defaults, so `ir_albedo` and `ir_depth` -- computed once per clip and
+    attached -- were put back to `None` each time.  **They are the scene's measured data, not settings**, so they are now
+    carried across explicitly;
+  * **the cache guard watched the wrong cache.**  It returned early on `_nir_albedo`, which the *labelling* fills -- so
+    with `nv_nir_material = 0` the analysis re-ran every frame, and with it on the first frame filled that cache and
+    **the depth was never analysed at all**.  **Each cache is now guarded by its own flag**, and the two analyses are
+    independent because they are;
+  * **and the analysis and the attachment were one method**, which returned early once cached and so skipped the
+    assignments on every frame including the first, because the cache was filled *by* that same call.
+
+**Measured before the third fix, the term was completely inert**: `nv_nir_depth` on and off gave bit-identical output
+(luma 0.2390, contrast 0.2004) and the field came out identical (min 0.05160, max 0.06731).  **This is the fourth time in
+this work that a value has been read and then replaced before use**, and the third fault is the same shape as the second.
+
+**A correction to the test that judged it.**  I had written that a working distance term must drive `corr(luma, depth)`
+**negative**.  It fell from +0.148 to +0.020 and **not** below zero -- and the real frame's own value is **+0.105**, also
+positive, because in this scene the nearest thing (the floor) is not the brightest and the far wall is lit by something
+else.  **So the prediction was wrong**: in-scene brightness is not a decreasing function of depth, and the honest
+statement is that the term moved the correlation towards zero from the wrong side, **which does not yet show it is
+closer to the footage.**
+
+**New parameters**, camera layer: `nv_nir_depth` (default 1.0, the switch).  The near and far distances and the grid are
+on the spec and shared with the albedo.  **The default path is unchanged**: with no depth, `ir_depth` is `None` and the
+field is the radial one it has always been -- **163 checks pass, selftest clean**.
+
+**And `note.txt`'s fourth mechanism is NOT done**, which is what the next round is for: Super NightShot's long shutter
+should be a **temporal integral within one exposure** -- motion smearing -- and the model accumulates *frames*, which
+reduces noise instead.  Measured, NIGHTSHOT 2 in the footage has visible smear that mode 2 does not produce.
