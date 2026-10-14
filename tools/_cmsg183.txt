@@ -1,0 +1,38 @@
+the rig was too blunt for the effect, and a CG render is not a camera
+
+**Both of the user's corrections are right, and the first one reverses a conclusion I had just drawn.**
+
+**1. Every measurement in this work was taken at 533x400, and lateral chromatic aberration is a SUB-PIXEL
+displacement** -- so resampling to a quarter of the area smooths away the very thing being measured.  Measured on the case
+photograph, the hue spread by brightness band:
+
+    resolution    dark     mid     bright   brightest
+    533x400       0.883    0.555   0.664    0.887        <- what every earlier figure used
+    720x480       0.916    0.553   0.686    0.912
+    960x720       0.937    0.622   0.606    0.889
+    **1440x1080    1.098    0.788   0.809    0.990**
+    **2364x1773    1.212    0.955   1.001    1.228**    <- the case photograph's own size
+
+**so the low-resolution rig was hiding 24% of the dark band's structure and 42% of the mid band's.**  And at native
+resolution the comparison with the footage changes direction:
+
+    the real NIGHTSHOT 2 (1440x1080)   0.192   0.479   0.780   **1.093**
+    the real NIGHTSHOT 1 (1440x897)    0.332   0.282   0.495   **0.843**
+    the case, mode 2 (2364x1773)       **1.212  0.955   1.001   1.228**
+
+**so the fringe is not MISSING -- it is EXCESSIVE, and in every band rather than only at the top.**  Two rounds ago I
+concluded the fringe had "not appeared yet" and blamed a mechanism; **that conclusion was an artefact of the scale I was
+measuring at.**  `tools/native_resolution.py` now renders at the input's own size, never downsamples, and **prints the
+resolution beside every value**, because a hue-spread number is meaningless without the scale it was taken at.
+
+**2. The basement image is a CG RENDER, not a camera.**  Its spectral response, its noise and its dynamic range are a
+renderer's choices rather than a sensor's -- **so it can test whether the chain does something sensible, but it cannot be
+the target a real sensor's behaviour is calibrated against.**  It stays in the figures as a **synthetic control, labelled
+as one**, and the calibration targets remain the camcorder's own frames.  Its own numbers bear the label out: it renders
+`#24332E` with a green-primary structure and a brightest band that is **empty in the input** (0.000), so what it shows is
+the chain's own behaviour rather than a scene's.
+
+**Both corrections are written into `profiles/nightshot-trv310e.json`**, so the file a reviewer opens carries the
+resolution caveat and the provenance of every input rather than presenting a scale-dependent number as if it were absolute.
+
+**163 checks pass, selftest clean.**

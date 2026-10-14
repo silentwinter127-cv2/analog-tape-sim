@@ -1,7 +1,7 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-14T23:50:55",
+  "exported": "2026-10-14T23:57:31",
   "name": "NightShot -- Sony DCR-TRV310E",
   "standard": "ntsc",
   "seed": 20240101,
@@ -46,7 +46,9 @@
         0.055
       ]
     },
-    "the fair test": "bare photographs only -- a camcorder frame is already the chain's own output, so feeding it back asks the chain to preserve a transformation rather than perform one"
+    "the fair test": "bare photographs only -- a camcorder frame is already the chain's own output, so feeding it back asks the chain to preserve a transformation rather than perform one",
+    "**measure at NATIVE resolution**": "**Lateral chromatic aberration is a SUB-PIXEL displacement, so downsampling smooths it away.**  Measured on the case photograph, the hue spread by brightness band at 533x400 is 0.883 / 0.555 / 0.664 / 0.887, and at 1440x1080 it is **1.098 / 0.788 / 0.809 / 0.990** -- **the low-resolution rig was hiding 24% of the dark band and 42% of the mid band.**  Every earlier figure in this work was taken at 533x400, so a hue-spread number is only comparable with another taken at the same scale.  `tools/native_resolution.py` renders at the input's own size and prints the resolution beside every value.",
+    "**the basement image is a CG RENDER**": "**It is not a camera**, so its spectral response, its noise and its dynamic range are a renderer's choices rather than a sensor's.  It is kept as a **synthetic control** and is not a calibration target; the targets are the camcorder's own frames."
   },
   "_reproduce": {
     "the suite": "python tools/verify.py",
