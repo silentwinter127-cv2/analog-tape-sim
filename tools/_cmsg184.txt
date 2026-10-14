@@ -1,0 +1,44 @@
+rewrite the handoff document for the next agent, with the pending items and the current problems
+
+**`REVIEW.md` is rewritten** and organised so a reviewer never has to take a claim on trust: every number it cites is
+produced by one of twelve commands, **all twelve were checked to exist**, and the figures were re-run to confirm they
+reproduce.
+
+**And one of its own numbers was wrong when checked, which is the point of checking.**  The document said the real
+NIGHTSHOT 2 renders `#243E34`, which is a value I had taken at **533x400**; at its native 1440x897 it is **`#27473B`**.  It
+now carries the native-resolution figures per frame, and the stale ones are gone -- **a handoff document that cites numbers
+its own reproduction commands do not produce is worse than one with no numbers.**
+
+**What it now leads with, in order of how much a reviewer should trust it:**
+
+  1. **the resolution dependency**, because it invalidates earlier numbers rather than merely qualifying them -- lateral
+     chromatic aberration is a **sub-pixel** displacement, and every measurement in this work had been taken at 533x400,
+     **hiding 24% of the dark band's structure and 42% of the mid band's**;
+  2. **the common mechanism behind six inert parameters** (`SCHEMA.resolve_all` discards undeclared keys), which cost two
+     more instances this round;
+  3. **the four judgements marked as judgements rather than measurements**, each with its counter-argument spelled out --
+     including whether the fringe's "correct" amount can be judged from an LED-lit photograph at all, since the footage's
+     own light is an infrared lamp on diffuse surfaces and the two may fringe by different mechanisms.
+
+**The pending items are listed as a section of their own**, with what is measured and what is not:
+
+  * **the one entirely absent mechanism**: temporal chroma lag, which needs per-frame state and is therefore an
+    architectural change rather than a parameter;
+  * **four partial implementations**, each naming what is missing -- the chroma resolution limit, the radial term for the
+    red anomaly, `Chroma degradation` sitting in the decoder rather than before the codec, and `blooming` in the objective
+    rather than at the sensor;
+  * **the case photograph's blue primary**, with the measurement that shows it is the input's own property and the note
+    that **the sweep which established that was taken at 533x400 and must be redone**;
+  * **the unattributed frame-rate failure**, which predates the work and has never been explained.
+
+**And it states the systemic weakness as the thing to suspect first**, because it is the most likely explanation for
+anything the next agent cannot reproduce: **thirteen recorded instances of a statistic that could not see its subject, at
+least four of them mine**, with all four listed -- the module looked in the wrong place, the difference taken along the
+wrong axis, the mechanism switched off inside the rig testing for it, and the scale too coarse for a sub-pixel effect.
+**Plus the validator that reported "253 parameters agree" while the file could not be imported at all.**
+
+**The input provenance is tabulated and marked do-not-mix**: the camcorder's frames are the calibration target; the case is
+a real photograph and a legal input; **the basement is a CG render and is a synthetic control only**; and the user's own
+exported render **cannot be an input**, because that asks the chain to preserve a transformation it has already performed.
+
+**163 checks pass, selftest clean, and the profile regenerates with its round trip and header checks clean.**
