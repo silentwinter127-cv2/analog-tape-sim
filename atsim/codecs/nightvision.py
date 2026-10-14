@@ -1094,11 +1094,11 @@ MODE_PRESETS: dict[str, dict[str, float]] = {
     # and had been applied to `ir_albedo_mix` and `ir_response` while **the lamp's own strength, the control a NightShot
     # user most needs, was left in**.  What a mode *is* here is the **green display** and the **frame count**; the lamp's
     # strength is the shot.
-    "nightshot": dict(green_mix=1.0, accumulate=1.0, dsp_gain=0.75, dsp_black=0.009),
+    "nightshot": dict(green_mix=1.0, accumulate=1.0, dsp_black=0.009),
     # the same, **and accumulation on**.  **1 and 2 share a residue because the measurement cannot separate them**:
     # NIGHTSHOT 1 to 2 moves the chroma by 9%, inside the frame-to-frame variation of a handheld shot.  Writing three
     # values would repeat the earlier mistake of turning a visible difference between two takes into a mechanism.
-    "super_nightshot": dict(green_mix=1.0, accumulate=8.0, dsp_gain=0.75, dsp_black=0.009),
+    "super_nightshot": dict(green_mix=1.0, accumulate=8.0, dsp_black=0.009),
     # no lamp and **no green display** -- colour is the point of this mode, so the chroma is not attenuated at all.
     # **`shutter_frames`, not `accumulate`, is what makes this "slow".**  The entry was `accumulate: 8.0`, which sums
     # eight *separate* exposures -- that makes the picture cleaner, which is Super NightShot's purpose and not this

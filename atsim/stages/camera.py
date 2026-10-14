@@ -98,7 +98,7 @@ class CameraStage(Stage):
         # --- the night-vision modes ------------------------------------------------
         # Physical reconstruction rather than a colour grade: the illuminator, the removal of the IR-cut
         # filter, the monochrome green display, and frame accumulation.  Built against the reference clip
-        # `索尼F717夜视测试`, segmented into its four modes and measured per segment.
+        # `绱㈠凹F717澶滆娴嬭瘯`, segmented into its four modes and measured per segment.
         from ..codecs.nightvision import NightVisionSpec
         self.nv = NightVisionSpec.from_params(cfg)
         #: **The sensor's saturation point, in stops below the range's own white.**  Zero leaves `_roll_off` as it was.
@@ -123,7 +123,15 @@ class CameraStage(Stage):
         #: **Read from the config rather than hard-coded**, so it can be tuned: the first version of this line was a
         #: literal -0.10 and two subsequent attempts to sweep it changed nothing, which is this work's own "declared,
         #: reachable, inert" fault class -- a parameter that exists and cannot be reached.
-        trim = float(cfg.get("nv_exposure_trim", -0.10))
+        #: **The NightShot exposure trim, and it carries what `dsp_gain = 0.75` used to carry.**  That gain was
+        #: solved from the footage's percentiles, but `_dsp_level` applies it *after* `_roll_off`, so it put a hard
+        #: ceiling of `g` on the whole chain -- **the model could never reach full scale** (white in gave max 0.7590
+        #: while the DV frame reaches 1.0000, and 6.71% of that frame is above 0.90 against the model's 0.00%).
+        #: Moving the same brightness into the exposure is exactly equivalent in level (`2 ** -0.415 = 0.7500`) and
+        #: **cannot cap the white point, because `_roll_off` maps the sensor's saturation back to 1.0 afterwards** --
+        #: which is what a camera's exposure does and what its gain does not.  The parameter already only applies when
+        #: the night-vision mode is on, so it needs no new gating.
+        trim = float(cfg.get("nv_exposure_trim", -0.55))
         self.nv_exposure_trim = (trim if float(cfg.get("nv_mode", 0.0)) >= 0.5 else 0.0)
         # **The near-IR material labelling, and whether this machine can do it at all.**  `note.txt`'s second mechanism
         # asks for near-IR albedo per material rather than an RGB-to-grey conversion, and a vision-language model can
@@ -881,6 +889,33 @@ class CameraStage(Stage):
             return rgb
         # the pedestal is held below the white point so it can only lift, never invert, the black end
         b = float(np.clip(b, -0.5, 0.5))
+        #: **The gain is applied about the white point rather than to it, and that is the whole of a fault the user
+        #: saw twice.**
+        #:
+        #: `y = g * x + b` is what this did, and it is not what a camera's gain does.  **A gain moves the signal, not
+        #: the white point**: a camcorder turning its gain down does not lose the ability to record white -- the
+        #: exposure opens to compensate and what changes is how much NOISE is in the picture.  Here the multiplication
+        #: put a **hard ceiling at `g` on the entire chain**, which a pure white input walked stage by stage shows:
+        #:
+        #:     camera output, white in                      max 0.7590     <- the DV frame reaches 1.0000
+        #:     ... and every later stage                    0.7590          the ceiling is set once and never moves
+        #:     every night-vision function called on white   max 1.0000     <- so it is NOT the mode
+        #:
+        #: At the NightShot value of 0.75 the model could **never** reach full scale: the DV frame has **6.71%** of its
+        #: pixels above 0.90 and the model had **0.00%**.  **That is the user's "瀵规瘮搴﹀お宸? and their "椋庢墖鍙戝厜閮ㄥ垎
+        #: 搴旇瑕佹洿浜?** -- the fan LEDs are the brightest thing in the frame and the model had nowhere to put them.
+        #:
+        #: **The fix is to move the gain into the EXPOSURE rather than to rescale it here.**  A first attempt divided
+        #: by `g + b` so that full scale mapped to full scale, which removed the ceiling and **made `dsp_gain` itself
+        #: inert** -- measured, 0.75 through 1.00 all gave the same picture (p50 0.2691 to 0.2710), because the
+        #: normalisation cancelled exactly the quantity the control carries.  That is the fault this file keeps
+        #: recording, so it is not the fix.
+        #:
+        #: `nv_exposure_trim` applies `2 ** exposure` **before `_roll_off`**, and `_roll_off` maps the sensor's own
+        #: saturation point back to 1.0 -- **so exposure moves everything except the white point, which is what a
+        #: camera's exposure does.**  The NightShot presets therefore carry an exposure trim and this stays at unity;
+        #: their equivalence is exact (`2 ** -0.415 = 0.75`), and the difference is that one of them can still record
+        #: a white.
         return np.clip(rgb * g + b, 0.0, 2.0).astype(np.float32)
 
     def _color_science(self, rgb: np.ndarray) -> np.ndarray:
@@ -1307,3 +1342,4 @@ class CameraStage(Stage):
 
         return FrameBuffer(np.clip(rgb, 0.0, 2.0).astype(np.float32), None,
                            buf.index, buf.time, buf.std, dict(buf.meta))
+
