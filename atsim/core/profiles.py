@@ -260,7 +260,7 @@ def build_schema() -> ParamSchema:
                 "3 = Color Slow Shutter（保留彩色、只放慢快门）。"
                 "对照素材 `索尼F717夜视测试` 的分段实测：绿段 G 占比 0.44-0.58、色相散度 0.06-0.18；"
                 "彩色段 G 占比 0.28-0.30、色相散度 0.24-0.37。")
-    cam.define("nv_illuminator", "红外照明强度", 0.15, 0.0, 1.0, unit="0-1", group=g,
+    cam.define("nv_illuminator", "红外照明强度", 1.20, 0.0, 4.0, unit="0-4", group=g,
                phys_min=0.0, phys_max=0.6,
                help="**平方反比、且在锥形光束内**——所以近场被照亮、走廊远处归黑。"
                     "这是手持 NightShot 画面最好认的特征，而它来自灯而不是场景。"

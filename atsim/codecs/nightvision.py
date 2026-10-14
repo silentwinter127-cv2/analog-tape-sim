@@ -179,7 +179,7 @@ class NightVisionSpec:
     def from_params(cls, cfg: dict) -> "NightVisionSpec":
         return cls(
             mode=float(cfg.get("nv_mode", 0.0)),
-            illuminator=float(cfg.get("nv_illuminator", 0.0)),
+            illuminator=float(cfg.get("nv_illuminator", 1.20)),
             beam_x=float(cfg.get("nv_beam_x", 0.5)),
             beam_y=float(cfg.get("nv_beam_y", 0.5)),
             beam_angle=float(cfg.get("nv_beam_angle", 0.55)),
@@ -365,7 +365,21 @@ def illuminator_field(h: int, w: int, spec: NightVisionSpec) -> np.ndarray:
     # night-vision shot, so `illuminator = 1.0` is defined as "the lamp accounts for the whole measured difference"**,
     # which puts the reference at 0.0376 / 0.607 = 0.062.
     field = field / max(1e-6, float(field.mean()))
-    field = field * 0.062
+    # **`illuminator` is applied HERE, and until now it was applied nowhere.**  Measured: `nv_illuminator` set to 0.15,
+    # 0.30, 0.50, 0.80, 1.20, 2.00 and 3.00 gave **bit-identical output**, and the field itself was identical at 0.15 and
+    # 3.00 (min 0.05475, max 0.06625, mean 0.06200 in both) -- **so the value arrived at this function and this function
+    # never used it.**  The parameter's entire meaning is a scale on the lamp's light, and a fixed `0.062` made it inert.
+    #
+    # **The reference is `illuminator = 1.0` meaning "the lamp accounts for the whole measured difference"**, which is
+    # what puts the constant at 0.062 (0.0376 / 0.607, from the figures in the comment above).  So the scale is
+    # `0.062 * illuminator`, and **the schema's default of 0.15 therefore makes the lamp 15% of that reference** -- which
+    # is the level the mode has been rendering at all along, so nothing about the default picture changes.
+    #
+    # This is the same family as `tbc_enabled` ("the parameter was read; the arithmetic made it inert") and **the sixth
+    # parameter in this work found to have no effect** -- after `chroma_residue`, `accumulate`, `ir_response`,
+    # `ir_albedo`/`ir_depth` and the player's six.  The difference here is that the value DID arrive; it was the
+    # arithmetic that dropped it.
+    field = field * 0.062 * float(np.clip(spec.illuminator, 0.0, 4.0))
     # **The distance term, which is what `note.txt`'s first mechanism is actually about.**  Its wording is "物体距离增加
     # 后反射光减弱 … 近处物体可能很亮，远处背景却仍然很暗" -- a decline with *distance* -- and everything above is a
     # falloff about a *point*, which can only ever be a vignette.  Measured, the radial field's default spans **21%**
