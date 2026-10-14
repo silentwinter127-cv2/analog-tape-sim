@@ -306,8 +306,40 @@ def build_schema() -> ParamSchema:
                     "近红外反射率与可见光亮度【无关**（植被 2.10、皮肤 1.55、深色衣物 0.28——7.5 倍差距），"
                     "所以亮度曲线表达不出这个差异，而这是普通夜视滤镜最难自然模拟的部分。"
                     "**本机没有可用视觉模型时自动退回亮度估计**，那不是降级而是文档化的回退路径。")
-    cam.define("nv_nir_grid", "材质判定网格", 8, 2, 32, group=g,
-               phys_min=2, phys_max=32, help="把画面切成 N×N 块逐块判定材质；越大边界越细但每块越小。")
+    #: **`nv_nir_cell_px` replaces `nv_nir_grid`, and the reason is that a cell COUNT is not a physical quantity.**
+    #: The old parameter took 8 cells across whatever the frame was: 66x50 px per cell at the 533x400 the figures were
+    #: calibrated at, and **180x135 px -- 7.5x the area -- on the clip's own 1440x1080**.  `IR_ALBEDO` runs 0.28 to
+    #: 2.10, so a 7.5x step at a cell edge is stamped onto the picture as a band, and the plateau of that band is one
+    #: cell wide: the user photographed exactly that, rectangles a sixth of the frame across, while the mechanism's own
+    #: figures "passed" because they were taken where a cell was a quarter of the area.
+    cam.define("nv_nir_cell_px", "材质判定格子边长", 66.0, 16.0, 512.0, unit="px", group=g,
+               phys_min=32.0, phys_max=256.0, source="标定分辨率 533/8 = 66 px、400/8 = 50 px，取较短边 66",
+               help="**把画面按【固定像素边长】切块逐块判定材质**，而不是按固定块数。\n"
+                    "**改这次的原因**：旧参数 `nv_nir_grid` 是「横切 8 块」，"
+                    "而 8 块在不同分辨率下是**不同的物理尺寸**——533×400 时每块 66×50 px，"
+                    "1440×1080 时每块 **180×135 px（面积 7.5 倍）**。"
+                    "`IR_ALBEDO` 的范围是 0.28–2.10，**边界上 7.5 倍的台阶会被印成一条带，带的平台宽度就是一个格子**，"
+                    "所以用户看到的是「一块一块的光」。\n"
+                    "默认 **66 px** 复现标定时的物理尺度（533/8 = 66、400/8 = 50，取较短边）。"
+                    "格子按两个方向分别算，所以**任何画幅比例下格子都是方的**——"
+                    "单一块数会给出 4:3 上「高比宽多三分之一」的格子，那样量化的形状就取决于画幅比例了，"
+                    "而画幅比例不是关于场景的物理陈述。\n"
+                    "实测代价（720×540）：8×8 约 10.8 s、12×12 约 10.1 s、16×16 约 16.5 s、24×24 约 33 s，"
+                    "而分析**每片段只跑一次**。\n"
+                    "**更细并不自动更好，这是量出来的**：模型判「不确定」的格子占比 8×8 时 9%、16×16 时 11%、"
+                    "32×32 时 11.5%——格子越小，分类器拿到的上下文越少。所以暴露的是格子边长，不是块数。")
+    cam.define("nv_nir_grid_max", "材质判定最大块数", 32.0, 2.0, 64.0, group=g, step=1.0,
+               phys_min=8.0, phys_max=48.0, source="32×32 时判定耗时接近一分钟，且 unsure 占比不再改善",
+               help="格子边长的上限之外，再封一个块数上限，避免超大画面上判定耗时失控。"
+                    "实测标注耗时 8×8 约 10.8 s、16×16 约 16.5 s、24×24 约 33 s、32×32 约 55 s，"
+                    "而不确定占比在 16×16 之后就不再下降。")
+    #: **Kept so an existing project still loads, and inert because the cell size now decides.**  A stale value here
+    #: would otherwise silently override the physical parameter, which is the "preset that removes a control" fault
+    #: this file records three times.
+    cam.define("nv_nir_grid", "材质判定网格（已废弃，由格子边长决定）", 8, 2, 32, group=g,
+               phys_min=2, phys_max=32,
+               help="**已废弃**：块数是随分辨率变化的物理量，所以判定改由 `nv_nir_cell_px`（格子边长，单位像素）"
+                    "决定，这个参数不再被读取。保留是为了让旧工程仍能导入，并让找到它的人读到原因。")
     cam.define("nv_nir_depth", "近红外距离衰减 (1开/0关)", 1.0, 0.0, 1.0, group=g,
                phys_min=0.0, phys_max=1.0,
                help="**用视觉模型推断相对深度，让红外灯的衰减按【距离】而不是按【半径】。**"

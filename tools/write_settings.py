@@ -84,9 +84,29 @@ NOTES = {
     "nv_nir_material": "1 = ask the vision-language model for per-material near-IR albedo (`note.txt`'s second "
                        "mechanism).  Where no model is installed the luminance estimate is used, **which is the "
                        "documented fallback rather than a degraded mode**.",
-    "nv_nir_grid": "the labelling grid.  **It was a visible defect**: upsampled with nearest-neighbour it stamped "
-                   "66x50-pixel cells with a 7.5x step at every boundary onto the picture as coarse diagonal bands.  "
-                   "It is now bilinear with a smoothstep, which removed them.",
+    "nv_nir_cell_px": "the material lattice's cell size, **in pixels -- and that is the fix for the block artefact**.  "
+                      "The previous control was a cell COUNT (`nv_nir_grid`, 8), and a count is not a physical "
+                      "quantity: 8 cells is 66x50 px at the 533x400 the calibration used and **180x135 px at the "
+                      "clip's own 1440x1080**, 7.5x the area.  `IR_ALBEDO` spans 0.28 to 2.10, so the step at a cell "
+                      "boundary is stamped onto the picture as a band **one cell wide**, which is what the user's "
+                      "photograph showed.  66 px reproduces the calibrated physical scale, and the lattice is derived "
+                      "per direction so the cells are square at any aspect ratio.  Cost, measured on 720x540 and paid "
+                      "**once per clip**: 8x8 ~10.8 s, 12x12 ~10.1 s, 16x16 ~16.5 s, 24x24 ~33 s.",
+    "nv_nir_grid_max": "the lattice's ceiling.  32 is where the labelling cost reaches about a minute and the "
+                       "classifier's unsure fraction has stopped improving (9% at 8x8, 11% at 16x16, 11.5% at 32x32).",
+    "nv_nir_grid": "**deprecated and no longer read.**  It was the labelling grid, and it was also a visible defect -- "
+                   "upsampled with nearest-neighbour it stamped 66x50-pixel cells with a 7.5x step at every boundary "
+                   "onto the picture as coarse diagonal bands; bilinear with a smoothstep removed those, but the cell "
+                   "was still a cell COUNT and therefore a different physical size on every input.  Cell size is now "
+                   "`nv_nir_cell_px`, in pixels.",
+    "nv_chroma_residue": "**deprecated and inert, because its premise was wrong.**  NightShot routes the sensor's "
+                         "output as ONE LUMINANCE onto the green display, so a visible-light chroma that has been "
+                         "through that step is not in the signal.  Measured on eight flat fields, the term made the "
+                         "output's R:G:B ratio depend on the input by **21.7x**, where a display must give one ratio "
+                         "for everything.  The display's ratios are now solved from the footage instead.",
+    "nv_green_gain": "the display's green-primary level.  **1.0, because that is the only value at which the solved "
+                     "ratios are exact**: under `w @ LUMA = 1` the projection has two free ratios and the two targets "
+                     "consume both, so a third ratio change has nowhere to go but onto the targets.",
     "nv_accumulate": "frames averaged.  mode 2 (Super NightShot) reads 0.427 against 1/sqrt(8) = 0.354.",
     "cross_color": "the player's luminance-to-chroma crosstalk.",
     "cross_luma": "**scale fixed from 0.15 to 0.02.**  At 0.15 it subtracted 38% of the luma's spread, which was the "

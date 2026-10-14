@@ -136,7 +136,24 @@ class CameraStage(Stage):
         #: machine, not of the look being simulated.
         self.nir_model_dir = os.environ.get("ATSIM_NIR_MODEL") or None
         self.nir_margin_floor = float(cfg.get("nv_nir_margin_floor", 0.02))
-        self.nir_grid = int(np.clip(round(float(cfg.get("nv_nir_grid", 8))), 2, 32))
+        #: **How fine the material labelling is, in PIXELS rather than in cells, and that distinction is the fix for
+        #: a block artefact the user reported.**
+        #:
+        #: It used to be a cell count (`nv_nir_grid`, default 8), and a cell count is not a physical quantity: at the
+        #: 533x400 the figures were calibrated on, 8x8 means **66x50 px per cell**, while on the clip's own
+        #: **1440x1080** the same 8 means **180x135 px** -- a 24000-pixel block, 7.5x the area, and the user's
+        #: photograph showed exactly that: large light and dark rectangles over the case.  **A material's spatial
+        #: scale is a property of the scene, so the label grid has to be tied to the picture's pixels or the same
+        #: parameter means a different physical size on every input.**
+        #:
+        #: The default cell is **66 px**, which reproduces the physical scale the material table was calibrated at:
+        #: `533/8 = 66` and `400/8 = 50`, so 66 on the shorter edge.  Measured on 720x540, a 66 px cell gives 11x8
+        #: cells and takes the labelling to about the same order as the 16x16 measurement (16.5 s), and the analysis
+        #: runs **once per clip**, so that is the whole cost.
+        self.nir_cell_px = float(np.clip(float(cfg.get("nv_nir_cell_px", 66.0)), 16.0, 512.0))
+        self.nir_grid_max = int(np.clip(round(float(cfg.get("nv_nir_grid_max", 32.0))), 2, 64))
+        #: the lattice actually used, `(grid_h, grid_w)`, filled by `_grid_for` once the frame's size is known
+        self.nir_grid: tuple[int, int] = (8, 8)
         self.nir_label_source: str | None = None
         self.nir_depth_source: str | None = None
         #: whether to infer a depth map, so the illuminator's falloff can be about distance rather than a radius
@@ -422,6 +439,32 @@ class CameraStage(Stage):
         out = monochrome_green(rgb, self.nv)
         return out
 
+    def _grid_for(self, h: int, w: int) -> tuple[int, int]:
+        """
+        The material-label lattice whose cells are **as close to `nir_cell_px` square as the frame allows**.
+
+        **Why the cell size is the parameter and the cell count is not.**  A 7.5x step in `IR_ALBEDO` at a cell
+        boundary is stamped onto the picture as a band, so the size of a cell is how wide that band's plateau is --
+        a physical quantity, tied to how large a patch of one material is in the scene.  A cell *count* is not: the
+        same 8 means 66x50 px at 533x400 and **180x135 px at 1440x1080**, which is why the user's photograph of a case
+        showed rectangles a sixth of the frame across while the figures that "verified" the mechanism were taken at a
+        quarter of that area.
+
+        **Both directions are derived, because a cell has to be square.**  A single count makes the cell `w/n` by
+        `h/n`, so a 4:3 frame gets cells a third taller than they are wide -- and then the *shape* of the quantisation
+        depends on the aspect ratio, which is not a physical statement about the scene.  Deriving each direction from
+        the same pixel size gives square cells at every aspect ratio, and the lattice simply has more cells along the
+        longer edge.
+
+        The count is clamped by `nir_grid_max` -- 32 is where the measured labelling cost reaches about a minute and
+        the classifier's unsure fraction has stopped improving (9% at 8x8, 11% at 16x16, 11.5% at 32x32).
+        """
+        cell = max(16.0, float(self.nir_cell_px))
+        gw = int(round(w / cell))
+        gh = int(round(h / cell))
+        top = max(2, self.nir_grid_max)
+        return int(np.clip(gh, 2, top)), int(np.clip(gw, 2, top))
+
     def _analyse_scene_nir(self, rgb: np.ndarray) -> None:
         """
         Label the scene's materials once per clip and put the resulting per-pixel near-IR albedo on the spec.
@@ -452,6 +495,12 @@ class CameraStage(Stage):
         need_depth = self.nir_depth and self._nir_depth is None
         if not (need_albedo or need_depth):
             return
+        # **The lattice is resolved from THIS frame's size, because the cell size is what is physical.**  Doing it here
+        # rather than in `_read_params` means a preview at 0.35 scale and a full render get the same *physical* cell
+        # size instead of the same cell count -- which is the whole point of the change, and the same class of fault as
+        # a bandwidth expressed in pixels instead of MHz.
+        grid_h, grid_w = self._grid_for(rgb.shape[0], rgb.shape[1])
+        self.nir_grid = (grid_h, grid_w)
         try:
             from ..codecs import material
             from ..codecs.nightvision import albedo_map
@@ -466,8 +515,9 @@ class CameraStage(Stage):
             return
         if need_albedo:
             try:
-                labelled = material.analyse(rgb, grid=self.nir_grid, model_dir=self.nir_model_dir,
-                                            margin_floor=self.nir_margin_floor)
+                labelled = material.analyse(rgb, model_dir=self.nir_model_dir,
+                                            margin_floor=self.nir_margin_floor,
+                                            grid_h=grid_h, grid_w=grid_w)
             except Exception:                                                   # noqa: BLE001
                 labelled = None
             if labelled is None:
@@ -488,7 +538,7 @@ class CameraStage(Stage):
                     ", ".join("%s %d" % kv for kv in sorted(counts.items(), key=lambda kv: -kv[1])))
         if need_depth:
             try:
-                dep = material.analyse_depth(rgb, grid=self.nir_grid, model_dir=self.nir_model_dir)
+                dep = material.analyse_depth(rgb, grid=min(grid_h, grid_w), model_dir=self.nir_model_dir)
             except Exception:                                                   # noqa: BLE001
                 dep = None
             if dep is not None:
