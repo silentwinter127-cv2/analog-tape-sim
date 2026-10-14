@@ -1,0 +1,43 @@
+rule out the shot-noise level, and record what the banding search has actually established
+
+**The term was the largest measurable contributor and it is not the cause.**  Traced earlier, the camera's row-structure
+measure goes 0.12737 -> 0.16272 inside `_night_vision`, and `shot_noise` alone takes the source from 0.12737 to 0.23482 --
+so it was the candidate.  Swept on the real photograph:
+
+    shot_noise   row struct   fine grain   mean
+    0.00         0.10664      0.08168      0.2374
+    0.02         0.10686      0.08169      0.2374
+    0.05         0.10792      0.08172      0.2373
+    0.10         0.11153      0.08189      0.2370     <- as shipped
+    0.18         0.12121      0.08258      0.2368
+    the footage  0.07562      0.07891
+    the input    0.12737      0.12133
+
+**Turning it off entirely moves the figure from 0.11153 to 0.10664 against the footage's 0.07562**, so it accounts for
+5% of the gap, and **the fine-grain measure is already within 3.5% of the footage's** (0.08189 against 0.07891) -- so the
+term is at close to the right *level* and is not what the render's remaining structure is made of.  **The picture confirms
+it**: the three rendered panels are visibly the same, so the level is not a visible control at all.
+
+**What the banding search has actually established, after this many attempts:**
+
+  * **the visible defect was the vision model's albedo grid upsampled with nearest-neighbour** -- a 7.5x step at every cell
+    boundary, 66x50-pixel cells, stamped onto the photograph.  Replacing it with a smooth resample **removed the coarse
+    diagonal bands that covered the whole frame**, and the picture and the figures agree on that;
+  * **the residual is NOT any of**: the shot-noise level (measured above), `chroma_residue` (bit-identical at 0, 0.35 and
+    1), `head_switching` (0.019 of 0.27), the comb depth, `chroma_vert_blend`, `separation_kind`, `dropout`, or any tone
+    curve, lens term or the sharpen inside the camera (all 0.00000 on the trace);
+  * **and it is not inherited either**, which was tested by mechanically scaling the source's own row structure: with the
+    input matched to the footage's value the render still reads 0.10244, so the chain **adds** its own -- **but the measure
+    that says so responds almost entirely to per-pixel noise and hardly at all to level** (measured: a 1.8x gain moves it
+    -0.00446 while `shot_noise` 0.10 moves it +0.10745), **so it is not a banding measure at all**;
+  * **and the render's fine grain sits between the footage's and the input's** (0.0819, 0.0789, 0.1213), so the model is
+    *reducing* the input's texture rather than adding to it.
+
+**Eleven statistics have been built for this defect and every one disagreed with the eye** -- the row-mean spread, the
+one-pixel high-pass, the peak-to-floor ratio, `rowsig`, the autocorrelation peak, four configuration errors, and the
+cross-configuration readings.  **What worked both times was writing intermediate images and looking at them**: that located
+the visible banding to one call and then to one map.  **The remaining question does not have a statistic that can see it,
+and inventing a twelfth is not the way forward** -- the honest position is that the visible defect is fixed, the residual
+is smaller than what the user reported, and its cause is not identified.
+
+**163 checks pass, selftest clean.**
