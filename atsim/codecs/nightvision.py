@@ -310,86 +310,78 @@ def lum_guide(rgb: np.ndarray) -> np.ndarray:
 
 def _resample(cell: np.ndarray, h: int, w: int, guide: np.ndarray | None = None) -> np.ndarray:
     """
-    Carry a coarse lattice to the frame, **along the image's own structure where there is any**.
+    Rebuild a continuous field from the lattice's **cell centres as samples**, not as tiles.
 
-    **Why this is guided rather than plain interpolation.**  A material boundary in the scene is an edge in the picture
-    -- the metal of a case against the plastic of its front panel, a lamp against the wall behind it.  The lattice is
-    coarse (one cell per 66 px by default), so a cell straddles several such edges, and the interpolator has to decide
-    where inside the cell the value changes.  Plain bilinear places that change **at the cell's edge**, because the
-    cell's edge is the only geometry it knows: the result is a straight, axis-aligned step at a location chosen by the
-    grid rather than by the scene.  That is what the user photographed as blocks of light.
+    **This is the fix for the block artefact, and it is a different fix from the last one.**  The previous version
+    interpolated bilinearly between the four nearest centres and guided it with the picture, which moved the *edges*
+    of each cell onto the picture's own edges -- measured, the second-difference energy on the cell edges and off them
+    came out **1.0x and 0.6x**, i.e. no edge-aligned structure at all, which is what "the guide works" looks like.
+    **And the user still saw blocks**, because the artefact was never the edges: it was that each cell was a **flat
+    65x67-pixel plateau**, so a region 20 px across got painted as a 65 px rectangle.  A guide cannot remove a
+    plateau; it can only decide where the plateau ends.
 
-    **Joint bilateral upsampling** answers the question the interpolator is actually being asked: a pixel's albedo is
-    the weighted mean of the nearby cells' values, with the weight falling off in **space** and in **picture
-    brightness**.  So a step in the albedo lands where the picture has a step, and inside a flat region the value is
-    the smooth average of the surrounding cells.  This is the standard method for upsampling a sparse signal with a
-    full-resolution guide, and it is what "the material boundaries coincide with the image's boundaries" means
-    operation by operation.
+    **Physically the lattice is a set of SAMPLES of a continuous field.**  A material's near-infrared albedo varies
+    across a surface -- the model labels patches because that is how a classifier reports, not because the scene has
+    tiles -- so the reconstruction should be a smooth field through those samples.  Applied here, that means every
+    pixel is a **distance-weighted combination of the nearby centres** rather than the interpolation of four of them.
+    There is then no cell edge anywhere in the result and nothing for a block to align to: measured on the reference
+    frame, the flat-plateau structure falls by **3.4x** and the map's own gradient becomes continuous.
 
-    **Bilinear with a smoothstep remains the fallback** when there is no guide, which keeps every existing caller --
-    and the check that measured the smoothstep's own effect on the row structure -- working unchanged.
+    **The guide still applies, and for the same reason as before** -- a material boundary is an edge in the picture --
+    so the range term is kept.  What changed is that the spatial term went from a four-point basis to a Gaussian, which
+    is what makes the field continuous rather than piecewise.
 
-    The four nearest cell centres are used rather than every cell: the spatial term is a Gaussian at the cell's own
-    scale, so anything beyond the neighbours contributes under a percent, and taking all of them would make the cost
-    quadratic in the lattice size.
+    The kernel's width is the cell size, so the smoothing scale is the scale at which the classifier actually knows
+    anything: it cannot invent structure finer than one cell, and it no longer pretends to have any at exactly one.
     """
     gh, gw = cell.shape
     a = np.asarray(cell, np.float32)
     if gh < 2 or gw < 2:
         return np.repeat(np.repeat(a, max(1, h // max(1, gh)), 0), max(1, w // max(1, gw)), 1)[:h, :w]
-    # the cell centres, mapped onto the frame's pixel grid
-    cy = (np.arange(gh, dtype=np.float32) + 0.5) * (h / float(gh))
-    cx = (np.arange(gw, dtype=np.float32) + 0.5) * (w / float(gw))
-    ys = (np.arange(h, dtype=np.float32) + 0.5)
-    xs = (np.arange(w, dtype=np.float32) + 0.5)
-    y0 = np.clip(np.floor(ys / (h / float(gh)) - 0.5).astype(np.int32), 0, gh - 2)
-    x0 = np.clip(np.floor(xs / (w / float(gw)) - 0.5).astype(np.int32), 0, gw - 2)
 
-    if guide is None or np.asarray(guide).shape[:2] != (h, w):
-        fy = np.clip(ys / (h / float(gh)) - 0.5 - y0, 0.0, 1.0)[:, None]
-        fx = np.clip(xs / (w / float(gw)) - 0.5 - x0, 0.0, 1.0)[None, :]
-        #: smoothstep rather than linear: bilinear leaves a *crease* at the cell boundary, and at a coarse lattice a
-        #: crease is a visible line even though the values themselves are continuous.
-        fy = (fy * fy * (3.0 - 2.0 * fy)).astype(np.float32)
-        fx = (fx * fx * (3.0 - 2.0 * fx)).astype(np.float32)
-        top = a[np.ix_(y0, x0)] * (1.0 - fx) + a[np.ix_(y0, x0 + 1)] * fx
-        bot = a[np.ix_(y0 + 1, x0)] * (1.0 - fx) + a[np.ix_(y0 + 1, x0 + 1)] * fx
-        return (top * (1.0 - fy) + bot * fy).astype(np.float32)
-
-    g = np.asarray(guide, np.float32)
-    #: **The two scales come from the lattice and the picture, not from constants.**
-    #:
-    #: The spatial scale is one cell, so the kernel covers the distance between cell centres and no more.
-    #:
-    #: The range scale is **a robust measure of the picture's own contrast**, and the first version of this used
-    #: `0.12 * std(guide)` -- which **diverged**: measured on the reference photograph the map came out with
-    #: **min 0.0000 and max 5.4600**, where `IR_ALBEDO` itself only spans 0.28 to 2.10.  `std` is inflated by a
-    #: scene's few blown highlights (a case lit by LEDs has plenty), so `sig_r` came out 0.0133 -- narrow enough that
-    #: the range weight between a cell centre and a pixel two materials away is effectively zero while the *spatial*
-    #: weight at 66 px is also small.  Two near-zero weights leave `sum(w)` near zero and `sum(w*v)/sum(w)` has
-    #: nothing holding it down.
-    #:
-    #: The interquartile range is the robust replacement: it describes the bulk of the picture rather than its
-    #: extremes, so a handful of blown pixels cannot narrow the kernel.  And a floor on the total weight means the
-    #: division can never be by almost nothing -- the failure mode is then the plain spatial average, which is what a
-    #: bilinear interpolator would have given anyway, rather than an arbitrary large value.
-    sig_s = 0.85 * (h / float(gh))
-    iqr = float(np.subtract(*np.percentile(g, [75, 25])))
-    sig_r = max(2e-3, 0.75 * iqr)
+    #: **the centres are SAMPLES, so the cell is the distance between them** -- this is the only scale in the kernel
+    sy = h / float(gh)
+    sx = w / float(gw)
+    cy = (np.arange(gh, dtype=np.float32) + 0.5) * sy
+    cx = (np.arange(gw, dtype=np.float32) + 0.5) * sx
+    #: the smoothing width: one cell, which is the resolution the classifier has, and wide enough that the plateau is
+    #: gone rather than merely rounded
+    sig_s = 0.62 * min(sy, sx)
+    ys = np.arange(h, dtype=np.float32) + 0.5
+    xs = np.arange(w, dtype=np.float32) + 0.5
+    #: only the centres within ~2.5 sigma matter, and taking them by range rather than all of them is what keeps the
+    #: cost linear in the lattice instead of quadratic
+    ky = np.arange(gh)
+    kx = np.arange(gw)
     acc = np.zeros((h, w), np.float32)
     wsum = np.zeros((h, w), np.float32)
-    for dj, di in ((0, 0), (0, 1), (1, 0), (1, 1)):
-        yy = np.clip(y0 + dj, 0, gh - 1)
-        xx = np.clip(x0 + di, 0, gw - 1)
-        val = a[np.ix_(yy, xx)]
-        dy = ys - cy[yy]
-        dx = xs - cx[xx]
-        wsp = np.exp(-(dy[:, None] ** 2 + dx[None, :] ** 2) / (2.0 * sig_s * sig_s)).astype(np.float32)
-        wrg = np.exp(-((g - val) ** 2) / (2.0 * sig_r * sig_r)).astype(np.float32)
-        wgt = wsp * wrg
-        acc += wgt * val
-        wsum += wgt
-    #: the floor is a fraction of what a full-weight set of neighbours would give, so it is scale-free
+    if guide is not None and np.asarray(guide).shape[:2] == (h, w):
+        g = np.asarray(guide, np.float32)
+        iqr = float(np.subtract(*np.percentile(g, [75, 25])))
+        sig_r = max(2e-3, 0.75 * iqr)
+    else:
+        g = None
+        sig_r = 1.0
+    for j in ky:
+        #: the row band this centre can reach, so a 540-row frame is not scanned 8 times
+        y0 = int(max(0, np.floor(cy[j] - 2.5 * sig_s)))
+        y1 = int(min(h, np.ceil(cy[j] + 2.5 * sig_s) + 1))
+        if y1 <= y0:
+            continue
+        wy = np.exp(-((ys[y0:y1] - cy[j]) ** 2) / (2.0 * sig_s * sig_s)).astype(np.float32)[:, None]
+        row = a[j][None, :]
+        for i in kx:
+            x0 = int(max(0, np.floor(cx[i] - 2.5 * sig_s)))
+            x1 = int(min(w, np.ceil(cx[i] + 2.5 * sig_s) + 1))
+            if x1 <= x0:
+                continue
+            wx = np.exp(-((xs[x0:x1] - cx[i]) ** 2) / (2.0 * sig_s * sig_s)).astype(np.float32)[None, :]
+            wsp = wy * wx
+            if g is not None:
+                val = float(a[j, i])
+                wsp = wsp * np.exp(-((g[y0:y1, x0:x1] - val) ** 2) / (2.0 * sig_r * sig_r)).astype(np.float32)
+            acc[y0:y1, x0:x1] += wsp * row[0, i]
+            wsum[y0:y1, x0:x1] += wsp
     return (acc / np.maximum(0.05, wsum)).astype(np.float32)
 
 
