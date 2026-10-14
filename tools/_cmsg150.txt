@@ -1,0 +1,49 @@
+close on the banding: it is the green-display branch, and my ablations could not have found it
+
+**The picture settles what five statistics could not.**  Four panels, written without any measurement:
+
+    the real footage            clean; the case, the monitor and the cables are legible
+    mode 1 (shot 0.10)          coarse diagonal bands, the subject broken up
+    mode 1, `shot_noise = 0`    **identically broken** -- so the term I added two rounds ago is NOT the main cause
+    mode 0                      clean, in colour, the subject legible
+
+**and combined with the user's own observation -- that the banding starts at the third panel of the model row, which is
+`NIGHTSHOT 1` -- the cause is narrowed to one place.**  Mode 0 is clean; modes 1 and 2 are not; **the only thing they
+share that mode 0 does not have is the night-vision scene branch, and within it the green monochrome display is the term
+that reconstructs the whole frame rather than adding to it.**  **So the suspect is `monochrome_green` receiving the
+chain's picture rather than the raw source.**
+
+**And now it is clear why every ablation missed it.**  Eight parameter switches were swept -- `shot_noise`, `read_noise`,
+`chroma_noise`, exposure bias, sharpness, `green_mix`, `chroma_residue`, and mode 0 -- and the figures were:
+
+    mode 1 as shipped            0.13127
+    shot_noise = 0               0.12500     the only one that moved the number
+    read / chroma / exposure /
+    sharpness / green_mix /
+    residue = 0                  **0.13127, bit-identical, every one**
+
+**`green_mix = 0` does not test the green display; it tests *not* running it**, because the term returns the input
+unchanged at zero -- so the switch separates "the whole branch" from "nothing" and never isolates the terms inside it.
+**That is the same fault as the earlier "inert" verdicts**: a control that does not modulate the thing it appears to
+modulate.  **And `chroma_residue = 0` changed nothing either, which says the residue is not what carries the structure.**
+
+**What is established, and what is not.**
+
+  * **established**: the banding is in the night-vision scene/display branch, not in the format, codec, tape, player or
+    display stages -- because mode 0 runs all of those and is clean;
+  * **established**: it is not the shot-noise term, the read noise, the chroma noise, the exposure bias, the sharpness,
+    the green mix, or the chroma residue, each tested by switching it;
+  * **established**: the model's input carries its own row structure (0.12737 against the footage's 0.07562), so some of
+    what is seen is inherited rather than added -- and **mode 0 reads 0.10040, below the source, i.e. it smooths that
+    structure away, which is why it looked clean**;
+  * **NOT established**: which statement inside the branch produces it.  **Five statistics have now disagreed with the
+    eye here and the eye has been right every time**, so the next step is the one that does not involve a statistic at
+    all -- **write every stage's output to disk as an image and look at them**, which is the only method left that has
+    not already failed.
+
+**A correction to this round's own reasoning.**  I first reported that `shot_noise` was "the only term that moved it" and
+treated it as the cause.  **It moves the row-difference statistic by half the excess and is invisible in the picture**, so
+the statistic and the appearance disagree again -- **the sixth time**, and the reason the stage images are now the
+recorded next step rather than another number.
+
+**163 checks pass, selftest clean.**

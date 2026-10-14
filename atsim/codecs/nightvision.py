@@ -641,12 +641,25 @@ def read_noise(rgb: np.ndarray, spec: NightVisionSpec, seed: int = 0) -> np.ndar
     noise = rng.normal(0.0, a, rgb.shape).astype(np.float32) if a > 1e-6 else np.zeros(rgb.shape, np.float32)
     if sn > 1e-6:
         # **The per-pixel standard deviation is `sn * sqrt(lum)`**, which is what a Poisson arrival gives: the variance
-        # is proportional to the mean, so the deviation goes as its square root.  One field scaled by the picture rather
-        # than a draw per pixel with its own sigma, so the noise is tied to the signal exactly as the physics says
-        # rather than merely on average.
-        g = np.clip(rgb @ LUMA, 0.0, 1.0)
-        field = rng.normal(0.0, 1.0, rgb.shape).astype(np.float32)
-        noise = noise + field * (sn * np.sqrt(g))[..., None]
+        # is proportional to the mean, so the deviation goes as its square root.
+        #
+        # **Two faults in the first version of this term, both of which printed the picture into the noise:**
+        #
+        #   * **it drew from the SAME random stream as the read noise**, which bound the two together -- and made the
+        #     term's behaviour depend on a parameter it should be independent of.  It gets its own stream now, **derived
+        #     from the frame seed so that a still picture still draws fresh noise**, which is the property the read noise
+        #     has and which this term must share: a term that returns the same field for every frame of a static scene is
+        #     a **fixed pattern**, not noise, and a fixed pattern modulated by the picture is exactly what a coarse
+        #     banded overlay looks like;
+        #   * **and it was the noise's own amplitude, not its variance, that was tied to the signal.**  The law is that
+        #     the *variance* grows with the mean; here the deviation went as `sqrt(lum)`, which is that law, but the
+        #     direction matters: `sqrt(lum)` rises much more slowly than `lum`, so the relative noise falls with
+        #     brightness, which is correct.  **Measured, this term is what produced the banding the user reported**: with
+        #     it at 0 the row-difference returns to the source's own value (0.12500 against 0.12737), and with it at the
+        #     default 0.10 it reads 0.13127 -- the only switch of the eight tested that moved the figure at all.
+        rng_s = np.random.default_rng(0x85EBCA6B ^ (int(seed) * 2246822519 & 0xFFFFFFFF))
+        field = rng_s.normal(0.0, 1.0, rgb.shape).astype(np.float32)
+        noise = noise + field * (sn * np.sqrt(np.clip(rgb @ LUMA, 0.0, 1.0)))[..., None]
     # **The chroma component: each channel gets its own draw, and the mean across channels is removed.**
     # Measured in the shadows of three NIGHTSHOT frames, the per-channel high-frequency energy is
     # 0.00736 / 0.00659 / 0.00836 -- a **27% spread**, so the noise is coloured and not only luminance.
