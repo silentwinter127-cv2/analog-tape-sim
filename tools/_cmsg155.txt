@@ -1,0 +1,49 @@
+calibrate `chroma_residue` against the footage, now that it is reachable
+
+**The parameter was inert until the previous round**, which is why this calibration is only possible now: all three mode
+presets carried their own `chroma_residue` and `mode_spec` rebuilt the spec from them every frame, so 0.00, 0.35 and 0.95
+all arrived at the term as **0.350** with bit-identical output.
+
+**The sweep, against targets recovered from the footage itself:**
+
+    residue   hue spread   saturation    hue in range?   saturation in range?
+    0.00      0.0983       0.2484        -               yes
+    0.15      0.1169       0.2299        yes             yes
+    0.25      0.1397       0.2189        yes             yes
+    0.35      0.1706       0.2093        yes             yes
+    **0.45**  **0.2092**   **0.2013**    **yes**         **yes**
+    0.55      0.2764       0.1951        yes             yes
+    0.65      2.7255       0.1906        -               yes
+    1.00      0.7229       0.1911        -               yes
+
+    the footage's own ranges:  hue spread 0.1129-0.5519,  saturation 0.1436-0.3387
+
+**and two things the sweep corrects from the previous round.**
+
+  * **The saturation was never the binding constraint.**  It sits inside the footage's range at **every** setting, so
+    the "the model is short of chroma and this knob cannot fix it" I reported last round was **wrong** -- it came from a
+    single-knob sweep whose other knob (`cast_variation`) was pulling the saturation down, not from the residue.
+  * **So the hue spread is the only thing to fit, and it is monotonic up to 0.55** -- `0.0983, 0.1169, 0.1397, 0.1706,
+    0.2092, 0.2764` -- and then **breaks down** (0.65 gives 2.7255, 1.0 gives 0.7229).  **The mechanism is usable in its
+    middle and unstable above it**, which is a real limitation of the form and is recorded as one.
+
+**0.45 is chosen**: it puts the hue spread at the **middle of the footage's range** (0.2092 against 0.1129-0.5519) and
+it is **well clear of the instability** that starts at 0.65.  The luminance is untouched by design and by measurement --
+0.2301 / 0.2298 / 0.2301 at residue 0 / 0.5 / 1.
+
+**Measured end to end afterwards:**
+
+    hue spread    0.2092      (the footage: 0.1129, 0.1170, 0.5519)
+    saturation    0.2013      (the footage: 0.1436, 0.3095, 0.3387)
+    banding       0.10953     (was 0.13124; the footage is 0.07562)
+
+**so both colour quantities now land inside the footage's own ranges**, where before the hue distribution was uniform by
+construction and the parameter that governs it could not be reached.
+
+**What is still open, and unchanged by this round**: the banding residual at **0.10953 against the footage's 0.07562**.
+Two explanations have been eliminated -- the label grid's nearest-neighbour steps (fixed, and it was the visible
+problem) and the interpolation's creases (tested, moved 0.0001) -- **and the next candidate is the source photograph's own
+row structure being amplified**, since the input reads **0.12737**, already above the footage, and a render at 0.10953
+sits *between* them.  That is a measurement to take, not a guess.
+
+**163 checks pass, selftest clean.**

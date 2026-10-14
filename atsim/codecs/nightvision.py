@@ -80,7 +80,7 @@ class NightVisionSpec:
     #: one clip the red share reads **0.2892, 0.2339 and 0.2011** -- a factor of **1.44** -- while the blue share
     #: stays at **0.341-0.354**.  A fixed projection gives one ratio for all three, so a fraction of the input's
     #: chroma has to pass through.  0 is the rigid projection, 1 leaves the chroma untouched.
-    chroma_residue: float = 0.35
+    chroma_residue: float = 0.45
     #: **The CHROMA component of the read noise.**  Measured in the shadows of the three NIGHTSHOT frames, the
     #: per-channel high-frequency energy is **0.00736 / 0.00659 / 0.00836** -- a **27% spread between the channels**,
     #: i.e. the noise is coloured and not only luminance.  `read_noise` is a single scalar, so **it cannot produce this
@@ -186,7 +186,7 @@ class NightVisionSpec:
             ir_response=float(cfg.get("nv_ir_response", 0.0)),
             ir_albedo_mix=float(cfg.get("nv_ir_albedo", 0.0)),
             green_gain=float(cfg.get("nv_green_gain", 1.15)),
-            chroma_residue=float(cfg.get("nv_chroma_residue", 0.35)),
+            chroma_residue=float(cfg.get("nv_chroma_residue", 0.45)),
         chroma_noise=float(cfg.get("nv_chroma_noise", 0.15)),
             green_mix=float(cfg.get("nv_green_mix", 0.0)),
             exposure_steps=float(cfg.get("nv_exposure_steps", 0.0)),
