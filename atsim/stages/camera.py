@@ -101,6 +101,10 @@ class CameraStage(Stage):
         # `索尼F717夜视测试`, segmented into its four modes and measured per segment.
         from ..codecs.nightvision import NightVisionSpec
         self.nv = NightVisionSpec.from_params(cfg)
+        #: **The sensor's saturation point, in stops below the range's own white.**  Zero leaves `_roll_off` as it was.
+        #: See the comment there: the curve clips correctly, but at the default range its white point is 1.0 while the
+        #: picture's maximum is 0.87, so nothing ever reaches it and the model can never show a blown highlight.
+        self.saturation_stops = float(cfg.get("saturation_stops", 0.0))
         # **The near-IR material labelling, and whether this machine can do it at all.**  `note.txt`'s second mechanism
         # asks for near-IR albedo per material rather than an RGB-to-grey conversion, and a vision-language model can
         # supply it; where none is installed the estimate is used, **which is not a degraded mode but the documented
@@ -527,6 +531,21 @@ class CameraStage(Stage):
         # already act on a value that may exceed white; a hold added afterwards is what broke the colour-cast
         # check on an earlier attempt, and it was solving a problem that did not exist.
         white = float(2.0 ** ((dr - 8.0) / 8.0))
+        # **The white point can also be brought DOWN, which is what makes the sensor saturate at all.**  Measured: the
+        # model's brightest pixel is **0.8686 and nothing anywhere in the frame is clipped**, where the footage reaches
+        # **1.0 with 0.66% of the frame at or above 0.98**.  And this curve is not the cause of that -- it clips
+        # correctly, at `white`.  **The cause is that nothing reaches `white`**: at the default `dynamic_range` of 8 the
+        # white point is exactly 1.0 while the picture's own maximum after exposure and white balance is 0.87, so the
+        # `lin >= white` branch never fires and the shoulder sits above the content it is meant to compress.
+        #
+        # **So the saturation point is exposed directly, in stops below the range's own white.**  `nv_saturation_stops`
+        # of 0 leaves the curve exactly as it was; more than 0 lowers the white point by that many stops, so a highlight
+        # that would have ended at 0.95 is pinned at 1.0 instead and the sensor blows out where a real one does.  **A
+        # sensor's saturation point is a property of the sensor and not of its dynamic range**, which is why it is a
+        # separate control rather than a different `dynamic_range`.
+        sat_stops = float(np.clip(getattr(self, "saturation_stops", 0.0), 0.0, 3.0))
+        if sat_stops > 1e-4:
+            white = white * float(2.0 ** (-sat_stops))
         lin = np.clip(rgb, 0.0, None)
         span = max(1e-4, white - knee)
         t = np.clip((lin - knee) / span, 0.0, 1.0)

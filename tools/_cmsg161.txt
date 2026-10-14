@@ -1,0 +1,51 @@
+find why a new parameter is dropped, implement the saturation point, and record that it is still only partly closed
+
+**The mechanism behind six inert parameters, found.**  `saturation_stops` was added to the camera and produced
+**bit-identical output at 0.0, 0.3, 0.6 and 0.9** -- the sixth time in this work a parameter has had no effect.  A probe
+inside `_roll_off` showed the attribute was **always 0.00** however it was configured, and the cause is one step earlier:
+
+    merge_values(BASE, {"camera": {"saturation_stops": 0.6}})
+        -> camera.saturation_stops = 0.6
+    SCHEMA.resolve_all(that)
+        -> camera.saturation_stops = **ABSENT**
+
+    for contrast, three declared parameters survive both: dynamic_range, nv_chroma_residue, nv_illuminator
+
+**`SCHEMA.resolve_all` rebuilds the layers from the schema's declarations and DROPS every key it does not know**, and
+`Project.resolved_params` uses it -- so **a new parameter must be declared in the schema or it never reaches the stage.**
+**That is the common step behind the six**: a value exists in the config and something between the config and the term
+removes it.  It is recorded in the schema help beside the parameter, because the next new parameter will meet it too.
+
+**And the diagnosis of the highlights holds.**  `_roll_off` clips correctly at its white point and is not the cause; the
+cause is that **nothing reaches the white point**, because at the default `dynamic_range` it is exactly 1.0 while the
+picture's own maximum is 0.87.  So the saturation point is now exposed directly, in stops below the range's own white --
+**a sensor's saturation point is a property of the sensor, not of its dynamic range**, and `dynamic_range` moves it the
+wrong way (a lower range raises the white point).
+
+**Measured, with the parameter finally reaching the term:**
+
+    sat_stops   white    clipping on a flat field
+    0.00        1.0000   0.01734
+    0.30        0.8123   0.06842
+    0.60        0.6598   0.13746
+    0.90        0.5359   0.21363
+
+**so it works and it clips where it should.**  On the real photograph, though, its reach is small:
+
+    sat_stops   mean     p99      max      clipped
+    0.00        0.2370   0.8061   0.8686   0.00000
+    0.30        0.2429   0.8334   0.8857   0.00000
+    0.40        0.2449   0.8412   0.8882   0.00000
+    the footage  0.2346   0.9511   **1.0000**  **0.00657**
+
+**so it raises the maximum by 0.017 and still clips nothing.**  The curve redistributes energy into the shoulder rather
+than pinning it, because the photograph's brightest pixel is only at 0.87 -- **to blow out, the picture must have a
+brighter highlight to begin with**, which is a property of the light rather than of the curve.
+
+**And the default is 0.0, because 0.30 broke a check.**  The suite caught that the scanline structure began costing light
+once the white point was lowered -- **a verified property traded for 0.017 of maximum is not a trade worth making**, so
+the parameter is left reachable and inactive, and the shortfall is recorded rather than papered over.  **That is what the
+163 checks are for**, and this round is the first in some time where one of them stopped a change rather than confirming
+one.
+
+**163 checks pass, selftest clean.**
