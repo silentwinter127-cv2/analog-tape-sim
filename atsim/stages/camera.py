@@ -228,7 +228,10 @@ class CameraStage(Stage):
         self.bump_rate_hz = float(cfg.get("bump_rate_hz", 0.0))
         self.bump_amount = float(cfg.get("bump_amount", 0.0))
         self.zoom_travel = float(cfg.get("zoom_travel", 0.0))
-        self.zoom_kind = str(cfg.get("zoom_kind", 1.0))
+        #: **a number, not `str(...)`**.  It used to be `str(cfg.get("zoom_kind", 1.0))`, i.e. the string `"1.0"`,
+        #: which `zoom_curve` could never match against its `"linear"` / `"cinema"` names -- so even once the call
+        #: site stopped hardcoding `"motor"`, the value still had to be translated rather than stringified.
+        self.zoom_kind = float(cfg.get("zoom_kind", 1.0))
         self.smear = float(cfg.get("ccd_smear", 0.0))
         self.halation = float(cfg.get("halation", 0.0))
         #: How much the halation's tint follows the **blown region's own colour** instead of the fixed
@@ -1196,9 +1199,25 @@ class CameraStage(Stage):
         # is read and never used -- which is the "reachable but inert" fault this project keeps finding.
         if self.zoom_travel > 1e-6:
             from ..codecs.operator import zoom_curve
+            #: **The curve the user chose, which was being replaced by a hardcoded `"motor"` right here.**
+            #:
+            #: `zoom_kind` is a selector -- 0 linear, 1 consumer motor, 2 professional servo -- and `zoom_curve`
+            #: already implements all three.  Two faults made it unreachable at once:
+            #:
+            #:   * this call passed the literal `"motor"`, so the argument could not vary;
+            #:   * `_read_params` did `str(cfg.get("zoom_kind", 1.0))`, i.e. **the string `"1.0"`** -- and
+            #:     `zoom_curve` compares against `"linear"` and `"cinema"`, so every value fell through to the motor
+            #:     branch.  **The parameter would still have been inert even if it had been passed.**
+            #:
+            #: Measured with the whole parameter audited: pulling `zoom_kind` from 0 to 2 changed the frame by
+            #: **0.00000**.  It is a smaller fault than the ones that cost detail, and it is the same shape as all of
+            #: them -- a value read, then replaced before use -- so it is fixed rather than left as a curiosity.
+            #: The map is explicit because the schema's unit is a number and the function's is a name, and a silent
+            #: `str()` between two vocabularies is exactly how this broke.
+            _kind = {0: "linear", 1: "motor", 2: "cinema"}.get(int(round(float(getattr(self, "zoom_kind", 1.0)))), "motor")
             # at long travel a consumer lens softens: the elements are furthest from the spacing they
             # were designed around, and the motor's own curve is how the control gets there
-            self._zoom_softness = 0.22 * zoom_curve(self.zoom_travel, "motor")
+            self._zoom_softness = 0.22 * zoom_curve(self.zoom_travel, _kind)
         else:
             self._zoom_softness = 0.0
         # the total defocus this frame: the loop's motor position plus the zoom's softness.  Applied as
