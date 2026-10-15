@@ -578,7 +578,21 @@ def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     shift = float(np.clip(getattr(spec, "ir_focus_shift", 0.0), 0.0, 12.0))
     if shift > 1e-3:
         from scipy.ndimage import gaussian_filter                                 # noqa: PLC0415
-        ir_defocused = gaussian_filter(ir * m, shift / 2.0, mode="reflect")
+        #: **`sigma = shift`, not `shift / 2`, because `gaussian_filter` does nothing below sigma 0.5.**
+        #: Measured with the parameter swept on a picture with known high-frequency structure:
+        #:
+        #:     shift    HF out    vs no shift   bit-identical to 0?
+        #:     0.0      0.05322   1.000         --
+        #:     0.2      0.05322   1.000         YES      <- the whole lower half of the range was inert
+        #:     0.5      0.05322   1.000         no
+        #:     1.0      0.05320   1.000         no
+        #:     8.0      0.05403   1.015         no
+        #:
+        #: `shift / 2` put `shift = 0.2` at `sigma = 0.1` and `shift = 0.5` at `sigma = 0.25`, both of which the
+        #: filter approximates as the identity -- so **a quarter of the control's range was a dead zone**, and the
+        #: default sat at 0.5, one step inside it.  That is why moving the default from 0.5 to 0.2 changed nothing.
+        #: With `sigma = shift` the control is live from about 0.6 upward, which is where its useful values are.
+        ir_defocused = gaussian_filter(ir * m, shift, mode="reflect")
         lum_new = (lum * (1.0 - m) + ir_defocused)
     # **A global variance match is not a local one, and the difference is the whole of this mode's detail loss.**
     # The factor below was added because `lum ** 0.55` compresses the picture's own contrast by 31%, so the blend left
