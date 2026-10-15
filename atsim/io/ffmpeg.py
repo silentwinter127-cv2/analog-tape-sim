@@ -310,7 +310,23 @@ class VideoWriter:
                  crf: int = 16, preset: str = "medium", codec: str = "libx264",
                  pix_fmt: str = "yuv420p", extra: Sequence[str] = ()):
         self.out_path = str(out_path)
-        self.width, self.height, self.fps = int(width), int(height), float(fps)
+        self.in_width, self.in_height = int(width), int(height)
+        #: **The encoded frame is padded to EVEN dimensions, because `yuv420p` cannot store an odd one.**
+        #:
+        #: Chroma in `yuv420p` is subsampled 2x in both directions, so an odd width or height has no place to put the
+        #: last chroma sample: libx264 refuses outright -- `height not divisible by 2 (334x485)`.  **The source of odd
+        #: sizes is a still image**, whose dimensions are whatever the file happens to be, and the UI's `scale=0.5`
+        #: turns even sizes odd as often as not (`720x540 -> 360x270` is fine, `334x485 -> 167x243` is not).
+        #:
+        #: Measured: every `/api/render` on a still produced `RuntimeError: ffmpeg encode failed` and a **0-byte file**,
+        #: the same symptom as the silent-clip fault next to it -- two different causes, one shape of failure.
+        #:
+        #: The pad is one pixel at most, taken from the bottom/right edge, and it is applied to the **encoded** frame
+        #: rather than by resizing the render: the picture the stages produced is unchanged, and only the container's
+        #: frame is rounded up.  `write` pads the incoming array to match, so callers keep passing their own size.
+        self.width = self.in_width + (self.in_width % 2)
+        self.height = self.in_height + (self.in_height % 2)
+        self.fps = float(fps)
         self.crf, self.preset, self.codec = crf, preset, codec
         self.pix_fmt = pix_fmt
         self.extra = list(extra)
@@ -326,7 +342,19 @@ class VideoWriter:
             cmd += ["-i", audio_from]
         cmd += ["-map", "0:v:0"]
         if audio_from:
-            cmd += ["-map", "1:a:0", "-c:a", audio_codec, "-shortest"]
+            #: **The audio map is OPTIONAL, and it has to be, because the source may carry no audio at all.**
+            #:
+            #: `-map 1:a:0` is a *requirement*: when the input has no audio stream ffmpeg refuses to start and says so
+            #: -- `Stream map '1:a:0' matches no streams ... To ignore this, add a trailing '?'`.  Because the process
+            #: never started, **nothing was ever written**, so the failure surfaced as a **0-byte output file** rather
+            #: than as a usable video, and `close()` raised only at the end.
+            #:
+            #: Measured on the user's uploads, which are silent: every `/api/render` on one produced
+            #: `RuntimeError: ffmpeg encode failed: Stream map '1:a:0' matches no streams` and left
+            #: `runs/renders/<job>.mp4` at 0 bytes -- the two zero-length files sitting in that directory are the
+            #: evidence.  The trailing `?` makes the map *conditional*: audio is carried when it exists and silently
+            #: omitted when it does not, which is what "keep the audio if there is any" was supposed to mean.
+            cmd += ["-map", "1:a:0?", "-c:a", audio_codec, "-shortest"]
         cmd += ["-c:v", self.codec, "-crf", str(self.crf), "-preset", self.preset,
                 "-pix_fmt", self.pix_fmt]
         cmd += self.extra
@@ -347,6 +375,13 @@ class VideoWriter:
         arr = np.clip(rgb, 0.0, 1.0)
         if arr.dtype != np.uint8:
             arr = (arr * 255.0 + 0.5).astype(np.uint8)
+        #: **A frame at the renderer's own size is accepted and padded to the encoded size**, so the odd-dimension fix
+        #: above does not push a size requirement onto every caller.  The incoming shape must be one of the two the
+        #: writer knows about: the caller's own, or the padded one.
+        if arr.shape[0] == self.in_height and arr.shape[1] == self.in_width:
+            if (self.height, self.width) != (self.in_height, self.in_width):
+                arr = np.pad(arr, ((0, self.height - self.in_height), (0, self.width - self.in_width), (0, 0)),
+                             mode="edge")
         if arr.shape[0] != self.height or arr.shape[1] != self.width:
             raise ValueError(f"frame size {arr.shape[:2]} != {self.height, self.width}")
         self._proc.stdin.write(np.ascontiguousarray(arr).tobytes())
