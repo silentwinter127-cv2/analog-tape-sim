@@ -375,7 +375,7 @@ def build_schema() -> ParamSchema:
                     "**一个参数存在于一层而不存在于另一层。**\n"
                     "膝点越低，进入压缩的高光越多、画面越平；越高则越接近直接裁剪。0.70 是让肩部覆盖实拍帧"
                     "真正开始收敛的那个区间。")
-    cam.define("nv_highlight_shape", "高光肩部指数形状", 1.6, 1.05, 4.0, unit="p", group=g,
+    cam.define("nv_highlight_shape", "高光肩部指数形状", 2.5, 1.05, 4.0, unit="p", group=g,
                phys_min=1.05, phys_max=3.0,
                source="实拍帧亮度 p95 0.847 反解：p=1.6 把峰值 0.95 压到 0.834",
                help="**肩部曲线的形状指数，大于 1 时压缩发生在肩部的【顶端】。**\n"
@@ -390,7 +390,7 @@ def build_schema() -> ParamSchema:
                     "`s**p`（`p > 1`）有同样两个不动点、同样在恒等线之下，但导数 `p·s^(p-1)` **在 `s = 1` 处最大**"
                     "——**咬得最狠的地方就在顶端**。`p = 1.6` 把峰值 0.95 压到 **0.834**，"
                     "对应实拍帧自己的亮度 p95 **0.847**，而 `s = 0` 仍精确落在膝点上。")
-    cam.define("nv_highlight_compress", "高光肩部压缩", 1.0, 0.0, 1.0, unit="0-1", group=g,
+    cam.define("nv_highlight_compress", "高光肩部压缩", 1.0, 0.0, 6.0, unit="x", group=g,
                phys_min=0.0, phys_max=0.8,
                source="实拍帧 p95 0.8322 反解；模型 0.9387、>0.95 占 4.76% 对实拍 1.04%",
                help="**高光肩部：决定「最亮的东西有多亮」的那一步。**\n"

@@ -58,6 +58,9 @@ def _subpixel_shift(rgb: np.ndarray, dx: float, dy: float) -> np.ndarray:
     return (top * (1.0 - fy) + bot * fy).astype(np.float32)
 
 
+LUMA_F32 = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+
 class CameraStage(Stage):
     name = "camera"
     layers = ("camera",)
@@ -184,7 +187,10 @@ class CameraStage(Stage):
         #: The highlight shoulder.  See `_highlight_compress` for why neither `nv_highlight_saturation` nor
         #: `dsp_gamma` could serve: the first is the desaturation drive (0.009 of p95 across a 2.5x sweep) and the
         #: second is one curve that takes the shadows down as far as it brings the highlights back.
-        self.highlight_compress = float(np.clip(cfg.get("nv_highlight_compress", 1.0), 0.0, 1.0))
+        #: **the range is 0..6 and the clamp here has to match the schema's**, because a bound that exists in two
+        #: layers means raising one of them changes nothing -- which is why the first attempt at a stronger
+        #: shoulder measured no difference at all between 1.0 and 6.0
+        self.highlight_compress = float(np.clip(cfg.get("nv_highlight_compress", 1.0), 0.0, 6.0))
         self.highlight_knee = float(np.clip(cfg.get("nv_highlight_knee", 0.85), 0.5, 0.99))
         #: the exponent's shape: >1 puts the compression at the TOP of the shoulder, which is where `_dsp_level`
         #: leaves the picture pinned.  See `_highlight_compress`.
@@ -916,26 +922,22 @@ class CameraStage(Stage):
         #: `s**2 <= s` on `[0, 1]`, so the correction is never positive and the curve lies below the identity; `s=0`
         #: gives `knee` and `s=1` gives `1` exactly, whatever `amt` is -- so the black floor, the mid-tone and the white
         #: point are all fixed and only the shoulder's shape moves.
-        peak = x.max(axis=-1, keepdims=True)
-        s_ex = np.clip((peak - knee) / max(1e-6, 1.0 - knee), 0.0, 1.0)
-        #: **The exponent's SHAPE is what matters here, not its size.**  The first version used `s**2`, whose
-        #: derivative `2s` is **0 at s = 1** -- so the correction was strongest in the middle of the shoulder and
-        #: **vanished exactly where the picture is pinned**.  Measured: `_dsp_level` leaves **10.18%** of the frame's
-        #: pixels with a peak above 0.95, and `s**2` took a peak of 0.95 to **0.907**, a compression of 0.043 where
-        #: 0.118 was needed, for a mean change of 0.0039 over the whole frame.
+        #: **The excess is taken from the LUMINANCE, and the factor is applied to all three channels equally.**
         #:
-        #: `s**p` with `p > 1` has the same two fixed points and stays below the identity, but its derivative
-        #: `p * s**(p-1)` is **largest at s = 1** -- it bites hardest at the top.  `p = 1.6` takes 0.95 to **0.834**
-        #: against the frame's own luminance p95 of 0.847.
+        #: Measured why: with the peak channel driving it, the shoulder moved the frame's `p95` by **0.003**
+        #: (0.9387 -> 0.9359).  `_dsp_level` leaves the picture at `luma p95 0.9423` with `peak p95 1.0000`, and
+        #: **in a green-dominant picture `max(R,G,B)` sits well above `0.299R + 0.587G + 0.114B`** -- so compressing
+        #: the peak compressed mostly the green channel while the *weighted* luminance barely followed.  The picture was
+        #: pinned in luminance and the compressor was not looking at luminance.
+        #:
+        #: A uniform scale cannot change a channel ratio, so the hue is preserved exactly; a highlight desaturates only
+        #: through the clip at the very top, which is what a real shoulder does.
+        lum = np.clip(x @ LUMA_F32, 0.0, 1.0)[..., None]
+        s_ex = np.clip((lum - knee) / max(1e-6, 1.0 - knee), 0.0, 1.0)
         p_exp = float(np.clip(getattr(self, "highlight_shape", 1.6), 1.05, 4.0))
-        newp = knee + (1.0 - knee) * (s_ex + amt * (np.power(s_ex, p_exp) - s_ex))
-        #: one scale for all three channels, so a highlight stays white instead of shifting hue
-        #: **p.where\ and NOT p.maximum\.**  With the maximum, a pixel below the knee had ewp = knee\ clamped
-        #: against its own peak and was **raised to 0.70**: measured on a grey ramp, inputs of 0.200 and of 0.500 both
-        #: came out at exactly **0.700**, so the whole shadow range was lifted onto the knee -- the frame's dark share
-        #: went 20.6% -> **0.0%** and its mean 0.3688 -> 0.6029.  p.where\ leaves everything at or below the knee
-        #: **untouched**, which is the property the black floor and the mid-tone calibration depends on.
-        scale = np.where(peak > knee, newp / np.maximum(1e-6, peak), 1.0)
+        newl = knee + (1.0 - knee) * (s_ex + amt * (np.power(s_ex, p_exp) - s_ex))
+        #: `np.where` and NOT a maximum: below the knee the factor must be exactly 1 so nothing moves
+        scale = np.where(lum > knee, newl / np.maximum(1e-6, lum), 1.0)
         return np.clip(x * scale, 0.0, 1.0).astype(np.float32)
 
     def _dsp_level(self, rgb: np.ndarray) -> np.ndarray:
