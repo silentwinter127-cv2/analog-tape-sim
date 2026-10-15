@@ -173,6 +173,14 @@ class CameraStage(Stage):
         #: as the schema default darkened every ordinary visible-light render.
         self.dsp_gain = float(np.clip(cfg.get("dsp_gain", 1.0), 0.1, 4.0))
         self.dsp_black = float(np.clip(cfg.get("dsp_black", 0.0), -0.5, 0.5))
+        #: **The DSP's transfer curve, and it is what lifts a shadow floor that a pedestal cannot.**  A real
+        #: NightShot's black is not black but **deep green-grey** (`note.txt`), and the model's is not: measured
+        #: against the user's frame the model's p1 is 0.0186 where the frame's is 0.0471 and its p25 is 0.0522 where
+        #: the frame's is 0.1511 -- **two to three times too dark at the bottom** -- while its p75 is 0.7027 against
+        #: 0.4841, i.e. too bright at the top.  A pedestal adds a constant and leaves the shadow ratios alone; a gain
+        #: lifts the highlights that are already too high.  `x ** gamma` with `gamma < 1` stretches the bottom and
+        #: compresses the top with 0 and 1 fixed, which is the standard camera transfer and the shape that is needed.
+        self.dsp_gamma = float(np.clip(cfg.get("dsp_gamma", 1.0), 0.3, 3.0))
         #: the DSP's tone curve, as an offset from the identity -- see `_dsp_level`
         self.dsp_contrast = float(np.clip(cfg.get("dsp_contrast", 0.0), -0.8, 2.0))
         self._nir_albedo: np.ndarray | None = None
@@ -949,6 +957,9 @@ class CameraStage(Stage):
         #: the **default is 0 so that nothing in this repository moves until someone asks** -- the same rule the gain
         #: and the black level follow.  It runs before the gain so the two compose the way a camera's tone and level
         #: stages do.
+        gm = float(getattr(self, "dsp_gamma", 1.0))
+        if abs(gm - 1.0) > 1e-4:
+            rgb = np.power(np.clip(rgb, 0.0, 1.0), gm).astype(np.float32)
         k = float(getattr(self, "dsp_contrast", 0.0))
         if abs(k) > 1e-4:
             kk = float(np.clip(1.0 + k, 0.2, 3.0))

@@ -873,7 +873,7 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     #:
     #: The mean of the two crops is taken rather than one frame, because the two disagree by 0.04 in R/G and the
     #: single-frame habit is what put the previous triple on the palest sample of its segment (recorded above).
-    weights = np.array([0.3890, 1.0000, 0.8008], dtype=np.float32)
+    weights = np.array([0.5300, 1.0000, 0.8008], dtype=np.float32)
     # **and normalised by their own luma, so the view still carries the picture's brightness** -- the property a
     # previous round established by measurement, where a constant multiplier gave a 15.6% gain (1.15569 on every flat
     # field) and the normalisation brought it to 1.0000.  Calibrating the ratios must not disturb that.
@@ -1251,11 +1251,11 @@ MODE_PRESETS: dict[str, dict[str, float]] = {
     # and had been applied to `ir_albedo_mix` and `ir_response` while **the lamp's own strength, the control a NightShot
     # user most needs, was left in**.  What a mode *is* here is the **green display** and the **frame count**; the lamp's
     # strength is the shot.
-    "nightshot": dict(green_mix=1.0, accumulate=1.0, green_gain=1.25, dsp_black=0.009),
+    "nightshot": dict(green_mix=1.0, accumulate=1.0, green_gain=1.0, dsp_black=0.009),
     # the same, **and accumulation on**.  **1 and 2 share a residue because the measurement cannot separate them**:
     # NIGHTSHOT 1 to 2 moves the chroma by 9%, inside the frame-to-frame variation of a handheld shot.  Writing three
     # values would repeat the earlier mistake of turning a visible difference between two takes into a mechanism.
-    "super_nightshot": dict(green_mix=1.0, accumulate=8.0, green_gain=1.25, dsp_black=0.009),
+    "super_nightshot": dict(green_mix=1.0, accumulate=8.0, green_gain=1.0, dsp_black=0.009),
     # no lamp and **no green display** -- colour is the point of this mode, so the chroma is not attenuated at all.
     # **`shutter_frames`, not `accumulate`, is what makes this "slow".**  The entry was `accumulate: 8.0`, which sums
     # eight *separate* exposures -- that makes the picture cleaner, which is Super NightShot's purpose and not this
