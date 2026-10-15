@@ -186,6 +186,9 @@ class CameraStage(Stage):
         #: second is one curve that takes the shadows down as far as it brings the highlights back.
         self.highlight_compress = float(np.clip(cfg.get("nv_highlight_compress", 1.0), 0.0, 1.0))
         self.highlight_knee = float(np.clip(cfg.get("nv_highlight_knee", 0.85), 0.5, 0.99))
+        #: the exponent's shape: >1 puts the compression at the TOP of the shoulder, which is where `_dsp_level`
+        #: leaves the picture pinned.  See `_highlight_compress`.
+        self.highlight_shape = float(np.clip(cfg.get("nv_highlight_shape", 1.6), 1.05, 4.0))
         #: the DSP's tone curve, as an offset from the identity -- see `_dsp_level`
         self.dsp_contrast = float(np.clip(cfg.get("dsp_contrast", 0.0), -0.8, 2.0))
         self._nir_albedo: np.ndarray | None = None
@@ -915,7 +918,17 @@ class CameraStage(Stage):
         #: point are all fixed and only the shoulder's shape moves.
         peak = x.max(axis=-1, keepdims=True)
         s_ex = np.clip((peak - knee) / max(1e-6, 1.0 - knee), 0.0, 1.0)
-        newp = knee + (1.0 - knee) * (s_ex + amt * (s_ex * s_ex - s_ex))
+        #: **The exponent's SHAPE is what matters here, not its size.**  The first version used `s**2`, whose
+        #: derivative `2s` is **0 at s = 1** -- so the correction was strongest in the middle of the shoulder and
+        #: **vanished exactly where the picture is pinned**.  Measured: `_dsp_level` leaves **10.18%** of the frame's
+        #: pixels with a peak above 0.95, and `s**2` took a peak of 0.95 to **0.907**, a compression of 0.043 where
+        #: 0.118 was needed, for a mean change of 0.0039 over the whole frame.
+        #:
+        #: `s**p` with `p > 1` has the same two fixed points and stays below the identity, but its derivative
+        #: `p * s**(p-1)` is **largest at s = 1** -- it bites hardest at the top.  `p = 1.6` takes 0.95 to **0.834**
+        #: against the frame's own luminance p95 of 0.847.
+        p_exp = float(np.clip(getattr(self, "highlight_shape", 1.6), 1.05, 4.0))
+        newp = knee + (1.0 - knee) * (s_ex + amt * (np.power(s_ex, p_exp) - s_ex))
         #: one scale for all three channels, so a highlight stays white instead of shifting hue
         #: **p.where\ and NOT p.maximum\.**  With the maximum, a pixel below the knee had ewp = knee\ clamped
         #: against its own peak and was **raised to 0.70**: measured on a grey ramp, inputs of 0.200 and of 0.500 both
