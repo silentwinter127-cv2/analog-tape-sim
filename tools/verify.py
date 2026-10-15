@@ -4255,6 +4255,55 @@ def check_declared_ranges_are_reachable() -> None:
            "a range that is inert at one end is either mis-declared or not wired to anything",
            "inert: %s" % (inert or "none"),
            not inert)
+def check_video_writer() -> None:
+    """
+    The encoder path: a source with no audio, and a source whose dimensions are ODD.
+
+    **This check exists because the suite had none.**  Two hard faults lived in `/api/render` -- `-map 1:a:0` failing
+    on a silent clip, and `yuv420p` refusing a 334x485 frame -- and neither was reachable by any test here, because
+    nothing in this file had ever opened a `VideoWriter`.  Both reached the user as **a zero-length `.mp4`**, so a check
+    that only asked "did the render raise" would have passed.  **The check has to look at the FILE.**
+
+    The two conditions are the ones the real callers produce: a still image supplies whatever dimensions the file has
+    (odd, often), and an imported clip may carry no audio stream at all.
+    """
+    import tempfile
+
+    from atsim.io.ffmpeg import VideoWriter, have_ffmpeg, probe
+
+    if not have_ffmpeg():
+        record("the video writer encodes a silent, odd-sized source",
+               "the container must accept what a still image and a silent clip actually are",
+               "skipped: no ffmpeg", True)
+        return
+
+    #: 334x485 is the size the user's still image produced, and it is odd in BOTH directions
+    w, h = 334, 485
+    rng = np.random.default_rng(11)
+    frames = [np.clip(0.5 + 0.25 * rng.standard_normal((h, w, 3)), 0, 1).astype(np.float32) for _ in range(3)]
+    err = ""
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "odd.mp4")
+        try:
+            with VideoWriter(out, w, h, 25.0, crf=28, preset="ultrafast") as vw:
+                #: **`open()` with no `audio_from`, which is the silent-source case**: the writer must not require an
+                #: audio stream that no caller offered
+                vw.open()
+                for f in frames:
+                    vw.write(f)
+        except Exception as exc:                                          # noqa: BLE001
+            err = "%s: %s" % (type(exc).__name__, exc)
+        size = os.path.getsize(out) if os.path.exists(out) else 0
+        info = probe(out) if size else None
+        n = int(getattr(info, "frame_count", 0) or 0) if info else 0
+
+    record("the video writer encodes a silent, odd-sized source",
+           "a still's odd dimensions and a clip's missing audio must both give a real file, not a 0-byte one",
+           "%dx%d -> %d bytes, %d frames%s" % (w, h, size, n, ("  ERROR " + err) if err else ""),
+           size > 0 and n >= len(frames) and not err,
+           "measured: this call wrote 0 bytes until the audio map was made optional and the frame padded to even")
+
+
 def check_chroma_lag() -> None:
     """
     Temporal chroma lag: the colour of a moving object must survive into the next frame's picture.
