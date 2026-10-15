@@ -271,7 +271,7 @@ def build_schema() -> ParamSchema:
                phys_min=0.0, phys_max=1.0, help="红外灯瞄准的位置（画面纵向；机位在画面底部）。")
     cam.define("nv_beam_angle", "光束角", 0.55, 0.1, 2.0, unit="rad", group=g,
                phys_min=0.15, phys_max=1.5, help="红外灯的锥形光束宽度。")
-    cam.define("nv_ir_albedo", "近红外反射占比", 0.70, 0.0, 1.0, unit="0-1", group=g,
+    cam.define("nv_ir_albedo", "近红外反射占比", 0.35, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.9,
                help="**NightShot 的物理核心：拆掉红外截止滤镜后，画面由【近红外反射率】主导，**"
                     "而近红外反射率与可见光颜色【无关】——这是为什么皮肤、植被、白布会发亮，"
@@ -363,7 +363,7 @@ def build_schema() -> ParamSchema:
                     "**所以这个压暗量现在由 `nv_exposure_trim` 承载**（加在 `_roll_off`【之前】，"
                     "而 `_roll_off` 会把传感器饱和点映回 1.0，白点因此保住）。\n"
                     "本参数保持 1.0（不压），除非用户明确要用增益本身调电平。")
-    cam.define("dsp_contrast", "DSP 对比度曲线", 0.40, -0.8, 2.0, unit="k-1", group=g,
+    cam.define("dsp_contrast", "DSP 对比度曲线", 0.70, -0.8, 2.0, unit="k-1", group=g,
                phys_min=-0.5, phys_max=1.0,
                source="DV 帧上扫出来的最优：p1 0.0344 对目标 0.0353、std 0.2988 对 0.2896；0 为恒等",
                help="**DSP 的色调曲线**，形状是绕 0.5 的幂律 `y = 0.5·(x/0.5)^k`，所以 0.0、0.5、1.0 三点不动，"
@@ -462,7 +462,7 @@ def build_schema() -> ParamSchema:
                     "**旧的默认 1.15 是反解出来的，而它反解的依据是三条素材里最淡的那一条**——"
                     "同一段三帧原图重测 R/G 是 0.517/0.540/0.574、B/G 是 0.840/0.842/0.876，"
                     "所以 1.15 相对这段自己的中心偏高 33%（红）与 8%（蓝）。")
-    cam.define("nv_exposure_trim", "夜视曝光补偿 (档)", -0.25, -3.0, 3.0, unit="stops", group=g,
+    cam.define("nv_exposure_trim", "夜视曝光补偿 (档)", -0.10, -3.0, 3.0, unit="stops", group=g,
                phys_min=-1.0, phys_max=0.0,
                help="**夜视模式自己的曝光补偿，不是全局 `exposure`。**\n"
                     "**它现在同时承载了原来 `dsp_gain = 0.75` 的压暗量**，因为那个增益加在 `_roll_off`【之后】，"
