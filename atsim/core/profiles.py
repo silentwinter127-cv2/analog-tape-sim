@@ -506,7 +506,7 @@ def build_schema() -> ParamSchema:
                     "**所以这一项只部分闭合**：真实照片的最亮像素在 0.87 附近，"
                     "而曲线把能量重新分配进肩部而不是让它裁切——需要光源使画面自身有更宽的动态范围"
                     "（例如更强的照明或更亮的高光），才可能真正打爆。")
-    cam.define("nv_highlight_saturation", "高光饱和驱动 (只作用于闸门以上)", 4.0, 0.0, 8.0, unit="x", group=g,
+    cam.define("nv_highlight_saturation", "高光饱和驱动 (只作用于闸门以上)", 2.0, 0.0, 8.0, unit="x", group=g,
                phys_min=1.0, phys_max=3.0,
                help="**取景器的驱动量，只作用在【闸门以上】——这才是高光变白的机制。**\n"
                     "显示把画面构成 `lum × w`，所以某通道在 `lum × w == 1` 处饱和："

@@ -853,7 +853,27 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     #: constraint, so `w = [0.5434, 1.0000, 0.8525]` arrives at the output as R/G 0.5434 and B/G 0.8525 exactly.  The
     #: green cast is then a *consequence of normalising a display's primaries to its luminance* rather than a number
     #: anyone chose, which is the only form of this that is physics rather than grading.
-    weights = np.array([0.5434, 1.0000, 0.8525], dtype=np.float32)
+    #: **Re-solved from two native NIGHTSHOT 2 frames the user supplied, with the OSD excluded.**
+    #:
+    #: The previous triple came from the `10月13` material and read `R/G 0.5434  B/G 0.8525`.  Against two real
+    #: NIGHTSHOT 2 frames at 1440x1080 the model was measurably **yellow-green where the frames are cyan-green**, and the
+    #: ratios say exactly where:
+    #:
+    #:                              R/G      B/G     hue median
+    #:     the real frame (a)       0.4096   0.7970   156 deg
+    #:     the real frame (b)       0.3684   0.8045   154 deg
+    #:     the model, before        ~0.55    ~0.87    161 deg
+    #:
+    #: **The OSD has to be masked out or the triple is solved against itself.**  A NIGHTSHOT frame carries `STBY`, a
+    #: battery indicator, the mode glyph and a clock, all in **neutral white and a saturated green**, and leaving them
+    #: in pulls the measured R/G toward white's 1.0 -- measured, the whole-frame figure is 0.454/0.826 while the
+    #: picture-only crop is 0.389/0.801 on the same two frames.  **A measurement that includes its own instrument's
+    #: overlay is not a measurement of the picture**, and this is the same shape as the audit that ran with the mode
+    #: off.
+    #:
+    #: The mean of the two crops is taken rather than one frame, because the two disagree by 0.04 in R/G and the
+    #: single-frame habit is what put the previous triple on the palest sample of its segment (recorded above).
+    weights = np.array([0.3890, 1.0000, 0.8008], dtype=np.float32)
     # **and normalised by their own luma, so the view still carries the picture's brightness** -- the property a
     # previous round established by measurement, where a constant multiplier gave a 15.6% gain (1.15569 on every flat
     # field) and the normalisation brought it to 1.0000.  Calibrating the ratios must not disturb that.
@@ -894,9 +914,25 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # **desaturated near-white** with a luminance of **0.958** -- which is what a viewfinder actually does, and what
     # `note.txt`'s "高亮区域的饱和" asks for.
     # **The two regimes, and the gate is derived rather than guessed.**  The display drives `lum * w`, so a channel
-    # saturates where `lum * w == 1`; measured, the normalised weights are **[0.6069, 1.2021, 0.9904]**, so green pins at
-    # **lum 0.832**, blue at 1.010 and red at 1.648 -- **and the brightest luminance the scene branch delivers is 0.8225,
-    # so the gate sits within 1% of the picture's peak and a small drive opens it.**
+    # saturates where `lum * w == 1`; with the triple re-solved above the normalised weights are
+    # **[0.4896, 1.2585, 1.0078]**, so green pins at **lum 0.795**, blue at 0.992 and red at 2.043 -- **and the picture's
+    # own range reaches past that, so the top of the frame is compressed toward white.**
+    #
+    # **The gate therefore decides the ratio as much as the triple does, and it shipped at 4.0.**  Measured against the
+    # two native NIGHTSHOT 2 frames the user supplied (central crops, OSD excluded):
+    #
+    #     gate   on frame (a)     on frame (b)     the targets
+    #     4.0    R/G 0.4514      R/G 0.4752       0.4113 / 0.3732
+    #     2.0    R/G 0.3928      R/G 0.3979       ** this is the value now **
+    #     1.5    R/G 0.3605      R/G 0.3589
+    #     1.0    R/G 0.2989      R/G 0.3031
+    #
+    # At 4.0 the frame was pulled toward white across most of its range and read **hue 161 degrees against the frames'
+    # 153-155** -- yellow-green where they are cyan-green, which is what the user reported.  At 2.0 the hue is **157** and
+    # R/G lands on the target.  **`B/G` does not follow the gate** (0.8456 at every setting above 1.2, against
+    # 0.7898 / 0.7960), so blue still reads about 0.05 high; that is recorded rather than papered over, because
+    # correcting it in the triple moves red with it -- the two are coupled through the shared normalisation, and an
+    # attempt to lower blue alone took R/G from 0.4514 to 0.4592, the wrong way.
     #
     # **Below the gate the projection is exact**, so the mid-tones keep the measured R:G:B and the calibration that was
     # fitted to the footage is untouched.  **Above it the strongest channel is pinned and cannot rise, while the others
