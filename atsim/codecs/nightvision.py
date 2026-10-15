@@ -1289,18 +1289,32 @@ def mode_spec(spec: NightVisionSpec) -> NightVisionSpec:
     #: `camera.py`: the parameter set this is called with is fully resolved, so "is it at the schema default" is the
     #: only question that distinguishes an untouched value from a deliberate one.  `in` on the spec's own fields keeps
     #: a name the schema has but the spec does not from becoming a `TypeError`.
+    #: **Every key the preset carries is overridable, not one at a time.**  `replace` cannot tell a preset's default
+    #: from a user's choice, so a key in a preset is a key the interface cannot move -- and that single fault has now
+    #: been found five times through five different parameters (`ir_response`, `ir_albedo`/`ir_depth`, `dsp_gain`,
+    #: `dsp_black`, `green_mix`).  **It was also found a sixth time in the act of fixing the fifth**: repairing
+    #: `green_mix` alone left `green_gain` locked, which the very next measurement showed as three different drives
+    #: printing identical numbers.
+    #:
+    #: So the rule is applied to the whole preset: a value the caller moved off the SCHEMA's default wins, and anything
+    #: left at its default takes the mode's value.  The schema is the reference because the parameter set arriving here
+    #: is fully resolved -- every key is present whether or not anyone chose it -- so only the schema's own default
+    #: separates a deliberate value from an untouched one.
     try:
         from ..core.profiles import SCHEMA
         _cam = SCHEMA.layer("camera").specs
-        for _name in ("green_mix",):
+        _over = {}
+        for _name in preset:
             _key = "nv_" + _name
             if _key not in _cam or not hasattr(out, _name):
                 continue
             _want = float(getattr(spec, _name, _cam[_key].default))
             if abs(_want - float(_cam[_key].default)) > 1e-6:
-                out = dataclasses.replace(out, **{_name: _want})
-    except Exception:                                          # noqa: BLE001
-        # a schema that cannot be reached must not take the render down; the preset's value then stands
+                _over[_name] = _want
+        if _over:
+            out = dataclasses.replace(out, **_over)
+    except Exception:
+        #: a schema that cannot be reached must not take the render down; the preset's values then stand
         pass
     # **The per-pixel arrays are DATA, not settings, and `replace` resets them to their defaults.**  `ir_albedo` and
     # `ir_depth` are computed once per clip by the vision model and attached to the spec; `mode_spec` then runs **on
