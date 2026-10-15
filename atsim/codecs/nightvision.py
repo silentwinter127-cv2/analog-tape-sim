@@ -1280,6 +1280,28 @@ def mode_spec(spec: NightVisionSpec) -> NightVisionSpec:
         return spec
     import dataclasses
     out = dataclasses.replace(spec, **preset)
+    #: **A preset supplies a DEFAULT; a value the user has moved off the schema default wins.**  `replace` cannot tell
+    #: the two apart, which is why `green_mix` was unreachable: the presets set it to 1.0 for both NightShot modes, so
+    #: a caller's 0.0 was overwritten before use and the picture was green at every setting -- measured, the chroma
+    #: differed by **0.00000** across 0.0, 0.5 and 1.0.
+    #:
+    #: The comparison is against the SCHEMA's default, not against a neutral constant, for the same reason as in
+    #: `camera.py`: the parameter set this is called with is fully resolved, so "is it at the schema default" is the
+    #: only question that distinguishes an untouched value from a deliberate one.  `in` on the spec's own fields keeps
+    #: a name the schema has but the spec does not from becoming a `TypeError`.
+    try:
+        from ..core.profiles import SCHEMA
+        _cam = SCHEMA.layer("camera").specs
+        for _name in ("green_mix",):
+            _key = "nv_" + _name
+            if _key not in _cam or not hasattr(out, _name):
+                continue
+            _want = float(getattr(spec, _name, _cam[_key].default))
+            if abs(_want - float(_cam[_key].default)) > 1e-6:
+                out = dataclasses.replace(out, **{_name: _want})
+    except Exception:                                          # noqa: BLE001
+        # a schema that cannot be reached must not take the render down; the preset's value then stands
+        pass
     # **The per-pixel arrays are DATA, not settings, and `replace` resets them to their defaults.**  `ir_albedo` and
     # `ir_depth` are computed once per clip by the vision model and attached to the spec; `mode_spec` then runs **on
     # every frame**, so `dataclasses.replace` -- which builds a new instance and fills unspecified fields from the
