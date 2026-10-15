@@ -1034,6 +1034,24 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # arrangement mixed the input's chroma into the projection's own chroma, which is a different statement and the one
     # that made the display's ratio depend on the input.
     out = rgb * (1.0 - m) + mono * m
+    #: **The chroma residue: the input's own colour, added to the display's tint rather than multiplied by it.**
+    #:
+    #: This mechanism existed and was recorded as inert, and the reason is in the block above: written as
+    #: `out = mono + (rgb - lum) * r`, **the残差 term carries the display's own weights**, so the input's colour was
+    #: pulled onto the same ratios the monochrome path already produces and the two could not be told apart -- measured,
+    #: `nv_chroma_residue` at 0.00, 0.35 and 0.95 all arrived as 0.350 and gave bit-identical frames.
+    #:
+    #: **The physical statement is different and simpler**: a NightShot camera's picture is not a pure monochrome -- the
+    #: residue of the scene's colour survives into the recording, which is why a real frame's dark areas read as green-grey
+    #: rather than neutral and why its chroma is *larger* than a pure projection's.  So the scene's chroma is added
+    #: **outside** the display's ratios, from `rgb - lum`, and the display's ratios keep acting on the luminance alone.
+    #:
+    #: `note.txt` asks for exactly this as the first of its two proposals -- "提取输入影像的色度信息 … 将色度残留叠加到
+    #: 单色亮度图" -- and names the failure of the naive version: it should come through the camera's own matrix rather
+    #: than being an RGB effect laid on top.
+    cr = float(np.clip(getattr(spec, "chroma_residue", 0.0), 0.0, 1.0))
+    if cr > 1e-6:
+        out = np.clip(out + (rgb - lum[..., None]) * cr * m, 0.0, 1.0)
     return out.astype(np.float32)
 
 
