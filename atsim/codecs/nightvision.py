@@ -274,6 +274,20 @@ def albedo_map(h: int, w: int, labelled: dict | None, fallback: np.ndarray | Non
         fb = f.astype(np.float32)
     # a cell's value is its albedo, or the estimate where the model was unsure; weighted by how sure it was
     wgt = np.clip(conf / max(1e-6, float(conf.max())), 0.0, 1.0)
+    #: **`alb` is held inside the table's own range, because it was leaving it and the table is the definition.**
+    #:
+    #: `IR_ALBEDO` spans **0.280 (dark clothing) to 2.100 (foliage)** -- a 7.5x ratio, and that ratio is the entire
+    #: content of the mechanism: near-IR reflectance is *not* predicted by visible brightness, and this is by how much.
+    #: Measured on the user's 2009 clip, `material.analyse` returned **albedo values down to 0.0000**, which is not in
+    #: the table at all.  A cell claiming a reflectance of zero is not a material the table describes, and because the
+    #: map is then normalised by its own mean, an out-of-table floor **inflates the ratio the map carries**: the lattice
+    #: came out with a spread of 9.8x where the table states 7.5x, and after the mean division the field reached
+    #: **4.607** where the table's ceiling is 2.10.
+    #:
+    #: So the clamp is at the level of the *definition* rather than of the output: a value below dark clothing's
+    #: reflectance is dark clothing, and the normalisation then carries the ratio the table actually describes.
+    _lo, _hi = float(min(IR_ALBEDO.values())), float(max(IR_ALBEDO.values()))
+    alb = np.clip(alb, _lo, _hi)
     mixed = np.where(labels >= 0, wgt * alb + (1.0 - wgt) * fb, fb)
     # **The upsampling is SMOOTH, and the earlier "nearest-neighbour on purpose" reasoning was wrong.**  It read:
     # "bilinear would invent smooth gradients between materials that do not exist in the table, and the model's own
@@ -346,7 +360,20 @@ def _resample(cell: np.ndarray, h: int, w: int, guide: np.ndarray | None = None)
     cx = (np.arange(gw, dtype=np.float32) + 0.5) * sx
     #: the smoothing width: one cell, which is the resolution the classifier has, and wide enough that the plateau is
     #: gone rather than merely rounded
-    sig_s = 0.62 * min(sy, sx)
+    #: **The spatial sigma is set from the SAMPLE SPACING, and the first version set it too small to work.**
+    #:
+    #: The centres are one cell apart, so a kernel narrower than that averages over fewer than one sample: with
+    #: `sig_s = 0.62 * cell` the weight at the neighbouring centre is `exp(-1 / (2 * 0.62**2)) = 0.27`, and at the
+    #: second neighbour `0.006`.  Combined with a range weight below 1, **the weight sum for most pixels collapses onto
+    #: its floor** -- measured on the 2009 clip's lattice, `sig_s = 37.2` against a cell pitch of 60-64 px gave
+    #:
+    #:     wsum  min 0.000  p50 0.067  max 1.394     46% of pixels at the 0.05 guard
+    #:     acc   max 0.390                            so acc/wsum never exceeded 0.28, the lattice's own MINIMUM
+    #:
+    #: i.e. the guided field came out flat at the value of the darkest sample.  `sig_s = 1.0 * cell` puts the
+    #: neighbouring centre at `exp(-0.5) = 0.61`, so every pixel averages several samples, which is what makes the
+    #: result an interpolation instead of a nearest-neighbour with extra steps.
+    sig_s = max(1.0, float(min(sy, sx)))
     ys = np.arange(h, dtype=np.float32) + 0.5
     xs = np.arange(w, dtype=np.float32) + 0.5
     #: only the centres within ~2.5 sigma matter, and taking them by range rather than all of them is what keeps the
@@ -357,22 +384,65 @@ def _resample(cell: np.ndarray, h: int, w: int, guide: np.ndarray | None = None)
     wsum = np.zeros((h, w), np.float32)
     if guide is not None and np.asarray(guide).shape[:2] == (h, w):
         g = np.asarray(guide, np.float32)
+        #: **The guide is brought into the SAME SPACE as the values it guides, and that is the fault this line fixes.**
+        #:
+        #: `guide` is the picture's **luminance**, 0..1.  `a` is a lattice of **near-IR albedo**, 0.28..2.10. The range
+        #: weight is `exp(-(g - value)^2 / (2 sig_r^2))`, and it is only meaningful if `g` and `value` are the same kind
+        #: of quantity.  They were not: a pixel at luminance 0.05 compared against a foliage sample at 2.10 differs by
+        #: 2.05, which under every sigma this kernel uses is **zero weight** -- so the only samples that could contribute
+        #: were the ones that happened to sit near the picture's own tiny luminance range, and the weight sum collapsed
+        #: onto its floor.  Measured on the 2009 clip's lattice:
+        #:
+        #:     guide (luminance) 0.0000 .. 0.7116      lattice (albedo) 0.280 .. 2.100
+        #:     wsum  min 0.000  p50 0.067  max 1.394    46% of pixels at the 0.05 guard
+        #:     acc/wsum never exceeded 0.28 = the lattice's own MINIMUM -> the field came out flat at the darkest sample
+        #:
+        #: **Standardising the guide puts it in the lattice's own units**: `(g - mean) / std` has the guide centred on
+        #: zero with unit spread, and scaling that by the lattice's spread puts the two in one space.  What survives is
+        #: exactly what the term is for -- a pixel whose brightness differs from a sample's *relative to the picture's
+        #: own contrast* gets less of that sample -- and what goes away is a comparison between a reflectance and a
+        #: voltage.
+        gs = float(g.std())
+        if gs > 1e-6:
+            _lo2, _hi2 = float(np.percentile(a, 5)), float(np.percentile(a, 95))
+            g = (g - float(g.mean())) / gs * max(1e-3, (_hi2 - _lo2) / 2.0) + float(a.mean())
         iqr = float(np.subtract(*np.percentile(g, [75, 25])))
-        sig_r = max(2e-3, 0.75 * iqr)
+        #: **The range sigma's floor is the spread of the VALUES being resampled, not 0.002, and the old floor is what
+        #: made the guided version collapse.**
+        #:
+        #: `sig_r` falls back to a floor when the guide has no interquartile spread -- which happens when the picture is
+        #: nearly flat, **or when the lattice carries few distinct values**.  At `2e-3` the range weight
+        #: `exp(-d^2 / (2 sig_r^2))` is zero for every difference the lattice can express, so `sum(w)` collapses from
+        #: below onto the `0.05` guard and **`sum(w*v)/sum(w)` becomes a ratio of two near-zero numbers** -- the same
+        #: divergence the comments above record, arriving by a different route.
+        #:
+        #: Measured on a lattice holding only the table's two extremes (0.280 dark clothing and 2.100 foliage, which is
+        #: what a plant against a dark background produces):
+        #:
+        #:     sig_r = 2e-3 (the old floor)      _resample -> min 0.2800  max 0.2800   ** collapsed to one value **
+        #:     sig_r floored at the field spread  _resample -> the lattice's own range
+        #:
+        #: **The floor is the spread of the values being interpolated**, because that is what the range term exists to
+        #: compare against: a difference larger than the field's own variation is a different material, and one smaller
+        #: than it is noise.  Anchoring to the *guide's* spread alone couples the kernel to the picture rather than to
+        #: the labels it is carrying.  0.05 is the hard floor, so the term can never be switched off entirely.
+        _field = np.asarray(a, np.float32).ravel()
+        fspread = float(np.percentile(_field, 75) - np.percentile(_field, 25))
+        sig_r = max(0.75 * iqr, 0.75 * fspread, 0.05)
     else:
         g = None
         sig_r = 1.0
     for j in ky:
         #: the row band this centre can reach, so a 540-row frame is not scanned 8 times
-        y0 = int(max(0, np.floor(cy[j] - 2.5 * sig_s)))
-        y1 = int(min(h, np.ceil(cy[j] + 2.5 * sig_s) + 1))
+        y0 = int(max(0, np.floor(cy[j] - 2.0 * sig_s)))
+        y1 = int(min(h, np.ceil(cy[j] + 2.0 * sig_s) + 1))
         if y1 <= y0:
             continue
         wy = np.exp(-((ys[y0:y1] - cy[j]) ** 2) / (2.0 * sig_s * sig_s)).astype(np.float32)[:, None]
         row = a[j][None, :]
         for i in kx:
-            x0 = int(max(0, np.floor(cx[i] - 2.5 * sig_s)))
-            x1 = int(min(w, np.ceil(cx[i] + 2.5 * sig_s) + 1))
+            x0 = int(max(0, np.floor(cx[i] - 2.0 * sig_s)))
+            x1 = int(min(w, np.ceil(cx[i] + 2.0 * sig_s) + 1))
             if x1 <= x0:
                 continue
             wx = np.exp(-((xs[x0:x1] - cx[i]) ** 2) / (2.0 * sig_s * sig_s)).astype(np.float32)[None, :]
@@ -382,7 +452,26 @@ def _resample(cell: np.ndarray, h: int, w: int, guide: np.ndarray | None = None)
                 wsp = wsp * np.exp(-((g[y0:y1, x0:x1] - val) ** 2) / (2.0 * sig_r * sig_r)).astype(np.float32)
             acc[y0:y1, x0:x1] += wsp * row[0, i]
             wsum[y0:y1, x0:x1] += wsp
-    return (acc / np.maximum(0.05, wsum)).astype(np.float32)
+    #: **The result cannot leave the range of the samples it was built from, which is the defining property of an
+    #: interpolation and was being violated.**
+    #:
+    #: This is the second time the guided reconstruction has diverged, and the same underlying reason both times:
+    #: `sum(w*v)/sum(w)` is unbounded when `sum(w)` gets small while `sum(w*v)` does not.  The first fix addressed the
+    #: *scales* -- a robust range sigma instead of `std`, and a floor on the total weight -- which was right and was
+    #: not enough, because the failure needs only one strong sample among weak ones.
+    #:
+    #: **Measured on the user's 2009 clip, where the subject is a plant and the labels are almost unanimous:**
+    #:
+    #:     the lattice's own values        0.320 (asphalt) .. 2.100 (foliage)
+    #:     what came out of the kernel     0.000 .. 6.127, std 1.455
+    #:
+    #: 62 of the 72 cells are `foliage` and a handful are `asphalt`, so the range sigma is small and a pixel near an
+    #: asphalt centre takes nearly all of its weight from that one sample -- while the weight sum, over four
+    #: neighbours, can still land near zero.  **The output is then a ratio of two small numbers and leaves the interval
+    #: its inputs live in.**  Clipping to the samples' own range is not a cosmetic guard: a value outside the convex
+    #: hull of its samples is not an interpolation of them, so the bound is what makes the interpolation claim true
+    #: rather than a limit placed on it.
+    return np.clip(acc / np.maximum(0.05, wsum), float(a.min()), float(a.max())).astype(np.float32)
 
 
 def mode_of(spec: NightVisionSpec) -> str:
