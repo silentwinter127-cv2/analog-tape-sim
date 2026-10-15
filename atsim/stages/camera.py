@@ -369,6 +369,15 @@ class CameraStage(Stage):
         return out
 
     def _night_vision(self, rgb: np.ndarray, stage: str, index: int | None = None) -> np.ndarray:
+        #: **The frame index is remembered, because the DISPLAY call does not receive one.**
+        #: `apply` calls this twice -- `("scene", buf.index)` and then `("display")` with no index -- and the read noise
+        #: is applied on the display side now, so without this the seed would be a constant 0 and **every frame would
+        #: carry the identical noise realisation**.  That is not a subtlety: `read_noise`'s own docstring says the noise
+        #: is deterministic in the frame index *so that an accumulator has something to average*, and a constant seed
+        #: removes exactly that.  Measured with a frame-varying source, `nv_read_noise` and `nv_shot_noise` moved the
+        #: sequence by 0.00000 -- because the noise was the same in every frame, so nothing temporal could see it.
+        if index is not None:
+            self._nv_index = int(index)
         """
         The night-vision terms, called twice per frame because they belong in two different places.
 
@@ -491,7 +500,8 @@ class CameraStage(Stage):
         #: have a noise floor of zero because the sensor's read noise is zero.**  They are two amplifiers.  The first
         #: version kept the coupling and the term was therefore skipped entirely at the default -- measured, the dark
         #: band stayed at 0.037 with the term "on".
-        out = monochrome_green(rgb, self.nv)
+        out = read_noise(rgb, self.nv, int(getattr(self, "_nv_index", 0)))
+        out = monochrome_green(out, self.nv)
         cn = float(np.clip(getattr(self.nv, "chroma_noise", 0.0), 0.0, 1.0))
         if cn > 1e-6:
             lum = np.clip(out @ np.array([0.299, 0.587, 0.114], np.float32), 0.0, 1.0)
