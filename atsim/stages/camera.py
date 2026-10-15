@@ -181,6 +181,11 @@ class CameraStage(Stage):
         #: lifts the highlights that are already too high.  `x ** gamma` with `gamma < 1` stretches the bottom and
         #: compresses the top with 0 and 1 fixed, which is the standard camera transfer and the shape that is needed.
         self.dsp_gamma = float(np.clip(cfg.get("dsp_gamma", 1.0), 0.3, 3.0))
+        #: The highlight shoulder.  See `_highlight_compress` for why neither `nv_highlight_saturation` nor
+        #: `dsp_gamma` could serve: the first is the desaturation drive (0.009 of p95 across a 2.5x sweep) and the
+        #: second is one curve that takes the shadows down as far as it brings the highlights back.
+        self.highlight_compress = float(np.clip(cfg.get("nv_highlight_compress", 1.0), 0.0, 1.0))
+        self.highlight_knee = float(np.clip(cfg.get("nv_highlight_knee", 0.85), 0.5, 0.99))
         #: the DSP's tone curve, as an offset from the identity -- see `_dsp_level`
         self.dsp_contrast = float(np.clip(cfg.get("dsp_contrast", 0.0), -0.8, 2.0))
         self._nir_albedo: np.ndarray | None = None
@@ -871,6 +876,55 @@ class CameraStage(Stage):
         gain = 1.0 - a * (1.0 - lum) ** 2
         return (rgb * gain[..., None]).astype(np.float32)
 
+    def _highlight_compress(self, rgb: np.ndarray) -> np.ndarray:
+        """
+        Soft-knee highlight compression: **the operation that decides how bright the brightest thing is.**
+
+        **Why it exists.**  With the black floor and the mid-tone matched to the user's real NIGHTSHOT 2 frame, the
+        model's `p95` is 0.9387 where the frame's is 0.8322 and **4.76% of the frame sits above 0.95 against 1.04%** --
+        so the top of the picture is pinned while the frame keeps its highlights apart.  That is "光感太差，不够通透":
+        a picture whose brightest areas all reach the ceiling has no room left to show that one thing is brighter than
+        another.
+
+        **And no existing parameter could fix it**, which was measured rather than assumed:
+
+            nv_highlight_saturation 2.0 -> 0.8    p95 0.9387 -> 0.9297   (0.009 for a 2.5x change)
+            dsp_gamma              0.60 -> 0.80   dark 20.6% -> 48.9%    (one curve, both ends)
+
+        so the shoulder had to be built.  Above the knee the excess passes through `1 - exp(-x)` instead of being added,
+        which **preserves the order of pixels**, keeps the knee's own value exact, and leaves everything below it
+        untouched -- so the black floor and the mid-tone this work just calibrated cannot be disturbed by it.
+
+        The knee comes from the frame: **0.85**, the level above which the real frame stops putting much.
+        """
+        amt = float(np.clip(getattr(self, "highlight_compress", 0.0), 0.0, 1.0))
+        if amt <= 1e-4:
+            return rgb
+        knee = float(np.clip(getattr(self, "highlight_knee", 0.85), 0.5, 0.99))
+        x = np.clip(rgb, 0.0, 1.0)
+        #: **The map sends `knee` to `knee` and `1.0` to `1.0` for every `amt`.**  The first version scaled by a gain
+        #: from the excess and did not: a saturated source came out at **0.890**, so no picture could contain pure
+        #: white -- the exact defect `_roll_off` was fixed for, reintroduced through a new mechanism, and the suite's
+        #: `a saturated highlight reaches pure white` caught it.
+        #:
+        #:     s   = (x - knee) / (1 - knee)          the excess, normalised
+        #:     out = knee + (1 - knee) * (s + amt * (s**2 - s))
+        #:
+        #: `s**2 <= s` on `[0, 1]`, so the correction is never positive and the curve lies below the identity; `s=0`
+        #: gives `knee` and `s=1` gives `1` exactly, whatever `amt` is -- so the black floor, the mid-tone and the white
+        #: point are all fixed and only the shoulder's shape moves.
+        peak = x.max(axis=-1, keepdims=True)
+        s_ex = np.clip((peak - knee) / max(1e-6, 1.0 - knee), 0.0, 1.0)
+        newp = knee + (1.0 - knee) * (s_ex + amt * (s_ex * s_ex - s_ex))
+        #: one scale for all three channels, so a highlight stays white instead of shifting hue
+        #: **p.where\ and NOT p.maximum\.**  With the maximum, a pixel below the knee had ewp = knee\ clamped
+        #: against its own peak and was **raised to 0.70**: measured on a grey ramp, inputs of 0.200 and of 0.500 both
+        #: came out at exactly **0.700**, so the whole shadow range was lifted onto the knee -- the frame's dark share
+        #: went 20.6% -> **0.0%** and its mean 0.3688 -> 0.6029.  p.where\ leaves everything at or below the knee
+        #: **untouched**, which is the property the black floor and the mid-tone calibration depends on.
+        scale = np.where(peak > knee, newp / np.maximum(1e-6, peak), 1.0)
+        return np.clip(x * scale, 0.0, 1.0).astype(np.float32)
+
     def _dsp_level(self, rgb: np.ndarray) -> np.ndarray:
         """
         The DSP's output level: **gain, and the black level it decides on.**
@@ -1403,6 +1457,7 @@ class CameraStage(Stage):
         # Last, and after the readout defects, because it is the stage that sets what the recorded signal *is*: the
         # gain the camera settles on and the black level it puts under it.  Everything before this is the signal.
         rgb = self._dsp_level(rgb)
+        rgb = self._highlight_compress(rgb)
 
         return FrameBuffer(np.clip(rgb, 0.0, 2.0).astype(np.float32), None,
                            buf.index, buf.time, buf.std, dict(buf.meta))
