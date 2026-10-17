@@ -519,6 +519,7 @@ class App:
                            "filter_kind": 0.0},    # gaussian: no group delay
                 "codec": {"dv_enabled": 0.0},
                 "rf": {"adjacent_channel": 0.0, "sync_loss_amount": 0.0},
+                "audio": {"enabled": 0.0},
             }
             neutral = _neutral_checked(neutral)
             r = Renderer(src, getattr(src, "width", 720), getattr(src, "height", 480),
@@ -710,6 +711,117 @@ class App:
             "fps": self.current.fps,
         }
 
+    def _source_audio_window(self, start_s: float, duration_s: float,
+                             sample_rate: int, spec) -> tuple[np.ndarray, bool]:
+        """
+        Fetch or synthesize a stereo float32 PCM window [start_s, start_s + duration_s).
+        Returns (pcm_array, is_synthetic).
+        """
+        from ..codecs.audio import synthesize_test_audio
+        from ..io.ffmpeg import read_audio_pcm
+        p = self.current
+        if p.source and int(round(spec.synth_type)) == 0:
+            clip = self.store.clip_path(p.source)
+            if clip.exists() and (p.source_info or {}).get("has_audio", False):
+                pcm = read_audio_pcm(clip, sample_rate=sample_rate,
+                                     start_s=max(0.0, float(start_s)),
+                                     duration_s=max(0.1, float(duration_s)))
+                if pcm is not None and len(pcm) > 0:
+                    target_n = max(1, int(round(duration_s * sample_rate)))
+                    if len(pcm) < target_n:
+                        pad = np.zeros((target_n - len(pcm), 2), dtype=np.float32)
+                        pcm = np.concatenate([pcm, pad], axis=0)
+                    else:
+                        pcm = pcm[:target_n]
+                    return pcm, False
+        kind = int(round(spec.synth_type)) if int(round(spec.synth_type)) > 0 else 1
+        pcm = synthesize_test_audio(duration_s, sample_rate=sample_rate,
+                                    kind=kind, seed=p.seed, start_s=start_s)
+        return pcm, True
+
+    def audio_window(self, start_s: float = 0.0, duration_s: float = 4.0,
+                     mode: str = "sim", sample_rate: int = 44100):
+        """
+        Render an audio window [start_s, start_s + duration_s) synchronized with the
+        exact video TapeStage defect plan at the same frame indices.
+        """
+        from ..codecs.audio import AudioSimulator, AudioSpec
+        r, src = self.renderer(True, 0.5)
+        fps = float(self.current.fps or 29.97)
+        start_s = max(0.0, float(start_s))
+        duration_s = float(np.clip(duration_s, 0.2, 60.0))
+        start_frame = max(0, int(round(start_s * fps)))
+        end_frame = start_frame + max(1, int(np.ceil(duration_s * fps))) + 2
+
+        tape_stage = (r.stage or {}).get("tape")
+        if tape_stage is not None and hasattr(tape_stage, "_ensure"):
+            tape_stage._ensure(end_frame)
+        tape_plan = getattr(tape_stage, "plan", None)
+
+        params = self.current.resolved_params()
+        spec = AudioSpec.from_params(params.get("audio", {}))
+        pcm_in, is_synth = self._source_audio_window(start_s, duration_s, sample_rate, spec)
+        sim = AudioSimulator(params, seed=self.current.seed, fps=fps,
+                             sample_rate=sample_rate)
+        if mode == "source":
+            faults = sim.extract_fault_envelope(start_frame, max(1, end_frame - start_frame), tape_plan)
+            from ..codecs.audio import AudioRun
+            return AudioRun(
+                pcm=pcm_in,
+                sample_rate=sample_rate,
+                start_s=start_s,
+                duration_s=duration_s,
+                effective_mode="source_clean",
+                fault_frames=faults,
+                summary={"effective_mode": "source_clean", "synthetic_source": is_synth},
+            )
+        run = sim.process(pcm_in, start_s=start_s, tape_plan=tape_plan)
+        run.summary["synthetic_source"] = is_synth
+        return run
+
+    def audio_wav(self, start_s: float = 0.0, duration_s: float = 4.0,
+                  mode: str = "sim", sample_rate: int = 44100,
+                  clean: bool = False) -> bytes:
+        from ..io.ffmpeg import wav_encode
+        if clean or mode in ("source", "original", "clean"):
+            mode = "source"
+        run = self.audio_window(start_s=start_s, duration_s=duration_s,
+                                mode=mode, sample_rate=sample_rate)
+        return wav_encode(run.pcm, sample_rate=run.sample_rate)
+
+    def audio_timeline(self, start_s: float = 0.0, duration_s: float = 4.0) -> dict:
+        """
+        Return the synchronized audio waveform envelope and per-frame A/V fault telemetry
+        for the WebUI oscilloscope and fault-sync strip.
+        """
+        run = self.audio_window(start_s=start_s, duration_s=duration_s,
+                                mode="sim", sample_rate=22050)
+        bins = 180
+        pcm = run.pcm
+        n = len(pcm)
+        step = max(1, n // bins)
+        trimmed = pcm[:step * bins].reshape(bins, step, 2) if n >= bins else pcm[None, :, :]
+        peak_l = np.max(np.abs(trimmed[:, :, 0]), axis=1).round(4).tolist()
+        peak_r = np.max(np.abs(trimmed[:, :, 1]), axis=1).round(4).tolist()
+        rms_b = np.sqrt(np.mean(trimmed ** 2, axis=(1, 2))).round(4).tolist()
+        wf_list = [
+            {"peak": round(float(max(pl, pr)), 4), "rms": round(float(rm), 4),
+             "peak_l": round(float(pl), 4), "peak_r": round(float(pr), 4)}
+            for pl, pr, rm in zip(peak_l, peak_r, rms_b)
+        ]
+        ff_dicts = [f.to_dict() for f in run.fault_frames]
+        return {
+            "start_s": round(run.start_s, 3),
+            "duration_s": round(run.duration_s, 3),
+            "fps": float(self.current.fps or 29.97),
+            "effective_mode": run.effective_mode,
+            "summary": run.summary,
+            "waveform": wf_list,
+            "waveform_channels": {"bins": len(peak_l), "peak_l": peak_l, "peak_r": peak_r, "rms": rms_b},
+            "frames": ff_dicts,
+            "fault_frames": ff_dicts,
+        }
+
     # ------------------------------------------------------------------
     def resolve_scale(self, raw_scale: str | float, default: float = 1.0) -> float:
         s_val = str(raw_scale).strip().lower()
@@ -756,10 +868,52 @@ class App:
             total = max(1, int(getattr(src, "frame_count", 1)))
             out_path = self.store.renders / f"{job_id}.mp4"
             audio_src = None
-            if keep_audio and project.source:
-                clip = self.store.clip_path(project.source)
-                if clip.exists():
-                    audio_src = str(clip)
+            sim_wav_path = None
+            resolved_p = project.resolved_params()
+            audio_cfg = resolved_p.get("audio", {})
+            audio_enabled = float(audio_cfg.get("enabled", 1.0)) > 0.5
+            if keep_audio:
+                try:
+                    from ..codecs.audio import AudioSimulator, AudioSpec, synthesize_test_audio
+                    from ..io.ffmpeg import read_audio_pcm, wav_encode
+                    spec_a = AudioSpec.from_params(audio_cfg)
+                    dur_s = max(1.0 / max(1.0, project.fps), total / max(1e-6, project.fps))
+                    sr = 44100
+                    pcm_in = None
+                    if project.source and int(round(spec_a.synth_type)) == 0:
+                        clip = self.store.clip_path(project.source)
+                        if clip.exists():
+                            pcm_in = read_audio_pcm(clip, sample_rate=sr, start_s=0.0, duration_s=dur_s)
+                    if pcm_in is None and int(round(spec_a.synth_type)) > 0:
+                        pcm_in = synthesize_test_audio(dur_s, sample_rate=sr,
+                                                       kind=int(round(spec_a.synth_type)),
+                                                       seed=project.seed, start_s=0.0)
+                    if pcm_in is not None:
+                        if audio_enabled:
+                            if r.chain is None:
+                                r._build_chain()
+                            t_stage = (r.stage or {}).get("tape")
+                            if t_stage is not None and hasattr(t_stage, "_ensure"):
+                                t_stage._ensure(total + 4)
+                            sim_a = AudioSimulator(resolved_p, seed=project.seed,
+                                                   fps=project.fps, sample_rate=sr)
+                            arun = sim_a.process(pcm_in, start_s=0.0,
+                                                 tape_plan=getattr(t_stage, "plan", None))
+                            pcm_out = arun.pcm
+                        else:
+                            pcm_out = pcm_in
+                        sim_wav_path = self.store.renders / f"{job_id}_audio.wav"
+                        sim_wav_path.write_bytes(wav_encode(pcm_out, sample_rate=sr))
+                        audio_src = str(sim_wav_path)
+                    elif project.source:
+                        clip = self.store.clip_path(project.source)
+                        if clip.exists():
+                            audio_src = str(clip)
+                except Exception:
+                    if project.source:
+                        clip = self.store.clip_path(project.source)
+                        if clip.exists():
+                            audio_src = str(clip)
 
             job.update(state="running", message="渲染中", total=total)
             with VideoWriter(out_path, width, height, project.fps, crf=crf,
@@ -848,6 +1002,21 @@ def make_handler(app: App):
                             'attachment; filename="atsim-config-%s.json"' % stamp})
                 if path == "/api/timeline":
                     return self._json(app.timeline())
+                if path == "/api/audio":
+                    t = float((q.get("t") or ["0"])[0])
+                    dur = float((q.get("dur") or q.get("duration") or ["4.0"])[0])
+                    mode = str((q.get("mode") or ["sim"])[0])
+                    sr = int(np.clip(int((q.get("sr") or ["44100"])[0]), 8000, 48000))
+                    wav_bytes = app.audio_wav(start_s=t, duration_s=dur, mode=mode, sample_rate=sr)
+                    dl = (q.get("download") or ["0"])[0] in ("1", "true", "yes")
+                    headers = {}
+                    if dl:
+                        headers["Content-Disposition"] = f'attachment; filename="atsim_audio_{t:.2f}s.wav"'
+                    return self._send(200, wav_bytes, "audio/wav", headers)
+                if path == "/api/audio_timeline":
+                    t = float((q.get("t") or ["0"])[0])
+                    dur = float((q.get("dur") or q.get("duration") or ["4.0"])[0])
+                    return self._json(app.audio_timeline(start_s=t, duration_s=dur))
                 if path == "/api/frame":
                     t = float((q.get("t") or ["0"])[0])
                     scale = app.resolve_scale((q.get("scale") or ["0.5"])[0], default=0.5)

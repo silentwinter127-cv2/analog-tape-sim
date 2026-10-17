@@ -130,7 +130,7 @@ def check_engine() -> None:
     got = set(S.layer_names())
     # exactly the expected set: adding a layer has to be deliberate, which is why this is an equality
     want = {"camera", "format", "codec", "connector", "rf", "tape", "player", "display",
-            "overlay"}
+            "overlay", "audio"}
     record("device layers", "camera..display all present",
            f"{len(got)} layers, missing={sorted(want - got) or 'none'}", got == want)
 
@@ -4658,5 +4658,130 @@ def check_chroma_lag() -> None:
            d_still < 1e-6 and d_moved > 0.02,
            "a spatial blur would move both, and would move the still one most, because a still object is what a "
            "blur has to work with")
+
+
+def check_audio_simulation_and_av_sync() -> None:
+    """
+    Audio simulation & strict Audio-Video fault synchronization verification.
+    """
+    print("\naudio simulation & A/V fault sync")
+    from atsim.codecs.audio import AudioSimulator, synthesize_test_audio
+    from atsim.io.source import SyntheticSource
+    from atsim.render.renderer import Renderer
+    from atsim.core.profiles import SCHEMA
+
+    fps = 29.97
+    n_frames = 30
+    dur = n_frames / fps
+    sr = 44100
+    src_clip = SyntheticSource(width=180, height=120, fps=fps, frames=n_frames)
+    clean_pcm = synthesize_test_audio(dur, sample_rate=sr, kind=1, fps=fps)
+
+    # 1. Clean baseline vs VHS Linear Track vs VHS Hi-Fi AFM bandwidth & hiss
+    p_linear = SCHEMA.resolve_all({
+        "audio": {"enabled": 1.0, "mode": 1.0, "hiss": 0.35, "wow_flutter": 0.0, "saturation": 0.25},
+        "tape": {"dropout_rate": 0.0, "head_clog": 0.0, "head_switching": 0.0, "line_jitter": 0.0, "walk_amplitude": 0.0},
+    })
+    r_lin = Renderer(src_clip, 180, 120, fps, p_linear, seed=20240101, preview=True)
+    sim_lin = AudioSimulator(r_lin, sample_rate=sr)
+    run_lin = sim_lin.simulate(clean_pcm, 0.0, dur)
+
+    record("audio shape preserved", "output stereo PCM matches input shape",
+           f"shape={run_lin.pcm.shape}", run_lin.pcm.shape == clean_pcm.shape)
+
+    # Verify high-frequency roll-off on VHS linear track using chirp/tick test signal
+    chirp_pcm = synthesize_test_audio(dur, sample_rate=sr, kind=2, fps=fps)
+    p_hifi_clean = SCHEMA.resolve_all({
+        "audio": {"enabled": 1.0, "mode": 2.0, "hiss": 0.02, "wow_flutter": 0.0},
+        "tape": {"dropout_rate": 0.0, "head_clog": 0.0, "head_switching": 0.0},
+    })
+    r_hifi_clean = Renderer(src_clip, 180, 120, fps, p_hifi_clean, seed=20240101, preview=True)
+    pcm_lin_chirp = AudioSimulator(r_lin, sample_rate=sr).simulate(chirp_pcm, 0.0, dur).pcm[:, 0]
+    pcm_hifi_chirp = AudioSimulator(r_hifi_clean, sample_rate=sr).simulate(chirp_pcm, 0.0, dur).pcm[:, 0]
+    spec_lin = np.abs(np.fft.rfft(pcm_lin_chirp))
+    spec_hifi = np.abs(np.fft.rfft(pcm_hifi_chirp))
+    freqs = np.fft.rfftfreq(pcm_lin_chirp.size, d=1.0 / sr)
+    hf_band = (freqs >= 8500.0) & (freqs <= 16000.0)
+    hf_ratio = float(spec_lin[hf_band].mean() / max(1e-9, spec_hifi[hf_band].mean()))
+    record("audio linear vs hifi bw", "VHS linear track attenuates >8.5kHz (<0.35x of Hi-Fi)",
+           f"HF ratio (8.5-16kHz) = {hf_ratio:.3f}x", hf_ratio < 0.35)
+
+    # 2. Exact Frame & Scanline Synchronization of Video Dropouts -> Hi-Fi AFM Unlock & Static Burst
+    p_drop = SCHEMA.resolve_all({
+        "audio": {"enabled": 1.0, "mode": 2.0, "fault_sync": 1.0, "afm_switch_pop": 0.85,
+                  "dropout_crack": 0.80, "hiss": 0.02, "wow_flutter": 0.0, "head_switch_buzz": 0.0},
+        "tape": {"dropout_rate": 0.0, "head_clog": 0.0, "head_switching": 0.0,
+                 "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0},
+    })
+    r_drop = Renderer(src_clip, 180, 120, fps, p_drop, seed=20240101, preview=True)
+    r_drop._build_chain()
+    tape_st = r_drop.stage["tape"]
+    tape_st._ensure(n_frames)
+    from atsim.stages.tape import DropoutEvent
+    tape_st.plan.dropouts = [
+        DropoutEvent(start_frame=12, frames=3, position_s=12 / fps, duration_s=3 / fps,
+                     row=30, rows=45, col=0, cols=180, field=0, severity=1.2)
+    ]
+    run_drop = AudioSimulator(r_drop, sample_rate=sr).simulate(clean_pcm, 0.0, dur)
+    unlocked_frames = [f.frame_index for f in run_drop.frames if f.afm_unlock]
+    clean_frames = [f.frame_index for f in run_drop.frames if not f.afm_unlock]
+    record("audio av sync dropout frames", "Hi-Fi AFM unlocks on exact video dropout frames [12, 13, 14]",
+           f"unlocked={unlocked_frames}", unlocked_frames == [12, 13, 14] and len(clean_frames) == n_frames - 3)
+
+    run_nodrop = AudioSimulator(r_hifi_clean, sample_rate=sr).simulate(clean_pcm, 0.0, dur)
+    diff_wave = np.abs(run_drop.pcm[:, 0] - run_nodrop.pcm[:, 0])
+    s_f12 = int(round((12 / fps) * sr))
+    s_f15 = int(round((15 / fps) * sr))
+    err_in_dropout = float(diff_wave[s_f12:s_f15].mean())
+    err_outside = float(np.concatenate([diff_wave[:s_f12 - 200], diff_wave[s_f15 + 400:]]).mean())
+    record("audio av sync waveform loc", "audio glitch localized to video dropout window (>4.5x outside)",
+           f"in_dropout={err_in_dropout:.4f} vs outside={err_outside:.4f}",
+           err_in_dropout > err_outside * 4.5 and err_in_dropout > 0.05)
+
+    # 3. Synchronous Stiction / Transport Jitter -> Pitch Warble (Wow & Flutter)
+    p_stic = SCHEMA.resolve_all({
+        "audio": {"enabled": 1.0, "mode": 1.0, "fault_sync": 1.0, "wow_flutter": 0.65, "hiss": 0.0},
+        "tape": {"stiction_rate": 0.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0},
+    })
+    r_stic = Renderer(src_clip, 180, 120, fps, p_stic, seed=20240101, preview=True)
+    r_stic._build_chain()
+    tape_stic = r_stic.stage["tape"]
+    tape_stic._ensure(n_frames)
+    from atsim.codecs.stiction import StictionEvent
+    tape_stic.plan.stiction = [
+        StictionEvent(start_frame=18, frames=3, position_s=18.0/fps, duration_s=3.0/fps, magnitude=24.0, severity=0.85, rise=0.45, field=0)
+    ]
+    run_stic = AudioSimulator(r_stic, sample_rate=sr).simulate(clean_pcm, 0.0, dur)
+    pitch_stic = max(abs(run_stic.frames[f].pitch_shift_cents) for f in range(18, 23))
+    pitch_calm = max(abs(run_stic.frames[f].pitch_shift_cents) for f in range(0, 10))
+    record("audio av sync stiction pitch", "tape stiction grab causes synchronous pitch slur (>18 cents)",
+           f"stiction={pitch_stic:.1f}c vs calm={pitch_calm:.1f}c",
+           pitch_stic > 18.0 and pitch_stic > pitch_calm * 4.0)
+
+    # 4. Connector Faults: HDMI Link Drop -> Synchronous Digital Audio Mute
+    p_hdmi_dead = SCHEMA.resolve_all({
+        "connector": {"hdmi_present": 1.0, "hdmi_moisture": 0.0, "hdmi_corrosion": 0.98},
+        "audio": {"enabled": 1.0, "fault_sync": 1.0},
+    })
+    r_hdmi = Renderer(src_clip, 180, 120, fps, p_hdmi_dead, seed=20240101, preview=True)
+    v_frame_hdmi = r_hdmi.render_frame(0)
+    a_run_hdmi = AudioSimulator(r_hdmi, sample_rate=sr).simulate(clean_pcm, 0.0, 0.25)
+    record("audio av sync hdmi drop", "HDMI link failure drops both video and digital audio to zero",
+           f"video_max={float(np.abs(v_frame_hdmi).max()):.5f}, audio_max={float(np.abs(a_run_hdmi.pcm).max()):.5f}",
+           float(np.abs(v_frame_hdmi).max()) < 1e-5 and float(np.abs(a_run_hdmi.pcm).max()) < 1e-5)
+
+    # 5. WebUI Server Endpoints (/api/audio and /api/audio_timeline)
+    import tempfile
+    from pathlib import Path
+    from atsim.web.server import App
+    with tempfile.TemporaryDirectory() as tmpdir:
+        app = App(Path(tmpdir))
+        wav_bytes = app.audio_wav(0.0, 0.5, clean=False)
+        tl_dict = app.audio_timeline(0.0, 1.0)
+        record("audio webui endpoints", "/api/audio and /api/audio_timeline return WAV and sync envelope",
+               f"wav={len(wav_bytes)}B, frames={len(tl_dict.get('frames', []))}",
+               wav_bytes[:4] == b"RIFF" and len(wav_bytes) > 10000 and len(tl_dict.get("frames", [])) >= 10)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

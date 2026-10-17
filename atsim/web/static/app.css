@@ -434,3 +434,28 @@ button.kfNav {
   cursor: pointer;
 }
 button.kfNav:hover { color: #ffd166; border-color: #ffd166; }
+
+/* --- 模拟音频监听与音画故障同步示波条 --- */
+.audioBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+#audioScope {
+  flex: 1;
+  height: 34px;
+  background: #100e0c;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  cursor: pointer;
+}
+#audioFaultBadge {
+  min-width: 190px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+}

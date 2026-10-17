@@ -24,6 +24,7 @@ LAYER_LABELS = {
     "player": "04 读取解码 (播放设备)",
     "display": "05 显示设备 (CRT)",
     "overlay": "06 字幕机",
+    "audio": "07 音频系统 (模拟/磁带伴音)",
 }
 
 
@@ -1416,7 +1417,6 @@ def build_schema() -> ParamSchema:
                     "而不只是变暗。同一个潮湿房间里，新机器看起来发白、旧机器发绿，"
                     "差别就在这里——这是**显示器**的属性，不是录制里的偏色。")
 
-    _apply_unit_spreads(s)
     # --- 字幕机（字符发生器）----------------------------------------------------
     # **字符发生器不是排版引擎。** OSD 芯片有字模 ROM、每字一个固定字格、一个位置寄存器；
     # 它把字形画进格子，**不测量、不调字距、不换行、不重排**。这不是简化，而是这台设备实际做的事，
@@ -1522,6 +1522,76 @@ def build_schema() -> ParamSchema:
                     "2 红字黑边（REC 经典）、3 白字黑边、4 黄字黑边、5 青字黑边。"
                     "**0 以外的值会覆盖上面那些颜色参数。**")
 
+    # ------------------------------------------------------------------ G
+    # Audio simulation layer: physical analog/digital-tape audio & A/V fault sync
+    aud = s.layer("audio")
+    g = "伴音制式与音源"
+    aud.define("enabled", "启用音频模拟", 1.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="系统架构",
+               help="开启后，导入素材的原声（或无声素材的内置参考音源）会经过与画面完全同源的模拟/磁带音频链路处理。")
+    aud.define("mode", "伴音轨制式", 0.0, 0.0, 5.0, unit="0-5", group=g, step=1.0,
+               phys_min=0.0, phys_max=5.0,
+               source="IEC 60774 (VHS Hi-Fi) / IEC 61834 (DV) / ISO 11172-3",
+               help="0=自动跟随视频制式，1=VHS 纵向线性磁迹，2=VHS Hi-Fi 深层调频立体声（故障自动回退线性轨），"
+                    "3=8mm/Hi8 AFM 调频伴音，4=MiniDV 12-bit PCM 数字伴音，5=VCD MP2 子带量化伴音。")
+    aud.define("synth_type", "无声素材测试音源", 0.0, 0.0, 2.0, unit="0-2", group=g, step=1.0,
+               phys_min=0.0, phys_max=2.0, source="内置参考信号发生器",
+               help="当使用内置测试图、静帧或无音轨视频时自动生成的测试音源："
+                    "0=复古合成器弦乐+琶音+节拍，1=广播校准双音(1kHz/440Hz+高频导频)，2=人声共振峰+同步节拍器。")
+    aud.define("master_gain", "输出主增益", 1.0, 0.0, 2.0, unit="x", group=g,
+               phys_min=0.5, phys_max=1.5, source="工程标定",
+               help="模拟链路末端的音频输出电平。")
+
+    g = "磁头频响与Hi-Fi切换"
+    aud.define("hifi_unlock_thresh", "Hi-Fi 失锁回退阈值", 0.32, 0.05, 1.0, unit="0-1", group=g,
+               phys_min=0.20, phys_max=0.55, source="JVC HR-D725U Hi-Fi 选轨电路手册",
+               help="VHS Hi-Fi 旋转磁头遇到磁粉脱落、折痕或循迹失锁超过该阈值时，"
+                    "FM 限幅器瞬间失锁爆音并自动切回沉闷的纵向线性伴音轨。")
+    aud.define("linear_bandwidth", "线性轨高频截止", 7500.0, 800.0, 16000.0, unit="Hz", group=g,
+               phys_min=2500.0, phys_max=10000.0, source="VHS 纵向音频规范 (SP ~8kHz, EP ~3kHz)",
+               help="VHS 纵向线性音频轨在 SP 速度下的标称上限频率；切换到 LP/EP 慢录时会自动随带速按比例缩窄。")
+    aud.define("azimuth_loss", "磁头方位角偏斜", 0.22, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.65, source="Wallace 磁头间隙与方位角损耗公式",
+               help="音频磁头缝隙与磁迹倾角不匹配：导致高频滚降，并在左右声道之间产生微秒级相位偏斜。")
+
+    g = "走带机构与音画故障同步"
+    aud.define("wow_flutter", "主导轴抖晃 (Wow & Flutter)", 0.35, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.05, phys_max=0.85, source="IEC 60386 抖晃测量规范",
+               help="与视频行相位误差 (line_phase) 及场垂直抖动 (frame_dy) 严格同源的音高抖晃："
+                    "画面横移撕裂的同一毫秒，音高同步发生漂移。")
+    aud.define("stiction_pitch", "粘滑卡滞变调深度", 0.65, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.20, phys_max=1.0, source="AMPEX 粘滑综合征机械张力模型",
+               help="磁带受潮粘连主导轴 (stiction) 时的瞬态音高骤降与释放回弹超调，与画面横向撕裂帧精确对齐。")
+    aud.define("dropout_sensitivity", "失落/折痕/糊头耦合度", 0.55, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.20, phys_max=1.0, source="音画同源介质缺陷模型",
+               help="画面出现白斑失落 (dropout)、折痕 (crease)、糊头 (head_clog) 或基带开裂 (base_cracking) 时，"
+                    "伴音在同一扫描行时刻同步产生的瞬态闷音、FM 爆音、低频撞击声与裂纹脉冲。")
+
+    g = "接口串扰与电磁干扰"
+    aud.define("head_switch_buzz", "磁头切换脉冲哼声", 0.30, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.05, phys_max=0.70, source="VHS 旋转磁鼓换向瞬态串扰",
+               help="视频磁鼓每场切换 (59.94Hz NTSC / 50Hz PAL) 及循迹误差串入音频通道产生的周期性脉冲锯齿嗡声。")
+    aud.define("ground_hum", "AV 接地环路交流声", 0.20, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.65, source="IEC 接地环路与氧化接触整流模型",
+               help="与 AV 复合接口受潮/锈蚀及画面滚动亮带同源的 50Hz/60Hz 电源工频交流哼声及整流谐波。")
+    aud.define("rf_buzz", "RF 伴音载波串扰 (Intercarrier Buzz)", 0.30, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.80, source="NTSC/PAL 差拍伴音 (4.5/5.5MHz) 鉴频模型",
+               help="RF 射频调制/高频头受潮失锁时，画面亮带过调制与行钳位奔涌串入伴音载波产生的粗粝蜂鸣与静噪爆发。")
+
+    g = "磁饱和、底噪与扬声器"
+    aud.define("saturation", "磁饱和非线性失真", 0.30, 0.0, 1.2, unit="0-1", group=g,
+               phys_min=0.05, phys_max=0.75, source="Jiles-Atherton 磁滞回线近似",
+               help="磁粉剩磁饱和曲线 (tanh + 偶次/奇次谐波)：大动态电平软削波并带来模拟磁带的温暖厚重感。")
+    aud.define("hiss_floor", "磁粉颗粒底噪 (Tape Hiss)", 0.22, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.05, phys_max=0.65, source="磁带热磁噪声模型",
+               help="氧化铁/金属磁粉颗粒与 FM 鉴频器的本底嘶声；在 LP/EP 慢速模式下自动随信噪比损失抬升。")
+    aud.define("speaker_sim", "CRT 电视机腔体箱体声", 0.35, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.85, source="消费级 CRT 电视声学测量",
+               help="模拟老式 CRT 电视机 3 英寸塑料腔体扬声器的频响（切除 185Hz 以下低频、1.1kHz 中频共鸣峰与 5.8kHz 以上纸盆滚降）。")
+    aud.define("flyback_whine", "CRT 行输出高压包啸叫", 0.15, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.50, source="CRT 行逆程变压器声学辐射",
+               help="CRT 显像管开启时，15,734Hz (NTSC) / 15,625Hz (PAL) 行扫描高压包磁芯振动串入伴音的微弱高频啸叫。")
+
     return s
 
 
@@ -1583,6 +1653,13 @@ UNIT_SPREADS: dict[str, tuple[float, str]] = {
     "interlace_flicker": (0.10, "field timing and phosphor persistence"),
     "crt_age": (0.30, "hours of use, not the model"),
     "bloom": (0.10, "high-voltage regulation per set"),
+    # audio -- fixed head azimuth screw, capstan roller eccentricity, preamp noise
+    "azimuth_loss": (0.10, "fixed audio head azimuth screw alignment"),
+    "wow_flutter": (0.12, "capstan roller eccentricity and belt tension"),
+    "hiss_floor": (0.08, "playback preamp transistor noise figure"),
+    "head_switch_buzz": (0.10, "rotary transformer cross-coupling tolerance"),
+    "hifi_unlock_thresh": (0.08, "AFM DOC envelope comparator threshold"),
+    "linear_bandwidth": (0.06, "audio head gap wear"),
 }
 
 
@@ -2554,3 +2631,19 @@ FACTORY_PRESETS["rental_tape_horror"] = FACTORY_PRESETS["rental_tape_worn"]
 
 # resolve_preset is defined above; expose it from the package's public names
 __all__ = [n for n in dir() if not n.startswith("_")]
+
+
+# Attach per-unit tolerances (UNIT_SPREADS) to SCHEMA parameter specs
+UNIT_SPREADS.update({
+    "wow_flutter": (0.22, "capstan belt eccentricity and flywheel bearing wear vary per deck"),
+    "azimuth_loss": (0.28, "audio head azimuth screw alignment tolerance"),
+    "hiss_floor": (0.15, "replay head preamplifier noise figure tolerance"),
+    "head_switch_buzz": (0.12, "audio head shield and switching transient tolerance"),
+})
+for _lay in SCHEMA.layer_names():
+    for _key, _spec in SCHEMA.layer(_lay).specs.items():
+        if _key in UNIT_SPREADS:
+            _sp, _note = UNIT_SPREADS[_key]
+            _spec.unit_spread = float(_sp)
+            _spec.unit_note = str(_note)
+

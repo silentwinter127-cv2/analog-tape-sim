@@ -86,6 +86,14 @@
       <label class="chk"><input id="autoRefresh" type="checkbox" checked> 自动刷新</label>
       <label class="chk"><input id="engineGraph" type="checkbox"> 用节点图渲染</label>
     </div>
+    <div class="audioBar" id="audioBar">
+      <button id="btnAudioPlay" class="ghost" title="试听当前时间点附近的模拟伴音与音画同步故障（移动游标联动视频帧）">▶ 试听伴音 (3s)</button>
+      <label class="chk" title="切换试听经过模拟设备后的伴音 vs 未经模拟的原始伴音"><input id="audioClean" type="checkbox"> 原始伴音对比</label>
+      <label class="chk" title="播放伴音时自动同步推进视频帧，直观观察音画同步故障"><input id="audioSyncPlay" type="checkbox" checked> 音画联动</label>
+      <canvas id="audioScope" width="520" height="34" title="点击跳转时间点 · 上半部：双声道模拟波形 · 下半部：音画同步故障包络（红=磁带失落/AFM切换，橙=磁头切换脉冲，蓝=走带抖晃，紫=接口/RF干扰）"></canvas>
+      <span id="audioFaultBadge" class="badge">伴音就绪</span>
+      <audio id="audioPlayer" preload="none" style="display:none"></audio>
+    </div>
     <div class="timeline" id="tlStrip">
       <div class="tl-label">信号链</div>
       <div class="tl-track" id="tlTrack"></div>

@@ -302,6 +302,80 @@ def extract_audio(path: str | Path, out_path: str | Path, fmt: str = "wav") -> b
     return run(cmd).returncode == 0
 
 
+def wav_encode(samples: np.ndarray, sample_rate: int = 44100) -> bytes:
+    """
+    Encode stereo or mono float32 [-1.0, 1.0] PCM into a standard 16-bit RIFF WAV byte buffer.
+    Built with struct + NumPy so audio preview and muxing need zero external audio libraries.
+    """
+    import struct
+    arr = np.asarray(samples, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = np.stack([arr, arr], axis=-1)
+    elif arr.shape[1] == 1:
+        arr = np.repeat(arr, 2, axis=1)
+    else:
+        arr = arr[:, :2]
+    pcm16 = np.clip(np.round(arr * 32767.0), -32768, 32767).astype("<i2")
+    raw = pcm16.tobytes()
+    n_ch = 2
+    sr = int(sample_rate)
+    byte_rate = sr * n_ch * 2
+    block_align = n_ch * 2
+    data_size = len(raw)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        n_ch,
+        sr,
+        byte_rate,
+        block_align,
+        16,
+        b"data",
+        data_size,
+    )
+    return header + raw
+
+
+def read_audio_pcm(path: str | Path, sample_rate: int = 44100,
+                   start_s: float = 0.0, duration_s: float | None = None
+                   ) -> np.ndarray | None:
+    """
+    Decode stereo float32 PCM from a media file via FFmpeg.
+    Returns shape (N, 2) in [-1, 1], or None if the file has no audio stream or FFmpeg fails.
+    """
+    cmd = [resolve_tool("ffmpeg", FFMPEG), "-v", "error", "-nostdin"]
+    if start_s > 1e-4:
+        cmd += ["-ss", f"{float(start_s):.4f}"]
+    cmd += ["-i", str(path)]
+    if duration_s is not None and duration_s > 0:
+        cmd += ["-t", f"{float(duration_s):.4f}"]
+    cmd += [
+        "-vn",
+        "-ac", "2",
+        "-ar", str(int(sample_rate)),
+        "-f", "f32le",
+        "-acodec", "pcm_f32le",
+        "pipe:1",
+    ]
+    try:
+        r = run(cmd)
+        if r.returncode != 0 or not r.stdout:
+            return None
+        n_floats = len(r.stdout) // 4
+        n_frames = n_floats // 2
+        if n_frames <= 0:
+            return None
+        arr = np.frombuffer(r.stdout[:n_frames * 8], dtype="<f4").reshape(n_frames, 2)
+        return np.clip(arr.copy(), -1.0, 1.0)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 class VideoWriter:
     """Pipes RGB frames into FFmpeg."""

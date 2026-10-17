@@ -173,6 +173,7 @@ function wireChrome() {
   $("jobClose").onclick = () => $("jobbar").classList.add("hidden");
   initDivider();
   layoutAB();
+  initAudioMonitor();
 }
 
 function jsonPost(obj) {
@@ -395,6 +396,19 @@ const SELECTORS = {
     [6, "6 · 左下"],
     [7, "7 · 下中（字幕常用）"],
     [8, "8 · 右下（录像机常用）"],
+  ],
+  "audio.mode": [
+    [0, "自动（跟随磁带/编码格式）"],
+    [1, "VHS 线性磁迹（窄带 + 磁带嘶声 + 明显抖晃）"],
+    [2, "VHS Hi-Fi AFM 立体声（失落时回退线性磁迹 + 切换爆音）"],
+    [3, "8mm / Hi8 AFM 调频伴音"],
+    [4, "MiniDV 12-bit 非线性 PCM（数字静音/保持块故障）"],
+    [5, "Video CD MP2 低码率数字伴音"],
+  ],
+  "audio.synth_type": [
+    [0, "和弦 + 节拍脉冲（综合测试音画同步与音高抖晃）"],
+    [1, "1 kHz 基准正弦波（测试抖晃与谐波失真）"],
+    [2, "扫频 + 瞬态滴答（测试频响带宽与瞬态失落）"],
   ],
 };
 
@@ -708,6 +722,7 @@ async function refreshPreview() {
       `${ms.toFixed(0)} ms/帧 · t=${S.t.toFixed(2)}s`;
     const tl = await api("/api/timeline");
     paintTimeline(tl);
+    refreshAudioTimeline();
     if (typeof refreshGraphPerf === "function") await refreshGraphPerf();
   } catch (e) {
     // After the boot handler has replaced the body, `badge` no longer exists --
@@ -853,6 +868,187 @@ function toast(msg) {
   b.textContent = msg;
   b.style.color = "#d9614c";
   setTimeout(() => { b.style.color = ""; }, 2500);
+}
+
+
+/* --------------------------------------------------------------- audio monitor & A/V sync scope */
+let _audioTl = null;
+let _audioRaf = null;
+let _audioWinStart = 0.0;
+let _audioWinDur = 3.0;
+
+function initAudioMonitor() {
+  const btn = $("btnAudioPlay");
+  const player = $("audioPlayer");
+  const scope = $("audioScope");
+  if (!btn || !player || !scope) return;
+
+  btn.onclick = () => {
+    if (!player.paused) {
+      player.pause();
+      return;
+    }
+    const clean = $("audioClean") && $("audioClean").checked ? "original" : "sim";
+    _audioWinDur = 3.0;
+    _audioWinStart = Math.max(0, S.t);
+    player.src = `/api/audio?t=${_audioWinStart.toFixed(3)}&dur=${_audioWinDur}&mode=${clean}&_=${Date.now()}`;
+    btn.textContent = "加载伴音…";
+    player.play().then(() => {
+      btn.textContent = "⏹ 停止试听";
+      pumpAudioSyncCursor();
+    }).catch((err) => {
+      btn.textContent = "▶ 试听伴音 (3s)";
+      toast("音频播放失败：" + err.message);
+    });
+  };
+
+  player.onended = () => {
+    btn.textContent = "▶ 试听伴音 (3s)";
+    if (_audioRaf) cancelAnimationFrame(_audioRaf);
+    drawAudioScope();
+  };
+  player.onpause = () => {
+    btn.textContent = "▶ 试听伴音 (3s)";
+    if (_audioRaf) cancelAnimationFrame(_audioRaf);
+    drawAudioScope();
+  };
+
+  scope.onclick = (ev) => {
+    const r = scope.getBoundingClientRect();
+    const frac = Math.min(Math.max((ev.clientX - r.left) / Math.max(1, r.width), 0), 1);
+    const tNew = _audioWinStart + frac * _audioWinDur;
+    S.t = Math.max(0, Math.min(10, tNew));
+    const slider = $("timeSlider");
+    if (slider) slider.value = S.t;
+    const lbl = $("timeLabel");
+    if (lbl) lbl.textContent = `t = ${S.t.toFixed(2)} s`;
+    refreshPreview();
+  };
+}
+
+function pumpAudioSyncCursor() {
+  const player = $("audioPlayer");
+  if (!player || player.paused) return;
+  const curT = _audioWinStart + (player.currentTime || 0);
+  drawAudioScope(curT);
+  if ($("audioSyncPlay") && $("audioSyncPlay").checked && !S.busy) {
+    if (Math.abs(curT - S.t) >= (1.0 / ((_audioTl && _audioTl.fps) || 29.97))) {
+      S.t = Math.min(10.0, curT);
+      const slider = $("timeSlider");
+      if (slider) slider.value = S.t;
+      const lbl = $("timeLabel");
+      if (lbl) lbl.textContent = `t = ${S.t.toFixed(2)} s`;
+      refreshPreview();
+    }
+  }
+  _audioRaf = requestAnimationFrame(pumpAudioSyncCursor);
+}
+
+async function refreshAudioTimeline() {
+  const scope = $("audioScope");
+  if (!scope) return;
+  try {
+    _audioWinDur = 3.0;
+    const start = Math.max(0, Math.floor(S.t / 1.5) * 1.5);
+    _audioWinStart = start;
+    _audioTl = await api(`/api/audio_timeline?t=${start.toFixed(2)}&dur=${_audioWinDur}`);
+    drawAudioScope(S.t);
+  } catch (e) {
+    console.warn("audio_timeline error:", e);
+  }
+}
+
+function drawAudioScope(cursorT) {
+  const scope = $("audioScope");
+  if (!scope || !_audioTl) return;
+  const ctx = scope.getContext("2d");
+  const w = scope.width, h = scope.height;
+  ctx.clearRect(0, 0, w, h);
+
+  ctx.fillStyle = "#100e0c";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = "#26211c";
+  ctx.beginPath();
+  ctx.moveTo(0, 11); ctx.lineTo(w, 11);
+  ctx.moveTo(0, 22); ctx.lineTo(w, 22);
+  ctx.stroke();
+
+  const wf = _audioTl.waveform || [];
+  if (wf.length > 0) {
+    ctx.strokeStyle = "#7fbf6a";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < wf.length; i++) {
+      const x = (i / wf.length) * w;
+      const pk = Math.min(1.0, wf[i].peak || 0);
+      const y0 = 11 - pk * 10;
+      const y1 = 11 + pk * 10;
+      ctx.moveTo(x, y0);
+      ctx.lineTo(x, y1);
+    }
+    ctx.stroke();
+  }
+
+  const frames = _audioTl.frames || [];
+  let curFrameFault = null;
+  const tRef = cursorT !== undefined ? cursorT : S.t;
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    const x0 = (i / Math.max(1, frames.length)) * w;
+    const bw = Math.max(2, w / Math.max(1, frames.length));
+    if (Math.abs((f.time_s || 0) - tRef) < (0.65 / (_audioTl.fps || 30))) {
+      curFrameFault = f;
+    }
+    if ((f.dropout || 0) > 0.02 || f.afm_unlock) {
+      ctx.fillStyle = f.afm_unlock ? "rgba(217, 97, 76, 0.92)" : "rgba(217, 97, 76, 0.55)";
+      ctx.fillRect(x0, 23, bw, 5);
+    }
+    if ((f.head_switch_buzz || 0) > 0.05) {
+      ctx.fillStyle = "rgba(232, 163, 61, 0.75)";
+      ctx.fillRect(x0, 28, bw, 3);
+    }
+    if (Math.abs(f.pitch_cents || 0) > 4.0) {
+      ctx.fillStyle = "rgba(104, 168, 214, 0.78)";
+      ctx.fillRect(x0, 31, bw, 3);
+    }
+    if ((f.hum_buzz || 0) > 0.02 || f.hdmi_drop) {
+      ctx.fillStyle = "rgba(186, 120, 214, 0.80)";
+      ctx.fillRect(x0, 23, bw, 11);
+    }
+  }
+
+  const frac = ((tRef - _audioWinStart) / Math.max(0.001, _audioWinDur));
+  if (frac >= 0 && frac <= 1) {
+    const cx = frac * w;
+    ctx.strokeStyle = "#f2c14e";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, h);
+    ctx.stroke();
+  }
+
+  const badge = $("audioFaultBadge");
+  if (badge) {
+    const modeLabel = (_audioTl.summary && _audioTl.summary.mode) || "auto";
+    if (curFrameFault) {
+      const tags = [];
+      if (curFrameFault.hdmi_drop) tags.push("HDMI断流静音");
+      if (curFrameFault.afm_unlock) tags.push("AFM解锁→线性轨");
+      else if ((curFrameFault.dropout || 0) > 0.03) tags.push(`失落 ${(curFrameFault.dropout * 100).toFixed(0)}%`);
+      if (Math.abs(curFrameFault.pitch_cents || 0) >= 2.0) {
+        const c = curFrameFault.pitch_cents;
+        tags.push(`音高 ${c >= 0 ? "+" : ""}${c.toFixed(1)}c`);
+      }
+      if ((curFrameFault.head_switch_buzz || 0) > 0.1) tags.push("切头脉冲");
+      if ((curFrameFault.hum_buzz || 0) > 0.02) tags.push("哼声/RF蜂音");
+      badge.textContent = `${modeLabel} · ` + (tags.length ? tags.join(" | ") : "音画同步正常");
+      badge.style.color = (curFrameFault.afm_unlock || curFrameFault.hdmi_drop) ? "#d9614c" : "";
+    } else {
+      badge.textContent = `${modeLabel} · t=${tRef.toFixed(2)}s`;
+      badge.style.color = "";
+    }
+  }
 }
 
 boot().catch((e) => {
