@@ -1529,7 +1529,7 @@ def build_schema() -> ParamSchema:
     aud.define("enabled", "启用音频模拟", 1.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
                phys_min=0.0, phys_max=1.0, source="系统架构",
                help="开启后，导入素材的原声（或无声素材的内置参考音源）会经过与画面完全同源的模拟/磁带音频链路处理。")
-    aud.define("mode", "伴音轨制式", 0.0, 0.0, 5.0, unit="0-5", group=g, step=1.0,
+    aud.define("mode", "伴音轨制式", 0.0, 0.0, 6.0, unit="0-6", group=g, step=1.0,
                phys_min=0.0, phys_max=5.0,
                source="IEC 60774 (VHS Hi-Fi) / IEC 61834 (DV) / ISO 11172-3",
                help="0=自动跟随视频制式，1=VHS 纵向线性磁迹，2=VHS Hi-Fi 深层调频立体声（故障自动回退线性轨），"

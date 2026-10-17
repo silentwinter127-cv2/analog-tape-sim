@@ -4782,6 +4782,22 @@ def check_audio_simulation_and_av_sync() -> None:
                f"wav={len(wav_bytes)}B, frames={len(tl_dict.get('frames', []))}",
                wav_bytes[:4] == b"RIFF" and len(wav_bytes) > 10000 and len(tl_dict.get("frames", [])) >= 10)
 
+    # 6. PAL-D VHF Ch 6 (+6.5 MHz FM Sound) -> Panasonic NV-J27 Mono E-to-E Tuner Audio Mode (mode=6)
+    from atsim.core.profiles import FACTORY_PRESETS
+    p_j27 = SCHEMA.resolve_all(FACTORY_PRESETS["mibox_vhf6_panasonic_j27_pal_d"]["layers"])
+    sim_j27 = AudioSimulator(p_j27, fps=25.0, seed=20241017, std_name="pal", sample_rate=sr)
+    t_test = np.arange(sr, dtype=np.float32) / sr
+    sig_st = np.column_stack([
+        0.85 * np.sin(2.0 * np.pi * 440.0 * t_test),
+        0.85 * np.cos(2.0 * np.pi * 1200.0 * t_test),
+    ]).astype(np.float32)
+    out_j27 = sim_j27.render_window(sig_st, start_s=0.0, duration_s=1.0).pcm
+    lr_diff = float(np.max(np.abs(out_j27[:, 0] - out_j27[:, 1])))
+    peak_j27 = float(np.max(np.abs(out_j27)))
+    record("audio pal-d vhf6 j27 mono", "VHF Ch6 PAL-D FM tuner demodulates to dual-mono (L==R) and clamps at quadrature limiter (~0.725)",
+           f"lr_diff={lr_diff:.6f}, peak={peak_j27:.4f}, mode={sim_j27.resolve_mode_name()}",
+           lr_diff < 1e-6 and 0.65 <= peak_j27 <= 0.74 and sim_j27.resolve_mode_name() == "rf_pal_d_mono")
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -1,7 +1,7 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "name": "小米盒子 720p60 → HDMI-AV → PAL-D VHF 6频道(171.25MHz) → 松下 NV-J27 → AV采集卡（16:9→4:3 二次压扁）",
+  "name": "小米盒子 720p60 → HDMI-AV (PAL-D) → VHF 6频道 (171MHz) → 松下NV-J27 AV输出 → 采集卡（视觉+听觉全链路物理模型）",
   "standard": "pal",
   "seed": 20261016,
   "fps": 25.0,
@@ -88,6 +88,24 @@
     },
     "display": {
       "enabled": 0.0
+    },
+    "audio": {
+      "enabled": 1.0,
+      "mode": 6.0,
+      "linear_bandwidth": 8500.0,
+      "azimuth_loss": 0.05,
+      "wow_flutter": 0.04,
+      "stiction_pitch": 0.0,
+      "dropout_sensitivity": 0.15,
+      "head_switch_buzz": 0.0,
+      "ground_hum": 0.24,
+      "rf_buzz": 0.28,
+      "saturation": 0.32,
+      "hiss_floor": 0.18,
+      "speaker_sim": 0.0,
+      "flyback_whine": 0.22,
+      "master_gain": 0.95
     }
-  }
+  },
+  "param_count": 84
 }

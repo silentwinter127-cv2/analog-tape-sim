@@ -80,7 +80,7 @@ from scipy.signal import butter, sosfilt
 class AudioSpec:
     """Resolved parameters of the `audio` layer."""
     enabled: bool = True
-    mode: int = 0                       # 0=Auto, 1=Linear, 2=Hi-Fi, 3=8mm AFM, 4=MiniDV PCM, 5=VCD MP2
+    mode: int = 0                       # 0=Auto, 1=Linear, 2=Hi-Fi, 3=8mm AFM, 4=MiniDV PCM, 5=VCD MP2, 6=PAL-D RF Mono
     synth_type: int = 0                 # 0=Retro Synth Chord+Beat, 1=1kHz+400Hz Reference Tone, 2=Voice+Percussion
     hifi_unlock_thresh: float = 0.32    # Dropout/tracking severity that forces Hi-Fi -> Linear fallback
     linear_bandwidth: float = 7500.0    # Nominal SP linear track bandwidth (Hz)
@@ -362,6 +362,7 @@ class AudioSimulator:
         3: "hi8_afm",
         4: "minidv_pcm",
         5: "vcd_mp2",
+        6: "rf_pal_d_mono",
     }
 
     def __init__(self, params_or_renderer: Any, fps: float = 29.97, seed: int = 20240101,
@@ -394,14 +395,21 @@ class AudioSimulator:
 
     def resolve_mode_name(self) -> str:
         m = int(self.spec.mode)
-        if m in (1, 2, 3, 4, 5):
+        if m in (1, 2, 3, 4, 5, 6):
             return self.MODE_NAMES[m]
-        # Auto-resolve from codec & tape layers
+        # Auto-resolve from codec, connector & tape layers
         codec_cfg = self.params.get("codec") or {}
         if int(round(float(codec_cfg.get("kind", 0.0)))) == 2:
             return "vcd_mp2"
         if float(codec_cfg.get("dv_enabled", 0.0)) > 0.5:
             return "minidv_pcm"
+        conn_cfg = self.params.get("connector") or {}
+        tape_cfg = self.params.get("tape") or {}
+        if (float(conn_cfg.get("rf_present", 0.0)) > 0.5
+                and float(conn_cfg.get("av_present", 0.0)) > 0.5
+                and float(tape_cfg.get("dropout_rate", 0.35)) <= 1e-4
+                and float(tape_cfg.get("head_switching", 0.45)) <= 1e-4):
+            return "rf_pal_d_mono"
         return "vhs_hifi"
 
     def _frame_params_at(self, frame_index: int, keyframes=None, environment=None,
@@ -921,6 +929,30 @@ class AudioSimulator:
             valid = w_norm[:, 0] > 1e-4
             sig[valid] = out_mp2[valid] / w_norm[valid]
 
+        elif mode_name == "rf_pal_d_mono":
+            # PAL-D VHF Channel 6 (171 MHz, +6.5 MHz FM Sound Carrier) -> Panasonic NV-J27 Mono RF Tuner -> AV Capture Card
+            # Calibrated against real hardware capture `10月16日.mp4` (Xiaomi Mi Box 720p60 -> HDMI-AV PAL-D -> VHF Ch6 -> NV-J27 -> PC):
+            #   1. Stereo-to-Mono downmix at HDMI-AV / RF modulator (+6.5 MHz single FM carrier -> dual-mono L=R, corr=1.0000)
+            #   2. 50 us FM de-emphasis (f_c = 1 / (2*pi*50e-6) = 3183.1 Hz) + 6.5 MHz ceramic IF & baseband rolloff (~8.5 kHz)
+            #      and steep >14.2 kHz IF stopband (-110 dB floor in 14-18 kHz, -131 dB in 18-22 kHz)
+            #   3. Quadrature FM discriminator noise floor + 50 Hz PAL vertical field sync & 150 Hz 3rd-harmonic intercarrier buzz
+            mono = 0.5 * (sig[:, 0] + sig[:, 1])
+            mono_col = mono[:, None]
+            mono_col = _highpass_audio(mono_col, 32.0, sr, order=2)
+            # 50 us de-emphasis shelf (3183.1 Hz corner)
+            deemph = _lowpass_audio(mono_col, 3183.1, sr, order=1)
+            mono_col = 0.78 * deemph + 0.22 * mono_col
+            # Baseband & 6.5 MHz ceramic IF filter roll-off
+            fc_rf = float(np.clip(self.spec.linear_bandwidth, 2500.0, 14000.0))
+            mono_col = _lowpass_audio(mono_col, fc_rf, sr, order=4)
+            mono_col = _lowpass_audio(mono_col, min(14200.0, 0.46 * sr), sr, order=6)
+            # Quadrature FM detector de-emphasized noise floor (mono, before RCA split)
+            fm_n_raw = rng.standard_normal((n_samples, 1)).astype(np.float32)
+            fm_n = _bandpass_audio(fm_n_raw, 160.0, min(9000.0, fc_rf), sr, order=2)
+            fm_n = _lowpass_audio(fm_n, 3183.1, sr, order=1)
+            mono_col = mono_col + fm_n * (0.0038 * self.spec.hiss_floor)
+            sig = np.repeat(mono_col, 2, axis=1)
+
         # ------------------------------------------------------------------
         # Step 4: Add Synchronized Physical Fault Signals
         # (Crease Thump, Base Cracks, CTL Breakage, Head-Switch Buzz, Mains Hum, RF Buzz, HDMI Drops)
@@ -958,27 +990,43 @@ class AudioSimulator:
             conn_cfg = self.params.get("connector") or {}
             mains_hz = float(conn_cfg.get("mains_hz", 50.0))
             ph_m = 2.0 * np.pi * mains_hz * t_arr
-            # Fundamental + 2nd harmonic (rectified corrosion) + 3rd harmonic (transformer core saturation)
-            hum_wave = (0.65 * np.sin(ph_m)
-                        + 0.25 * np.sin(2.0 * ph_m + 0.3)
-                        + 0.20 * np.sin(3.0 * ph_m)
-                        + 0.08 * np.sin(5.0 * ph_m))
-            sig = sig + (hum_wave[:, None] * hum_env[:, None] * 0.16).astype(np.float32)
+            if mode_name == "rf_pal_d_mono":
+                # Calibrated to `10月16日.mp4`: 50 Hz (-50.0 dB), 100 Hz (-58.4 dB), 150 Hz (-49.6 dB)
+                hum_wave = (0.58 * np.sin(ph_m)
+                            + 0.22 * np.sin(2.0 * ph_m + 0.3)
+                            + 0.62 * np.sin(3.0 * ph_m + 0.7)
+                            + 0.12 * np.sin(5.0 * ph_m))
+                sig = sig + (hum_wave[:, None] * hum_env[:, None] * 0.045).astype(np.float32)
+            else:
+                # Fundamental + 2nd harmonic (rectified corrosion) + 3rd harmonic (transformer core saturation)
+                hum_wave = (0.65 * np.sin(ph_m)
+                            + 0.25 * np.sin(2.0 * ph_m + 0.3)
+                            + 0.20 * np.sin(3.0 * ph_m)
+                            + 0.08 * np.sin(5.0 * ph_m))
+                sig = sig + (hum_wave[:, None] * hum_env[:, None] * 0.16).astype(np.float32)
 
         # 4f. RF Coaxial Link Intercarrier Vision-into-Sound Buzz & Sync-Slip Static
         if np.any(rf_buzz_env > 1e-4) or np.any(rf_static_env > 1e-4):
             field_hz = 50.0 if "pal" in self.std_name else 59.94
             # Vision-into-sound intercarrier buzz has a harsh rasp at field_hz + harmonics up to 1.5 kHz
             ph_rf = 2.0 * np.pi * field_hz * t_arr
-            rasp = (0.40 * np.sin(ph_rf)
-                    + 0.35 * np.sin(2.0 * ph_rf)
-                    + 0.30 * np.cos(4.0 * ph_rf)
-                    + 0.25 * np.sin(8.0 * ph_rf)
-                    + 0.18 * np.cos(16.0 * ph_rf))
-            rf_noise = _bandpass_audio(rng.standard_normal((n_samples, 2)).astype(np.float32), 600.0, 9000.0, sr, order=2)
-            sig = (sig * (1.0 - np.clip(0.35 * rf_static_env, 0.0, 0.75)[:, None])
-                   + (rasp[:, None] * rf_buzz_env[:, None] * 0.13).astype(np.float32)
-                   + rf_noise * (rf_static_env[:, None] * 0.22))
+            rasp = (0.42 * np.sin(ph_rf)
+                    + 0.24 * np.sin(2.0 * ph_rf)
+                    + 0.46 * np.sin(3.0 * ph_rf + 0.5)
+                    + 0.22 * np.cos(4.0 * ph_rf)
+                    + 0.18 * np.sin(8.0 * ph_rf)
+                    + 0.12 * np.cos(16.0 * ph_rf))
+            if mode_name == "rf_pal_d_mono":
+                rf_n_mono = _bandpass_audio(rng.standard_normal((n_samples, 1)).astype(np.float32), 600.0, 8500.0, sr, order=2)
+                rf_noise = np.repeat(rf_n_mono, 2, axis=1)
+                sig = (sig * (1.0 - np.clip(0.20 * rf_static_env, 0.0, 0.50)[:, None])
+                       + (rasp[:, None] * rf_buzz_env[:, None] * 0.038).astype(np.float32)
+                       + rf_noise * (rf_static_env[:, None] * 0.045))
+            else:
+                rf_noise = _bandpass_audio(rng.standard_normal((n_samples, 2)).astype(np.float32), 600.0, 9000.0, sr, order=2)
+                sig = (sig * (1.0 - np.clip(0.35 * rf_static_env, 0.0, 0.75)[:, None])
+                       + (rasp[:, None] * rf_buzz_env[:, None] * 0.13).astype(np.float32)
+                       + rf_noise * (rf_static_env[:, None] * 0.22))
 
         # 4g. HDMI Bit-Error Clicks & Link-Drop Mute
         if np.any(hdmi_ber_env > 1e-4):
@@ -997,10 +1045,16 @@ class AudioSimulator:
             sig = sig * (1.0 - hdmi_mute_env[:, None])
 
         # ------------------------------------------------------------------
-        # Step 5: Magnetic Tape Hysteresis Soft-Clipping & Harmonic Saturation
+        # Step 5: Magnetic Tape Hysteresis / Quadrature Detector Soft-Clipping
         # ------------------------------------------------------------------
         sat = float(self.spec.saturation)
-        if sat > 1e-4 and mode_name in ("vhs_linear", "vhs_hifi", "hi8_afm"):
+        if mode_name == "rf_pal_d_mono":
+            # Panasonic NV-J27 quadrature FM detector & AV line-out soft ceiling (measured peak ~0.725 on 10月16日.mp4)
+            drive = 1.0 + 1.35 * sat
+            asym = 0.045 * sat
+            driven = sig * drive + asym * (sig * sig)
+            sig = 0.725 * (np.tanh(driven / 0.725) - np.tanh(asym / 0.725))
+        elif sat > 1e-4 and mode_name in ("vhs_linear", "vhs_hifi", "hi8_afm"):
             drive = 1.0 + 2.4 * sat
             # Asymmetric bias nonlinearity adds warm 2nd harmonic before odd-order `tanh` tape ceiling
             asym = 0.08 * sat
@@ -1008,7 +1062,7 @@ class AudioSimulator:
             sig = (np.tanh(driven) - np.tanh(asym)) / np.tanh(drive)
 
         # ------------------------------------------------------------------
-        # Step 6: CRT TV Speaker Cabinet Resonance & Horizontal Flyback Whine
+        # Step 6: CRT TV Speaker Cabinet Resonance & Horizontal Line-Rate / Flyback Whine
         # ------------------------------------------------------------------
         display_cfg = self.params.get("display") or {}
         disp_on = float(display_cfg.get("enabled", 1.0)) > 0.5
@@ -1022,13 +1076,14 @@ class AudioSimulator:
             spk = spk + 0.42 * mid_bump
             sig = sig * (1.0 - spk_mix) + spk * spk_mix
 
-        whine = float(self.spec.flyback_whine) if disp_on else 0.0
+        whine = float(self.spec.flyback_whine) if (disp_on or mode_name == "rf_pal_d_mono") else 0.0
         if whine > 1e-4:
-            # 15,734.26 Hz (NTSC) or 15,625.0 Hz (PAL) horizontal deflection flyback transformer whine
+            # 15,734.26 Hz (NTSC) or 15,625.0 Hz (PAL) horizontal line-rate sync / flyback whistle
             f_line = 15625.0 if "pal" in self.std_name else 15734.26
             if f_line < 0.48 * sr:
+                fly_amp = (0.0022 * whine) if mode_name == "rf_pal_d_mono" else (0.018 * whine)
                 fly_wave = np.sin(2.0 * np.pi * f_line * t_arr)[:, None].astype(np.float32)
-                sig = sig + fly_wave * (0.018 * whine)
+                sig = sig + fly_wave * fly_amp
 
         # Final output gain & soft limiter
         sig = sig * float(self.spec.master_gain)
