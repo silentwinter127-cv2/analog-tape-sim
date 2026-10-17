@@ -1,5 +1,5 @@
 /* ============================================================================
-   session_ui.js — 维度面板：环境状态 / 设备个体 / 关键帧时间线
+   session_ui.js — 维度面板：环境状态 / 设备个体 / 关键帧时间线 / 字幕机
 
    这三个维度在引擎里已经完整实现，但此前没有任何界面能碰到它们——只能在 Python 里手写参数。
    这个文件把它们接出来。
@@ -116,6 +116,121 @@
     }
   }
 
+  /* ------------------------------------------------------------ 任意参数关键帧 API */
+  function findTrackIndex(layer, key) {
+    return (SUI.keyframes || []).findIndex((tr) => tr && tr.layer === layer && tr.key === key);
+  }
+
+  function trackInfo(layer, key, t) {
+    const ti = findTrackIndex(layer, key);
+    if (ti < 0) return { hasTrack: false, atPoint: false, pointCount: 0, value: null, curve: "linear" };
+    const tr = SUI.keyframes[ti];
+    const pts = sortedPoints(tr);
+    const curT = t == null ? ((typeof S !== "undefined" && S.t) || 0) : Number(t);
+    const hit = pts.find((p) => Math.abs(p.t - curT) < 0.025);
+    return {
+      hasTrack: true,
+      trackIndex: ti,
+      atPoint: !!hit,
+      pointCount: pts.length,
+      value: pts.length ? valueAt(tr, curT) : null,
+      curve: hit ? (hit.curve || "linear") : (pts[0] ? (pts[0].curve || "linear") : "linear"),
+      points: pts,
+    };
+  }
+
+  function upsertKeyframe(layer, key, t, value, curve) {
+    const curT = Number((t == null ? ((typeof S !== "undefined" && S.t) || 0) : t).toFixed(3));
+    const numVal = Number(value);
+    if (!isFinite(numVal)) return;
+    let ti = findTrackIndex(layer, key);
+    if (ti < 0) {
+      const dur = clipDuration();
+      const t2 = Math.abs(curT) < 0.05 ? Math.min(dur, Number((curT + 1.0).toFixed(3))) : 0.0;
+      const pts = [{ t: curT, value: numVal, curve: curve || "linear" }];
+      if (Math.abs(t2 - curT) >= 0.02) {
+        pts.push({ t: t2, value: numVal, curve: "linear" });
+      }
+      pts.sort((a, b) => a.t - b.t);
+      SUI.keyframes.push({ layer: layer, key: key, absolute: true, points: pts });
+      ti = SUI.keyframes.length - 1;
+    } else {
+      const tr = SUI.keyframes[ti];
+      tr.absolute = true;
+      tr.points = tr.points || [];
+      const existing = tr.points.find((p) => Math.abs(p.t - curT) < 0.025);
+      if (existing) {
+        existing.t = curT;
+        existing.value = numVal;
+        if (curve) existing.curve = curve;
+      } else {
+        tr.points.push({ t: curT, value: numVal, curve: curve || "linear" });
+      }
+      tr.points.sort((a, b) => a.t - b.t);
+    }
+    SUI.selected.track = ti;
+    renderKeyframes();
+    schedule(true);
+  }
+
+  function removeKeyframe(layer, key, t, removeWholeTrack) {
+    const ti = findTrackIndex(layer, key);
+    if (ti < 0) return;
+    if (removeWholeTrack) {
+      SUI.keyframes.splice(ti, 1);
+      renderKeyframes();
+      schedule(true);
+      return;
+    }
+    const curT = Number((t == null ? ((typeof S !== "undefined" && S.t) || 0) : t).toFixed(3));
+    const tr = SUI.keyframes[ti];
+    const idx = (tr.points || []).findIndex((p) => Math.abs(p.t - curT) < 0.025);
+    if (idx >= 0) {
+      if (tr.points.length <= 1) {
+        SUI.keyframes.splice(ti, 1);
+      } else {
+        tr.points.splice(idx, 1);
+      }
+      renderKeyframes();
+      schedule(true);
+    }
+  }
+
+  function stepKeyframe(layer, key, dir) {
+    const ti = findTrackIndex(layer, key);
+    if (ti < 0) return null;
+    const pts = sortedPoints(SUI.keyframes[ti]);
+    if (!pts.length) return null;
+    const curT = (typeof S !== "undefined" && S.t) || 0;
+    if (dir < 0) {
+      for (let i = pts.length - 1; i >= 0; i--) {
+        if (pts[i].t < curT - 0.02) return pts[i].t;
+      }
+      return pts[0].t;
+    } else {
+      for (let i = 0; i < pts.length; i++) {
+        if (pts[i].t > curT + 0.02) return pts[i].t;
+      }
+      return pts[pts.length - 1].t;
+    }
+  }
+
+  function focusTrack(layer, key) {
+    const ti = findTrackIndex(layer, key);
+    const tl = $("tlPanel");
+    if (tl && tl.classList.contains("hidden")) {
+      ["envPanel", "devicePanel", "tlPanel", "osdPanel"].forEach((id) => {
+        const p = $(id);
+        if (p) p.classList.add("hidden");
+      });
+      tl.classList.remove("hidden");
+    }
+    if (ti >= 0) {
+      SUI.selected.track = ti;
+      renderKeyframes();
+    }
+  }
+
   /* ------------------------------------------------------------ 环境面板 */
   function envValue(key, dflt) {
     const v = SUI.env[key];
@@ -134,16 +249,45 @@
       const inp = el("input");
       inp.type = "range";
       inp.min = lo; inp.max = hi; inp.step = step;
-      // 未设置时显示名义值：暖度默认 1（已热），其余默认 0
-      inp.value = envValue(key, key === "warmth" || key.endsWith("sensitivity") ? 1 : 0);
+      const kfInfo = trackInfo("environment", key);
+      const curVal = kfInfo.hasTrack && kfInfo.value !== null
+        ? kfInfo.value
+        : envValue(key, key === "warmth" || key.endsWith("sensitivity") ? 1 : 0);
+      inp.value = curVal;
       val.textContent = Number(inp.value).toFixed(step < 0.01 ? 3 : 2);
+
+      // 关键帧按钮：环境参数同样支持直接打关键帧
+      const kfBtn = el("button", "kfBtn" + (kfInfo.hasTrack ? (kfInfo.atPoint ? " on at" : " on") : ""), "◆");
+      kfBtn.title = kfInfo.hasTrack
+        ? (kfInfo.atPoint
+            ? `当前时刻 (t=${((S && S.t) || 0).toFixed(2)}s) 已有关键帧（点击删除该点，Shift+点击删除整条轨道）`
+            : `此环境量已有 ${kfInfo.pointCount} 个关键帧（点击在 t=${((S && S.t) || 0).toFixed(2)}s 插入关键帧，Shift+点击删除轨道）`)
+        : `在当前时刻 t=${((S && S.t) || 0).toFixed(2)}s 为「${label}」添加关键帧`;
+      kfBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        if (ev.shiftKey && kfInfo.hasTrack) {
+          removeKeyframe("environment", key, null, true);
+          return;
+        }
+        if (kfInfo.atPoint) {
+          removeKeyframe("environment", key, (S && S.t) || 0, false);
+        } else {
+          upsertKeyframe("environment", key, (S && S.t) || 0, Number(inp.value), "linear");
+        }
+      };
+
       inp.oninput = () => { val.textContent = Number(inp.value).toFixed(step < 0.01 ? 3 : 2); };
       inp.onchange = () => {
-        SUI.env[key] = Number(inp.value);
-        push({ environment: Object.assign({}, SUI.env) }, null);
+        const nv = Number(inp.value);
+        SUI.env[key] = nv;
+        if (trackInfo("environment", key).hasTrack) {
+          upsertKeyframe("environment", key, (S && S.t) || 0, nv);
+        } else {
+          push({ environment: Object.assign({}, SUI.env) }, null);
+        }
         renderEnvReadout();
       };
-      row.append(lab, inp, val);
+      row.append(lab, inp, val, kfBtn);
       host.append(row);
 
       const hint = el("div", "ssHelp", help);
@@ -186,7 +330,6 @@
         push({ unit_identities: Object.assign({}, SUI.units) }, null);
         renderDeviceReadout();
       };
-      // 串号是连续输入的，但每次改动都重渲会打断打字——所以停顿后再提交
       inp.oninput = () => { clearTimeout(timer); timer = setTimeout(commit, 650); };
       inp.onchange = commit;
       row.append(lab, inp);
@@ -204,7 +347,6 @@
         + "与加入设备个体差异之前逐位相同。</span>";
       return;
     }
-    // 按偏差幅度排序：最大的几项才是这台机器的性格
     const rows = rep.slice().sort((a, b) => {
       const ra = Math.abs(a.shift || 0), rb = Math.abs(b.shift || 0);
       return rb - ra;
@@ -228,11 +370,23 @@
 
   /* ------------------------------------------------------------ 关键帧编辑器 */
 
-  /** 空轨道：默认驱动相机曝光，因为那是最直观能看到时间线在工作的地方。 */
+  /** 空轨道：默认驱动当前选中的参数页第一项或相机曝光。 */
   function newTrack() {
-    return { layer: "camera", key: "exposure", absolute: true,
-             points: [{ t: 0.0, value: 0.0, curve: "linear" },
-                      { t: 1.0, value: 0.5, curve: "hold" }] };
+    const curLayer = (typeof S !== "undefined" && S.layer) || "camera";
+    let defaultKey = "exposure";
+    if (typeof S !== "undefined" && S.schema && S.schema.layers) {
+      const lObj = S.schema.layers.find((l) => l.layer === curLayer);
+      if (lObj && lObj.groups) {
+        for (const specs of Object.values(lObj.groups)) {
+          const numSp = (specs || []).find((sp) => sp && sp.kind !== "text");
+          if (numSp) { defaultKey = numSp.key; break; }
+        }
+      }
+    }
+    const curVal = Number(((S && S.params && S.params[curLayer]) || {})[defaultKey] ?? 0.0);
+    return { layer: curLayer, key: defaultKey, absolute: true,
+             points: [{ t: 0.0, value: curVal, curve: "linear" },
+                      { t: 1.0, value: curVal, curve: "hold" }] };
   }
 
   /** 一次「录像场次」：冷机 → 预热 → 中途断电 → 重新升温。 */
@@ -252,7 +406,6 @@
     const pts = sortedPoints(track);
     if (!pts.length) return [-1, 1];
     let lo = Infinity, hi = -Infinity;
-    // 采样而不是只看关键点：exp 段会越过两端之间的位置
     for (let i = 0; i <= 60; i++) {
       const t = (i / 60) * (pts[pts.length - 1].t || 1);
       const v = valueAt(track, t);
@@ -278,7 +431,7 @@
     if (!host) return;
     host.textContent = "";
     if (!SUI.keyframes.length) {
-      host.append(el("div", "ssDim", "时间线为空 —— 渲染与没有时间线时逐位相同。"));
+      host.append(el("div", "ssDim", "时间线为空 —— 可在右侧任意参数旁点击「◆」直接打关键帧，或在上方点击「+ 新建轨道」。"));
       renderTlReadout();
       return;
     }
@@ -287,10 +440,6 @@
   }
 
   function paramOptions(selected) {
-    // The schema is `{layers: [{layer, groups: {name: [spec, ...]}}]}`, which is how `renderParams` reads
-    // it.  An earlier version indexed it as `schema[layer]`, which is undefined for every layer, so the
-    // dropdown offered nothing usable -- the shape has to come from the payload the server sends, not from
-    // what the reader expects.
     const sel = el("select", "ssSel");
     const add = (value, label) => {
       const o = el("option", null, label);
@@ -298,17 +447,17 @@
       if (value === selected) o.selected = true;
       sel.append(o);
     };
-    // the environment is a virtual layer: it is not a device parameter but a condition that drives a set
-    // of shifts, so it is offered first and separately
     add("environment.warmth", "environment · 暖度（驱动温度效应）");
     add("environment.age", "environment · 电容老化");
     add("environment.humidity", "environment · 湿度");
+    add("environment.cold_sensitivity", "environment · 冷敏度");
+    add("environment.age_sensitivity", "environment · 老化敏度");
     const schema = (typeof S !== "undefined" && S.schema) || {};
     (schema.layers || []).forEach((layer) => {
       const groups = layer.groups || {};
       Object.keys(groups).forEach((gname) => {
         (groups[gname] || []).forEach((sp) => {
-          if (!sp || !sp.key) return;
+          if (!sp || !sp.key || sp.kind === "text") return;
           add(layer.layer + "." + sp.key,
               layer.layer + " · " + (sp.label || sp.key));
         });
@@ -321,38 +470,35 @@
     const card = el("div", "tlCard");
     const pts = sortedPoints(track);
 
-    // --- 头部：参数选择 + 类型 + 删除
     const head = el("div", "tlHead");
     const combo = paramOptions(track.layer + "." + track.key);
     combo.onchange = () => {
       const parts = combo.value.split(".");
       track.layer = parts[0];
       track.key = parts.slice(1).join(".");
-      schedule();
+      schedule(true);
     };
     const absLab = el("label", "chk");
     const abs = el("input");
     abs.type = "checkbox";
     abs.checked = !!track.absolute;
     abs.title = "勾选 = 直接用该参数自己的单位；不勾 = 相对偏移（乘性，标称为 0 时按量程比例）";
-    abs.onchange = () => { track.absolute = abs.checked; schedule(); };
+    abs.onchange = () => { track.absolute = abs.checked; schedule(true); };
     absLab.append(abs, document.createTextNode(" 绝对值"));
     const del = el("button", "ghost ssTiny", "删除轨道");
     del.onclick = () => {
       SUI.keyframes.splice(ti, 1);
       SUI.selected.track = Math.max(0, ti - 1);
       SUI.selected.point = -1;
-      schedule();
+      schedule(true);
     };
     head.append(combo, absLab, del);
     card.append(head);
 
-    // --- 画布
     const cv = el("canvas", "tlCanvas");
     cv.width = 620; cv.height = 130;
     card.append(cv);
 
-    // --- 点表
     const table = el("div", "tlPts");
     pts.forEach((p, pi) => {
       const row = el("div", "tlPt");
@@ -362,7 +508,7 @@
         inp.type = type;
         inp.value = val;
         if (step != null) inp.step = step;
-        inp.onchange = () => { on(inp.value); schedule(); };
+        inp.onchange = () => { on(inp.value); schedule(true); };
         cell.append(inp);
         return cell;
       };
@@ -370,7 +516,7 @@
         p.t = Math.max(0, Number(v) || 0);
         pts.sort((a, b) => a.t - b.t);
       }));
-      row.append(mk("值", "number", String(p.value), "0.01", (v) => { p.value = Number(v) || 0; }));
+      row.append(mk("值", "number", String(Number(p.value.toFixed(4))), "0.01", (v) => { p.value = Number(v) || 0; }));
       const csel = el("select", "ssSelMini");
       CURVES.forEach(([cv2, lbl]) => {
         const o = el("option", null, lbl);
@@ -379,17 +525,30 @@
         csel.append(o);
       });
       csel.title = "这条曲线的形状属于「开始该段」的点：它描述的是怎么从这里走到下一个点";
-      csel.onchange = () => { p.curve = csel.value; schedule(); };
+      csel.onchange = () => { p.curve = csel.value; schedule(true); };
       row.append(csel);
+      const jump = el("button", "ghost ssTiny", "⌖");
+      jump.title = "跳到该关键帧时间点";
+      jump.onclick = () => {
+        if (typeof S !== "undefined") {
+          S.t = p.t;
+          if ($("timeSlider")) $("timeSlider").value = String(p.t);
+          if ($("timeLabel")) $("timeLabel").textContent = `t = ${p.t.toFixed(2)} s`;
+          if (typeof renderParams === "function") renderParams();
+          if (typeof refreshPreview === "function") refreshPreview();
+        }
+      };
+      row.append(jump);
       const rm = el("button", "ghost ssTiny", "×");
       rm.title = "删除这个关键点";
       rm.onclick = () => {
-        if (track.points.length <= 2) {
-          if (typeof toast === "function") toast("一条轨道至少要留两个关键点");
+        if (track.points.length <= 1) {
+          SUI.keyframes.splice(ti, 1);
+          schedule(true);
           return;
         }
         track.points.splice(track.points.indexOf(p), 1);
-        schedule();
+        schedule(true);
       };
       row.append(rm);
       row.onmouseenter = () => { SUI.selected.track = ti; SUI.selected.point = pi; draw(); };
@@ -397,7 +556,6 @@
     });
     card.append(table);
 
-    // --- 画布交互：点空白加关键点，拖点移动
     const geom = () => {
       const [lo, hi] = valueRange(track);
       const dur = clipDuration();
@@ -429,7 +587,6 @@
         SUI.selected.point = best;
         cv.setPointerCapture(e.pointerId);
       } else {
-        // 空白处落一个新点，并把它拖到位置
         const v = toVal(px, py, g, r);
         const np = { t: v.t, value: v.value, curve: "linear" };
         track.points.push(np);
@@ -455,7 +612,6 @@
       if (!drag) return;
       drag = null;
       try { cv.releasePointerCapture(e.pointerId); } catch (err) {}
-      // 松手才提交：拖动过程中的每一像素都发请求会让界面发涩
       schedule(true);
       renderKeyframes();
     };
@@ -469,7 +625,6 @@
       ctx.fillStyle = "#12161c";
       ctx.fillRect(0, 0, W, H);
 
-      // 纵轴刻度
       ctx.strokeStyle = "#242c38";
       ctx.fillStyle = "#5c6a7e";
       ctx.font = "10px ui-monospace, monospace";
@@ -479,7 +634,6 @@
         const v = g.hi - (i / 4) * (g.hi - g.lo);
         ctx.fillText(v.toFixed(2), 2, y + 3);
       }
-      // 横轴刻度
       const step = g.dur <= 5 ? 1 : g.dur <= 20 ? 5 : 10;
       for (let t = 0; t <= g.dur; t += step) {
         const x = 34 + (t / g.dur) * (W - 46);
@@ -487,34 +641,39 @@
         ctx.fillText(t + "s", x - 6, H - 2);
       }
 
-      // 曲线：按引擎的曲线函数逐像素采样，所以看到的就是会生效的形状
+      // 当前时间游标竖线
+      if (typeof S !== "undefined" && S.t != null) {
+        const curX = 34 + (Math.min(g.dur, Math.max(0, S.t)) / g.dur) * (W - 46);
+        ctx.strokeStyle = "rgba(232,163,61,0.65)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(curX, 8); ctx.lineTo(curX, H - 12); ctx.stroke();
+      }
+
       ctx.strokeStyle = "#5fd0a8";
       ctx.lineWidth = 1.6;
       ctx.beginPath();
       for (let i = 0; i <= 240; i++) {
         const t = (i / 240) * g.dur;
-        const p = toPx({ t: t, value: valueAt(track, t) }, g, r);
+        const p = toPx({ t: t, value: valueAt(track, t) }, g, { width: W, height: H });
         if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
       }
       ctx.stroke();
 
-      // 点与段的曲线标签
       pts.forEach((p, i) => {
-        const q = toPx(p, g, r);
+        const q = toPx(p, g, { width: W, height: H });
         const sel = SUI.selected.track === ti && SUI.selected.point === i;
         ctx.beginPath();
         ctx.arc(q.x, q.y, sel ? 5.5 : 4, 0, Math.PI * 2);
         ctx.fillStyle = sel ? "#ffd166" : "#8fe3c4";
         ctx.fill();
         if (i < pts.length - 1) {
-          const mid = toPx({ t: (p.t + pts[i + 1].t) / 2, value: p.value }, g, r);
+          const mid = toPx({ t: (p.t + pts[i + 1].t) / 2, value: p.value }, g, { width: W, height: H });
           ctx.fillStyle = "#7f8fa6";
           ctx.fillText(p.curve || "linear", mid.x - 12, mid.y - 8);
         }
       });
     }
 
-    // 尺寸依赖布局，所以下一帧再画
     requestAnimationFrame(draw);
     return card;
   }
@@ -524,7 +683,7 @@
     if (!host) return;
     if (!SUI.keyframes.length) {
       host.innerHTML = "<span class='ssDim'>没有时间线。所有参数保持常数，"
-        + "渲染结果与没有这个功能时逐位相同。</span>";
+        + "可在右侧任意参数旁点击「◆」直接为该参数打关键帧。</span>";
       return;
     }
     const dur = clipDuration();
@@ -534,8 +693,6 @@
       + "曲线属于<b>开始该段</b>的点。";
   }
 
-  /* 节流：编辑器会在拖动中频繁触发，但只有松手才需要真正推送。
-     immediate=true 表示这次一定要发（拖拽结束、按钮操作）。 */
   let pending = null;
   function schedule(immediate) {
     renderTlReadout();
@@ -549,25 +706,48 @@
     else pending = setTimeout(send, 400);
   }
 
-  /* ------------------------------------------------------------ 装配 */
   /* ---------------------------------------------------------------- 字幕机 */
 
-  /* The font list, with the coverage the user stated.  Recorded here as well as in the engine so the
-     editor can warn before a render, and so the warning is specific: "this font has no Chinese" is
-     actionable, "some glyphs are missing" is not. */
-  const OSD_FONTS = [
-    ["osd", "VCR OSD Mono", "仅英文/数字"],
-    ["lyusung", "柳宋", "中英文数字"],
-    ["apos", "A-POS 点阵", "中英文数字"],
+  /* Full 20-font list matching `atsim/codecs/fonts.py` in exact order (indices 0..19). */
+  const DEFAULT_OSD_FONTS = [
+    ["osd", "VCR OSD Mono（仅英文/数字）", ["latin"]],
+    ["lyusung", "柳宋（中英文数字）", ["latin", "cjk"]],
+    ["apos", "A-POS 点阵（中英文数字）", ["latin", "cjk"]],
+    ["ocr_a", "OCR-A（机器可读，OSD 经典）", ["latin"]],
+    ["ocr_b", "OCR-B（机器可读）", ["latin"]],
+    ["ming", "Ming-Imperial（中文点阵明体）", ["latin", "cjk"]],
+    ["ocr_a_ext", "OCR-A 扩展（机器可读宽体）", ["latin"]],
+    ["simhei", "中易黑体 SimHei（电视台粗黑字幕）", ["latin", "cjk"]],
+    ["simsun", "中易宋体 SimSun（90年代电视字幕机）", ["latin", "cjk"]],
+    ["msmincho", "MS 明朝（日系录像机/DV 点阵明体）", ["latin", "cjk"]],
+    ["msgothic", "MS 哥特（索尼/松下日系 OSD 点阵）", ["latin", "cjk"]],
+    ["mingliu", "细明体 MingLiU（港台录像带繁体点阵）", ["latin", "cjk"]],
+    ["consola", "Consolas（现代等宽终端）", ["latin"]],
+    ["courier", "Courier New（打字机衬线等宽）", ["latin"]],
+    ["gothic", "Century Gothic（老式几何无衬线）", ["latin"]],
+    ["sony_tall_osd", "Sony Handycam 窄高体（摄像机液晶寻像器 OSD）", ["latin", "cjk"]],
+    ["panasonic_vcr_wide", "Panasonic VCR 扁宽点阵（松下录像机磁头屏显）", ["latin", "cjk"]],
+    ["karaoke_ld_song", "LD/VCD 卡拉OK 大粗宋（90年代伴唱大字报）", ["latin", "cjk"]],
+    ["karaoke_ld_hei", "LD/VCD 卡拉OK 综艺粗黑（KTV 双色描边字幕）", ["latin", "cjk"]],
+    ["cctv_timecode", "CCTV 监控时间码（BNC 画面分割器等宽数字）", ["latin"]],
   ];
 
-  /* Which characters a font can draw, as far as the editor needs to know: the OSD font has no CJK at
-     all, and the two Chinese fonts cover the common range.  Used only for a live warning beside the
-     text; the engine reports the authoritative list after a render. */
+  function getOsdFonts() {
+    if (typeof S !== "undefined" && S.catalog && Array.isArray(S.catalog.fonts) && S.catalog.fonts.length) {
+      return S.catalog.fonts.filter((f) => f.available !== false).map((f) => [
+        f.key, f.label, f.scripts || ["latin"]
+      ]);
+    }
+    return DEFAULT_OSD_FONTS;
+  }
+
   function charSupported(fontKey, ch) {
     const c = ch.codePointAt(0);
     if (c < 0x80) return true;
-    if (fontKey === "osd") return false;
+    const fonts = getOsdFonts();
+    const entry = fonts.find(([k]) => k === fontKey);
+    const scripts = entry ? entry[2] : (fontKey === "osd" ? ["latin"] : ["latin", "cjk"]);
+    if (scripts.indexOf("cjk") < 0) return false;
     return (c >= 0x3000 && c <= 0x30ff) || (c >= 0x4e00 && c <= 0x9fff)
         || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xff00 && c <= 0xffef);
   }
@@ -575,10 +755,6 @@
   let osdEls = null;
 
   function osdPanels() {
-    // the editor is a bespoke control, not a slider: the text is multi-line and the font is a named
-    // choice, so the schema-driven parameter rows cannot express it.  The numeric parameters
-    // (cell height, offsets, colour) stay in the parameter panel as usual, which is why this only
-    // builds the parts that need it.
     if (osdEls) return osdEls;
     const host = $("osdPanel");
     if (!host) return null;
@@ -588,16 +764,9 @@
     note.innerHTML = "**字符发生器不是排版引擎。** OSD 芯片有字模 ROM、每字一个固定字格、"
       + "一个位置寄存器：它把字形画进格子，<b>不测量、不调字距、不换行、不重排</b>。"
       + "汉字占两格、西文占一格——这就是当年的半角/全角约定。"
-      + "一行超出右边缘的部分会直接丢失，因为真实发生器没有断行逻辑。";
+      + "字格尺寸按垂直分辨率自动等比缩放，保证<b>预览与导出画面比例完全一致</b>。";
     host.append(note);
 
-    /* The enable switch comes first, and the text field enables it.  The *parameter* defaults to off --
-       an unrequested overlay must not move any existing preset -- but an editor that requires a person to
-       find a second control before their typed text appears is a defect in the editor, not a safety
-       feature.  Typing enables; clearing disables; an explicit untick wins and keeps the text. */
-    // The enable switch and the apply button live in one row pinned to the top of the panel.  Both were below
-    // the fold: every group added above them pushed them down, and the button was reported missing three
-    // times.  A control that exists but cannot be scrolled to is not a control.
     const erow = el("div", "ssRow osdSticky");
     const echkLab = el("label", "chk");
     const echk = el("input");
@@ -606,9 +775,8 @@
     echkLab.append(echk, document.createTextNode(" 启用字幕机"));
     erow.append(echkLab, estate);
     host.append(erow);
-    host.prepend(erow);          // pinned at the top, so it survives every group added below it
+    host.prepend(erow);
 
-    // --- the text, multi-line, because a subtitle is
     const lab = el("div", "palGroup", "字幕文本");
     const ta = el("textarea", "ssTextArea");
     ta.rows = 4;
@@ -619,19 +787,16 @@
     const warn = el("div", "ssWarn");
     host.append(warn);
 
-    // --- the font
-    const fl = el("div", "palGroup", "字体");
+    const fl = el("div", "palGroup", "字体（共 " + getOsdFonts().length + " 款）");
     const fsel = el("select", "ssSel");
-    OSD_FONTS.forEach(([k, name, cover]) => {
-      const o = el("option", null, name + "（" + cover + "）");
+    fsel.style.maxWidth = "100%";
+    getOsdFonts().forEach(([k, label]) => {
+      const o = el("option", null, label);
       o.value = k;
       fsel.append(o);
     });
     host.append(fl, fsel);
 
-
-
-    // --- the style templates, which are the reference looks as one click
     const sl = el("div", "palGroup", "样式模板");
     const srow = el("div", "ssRow");
     const styleSel = el("select", "ssSel");
@@ -642,8 +807,6 @@
       o.value = v;
       styleSel.append(o);
     });
-    // a *range*, not a checkbox: the parameter is a signed shear with a symmetric range, and a tick box can
-    // only ever write one direction.  Left slant was reachable in the engine and nowhere in the panel.
     const ital = el("input");
     ital.type = "range";
     ital.min = "-0.8";
@@ -657,7 +820,6 @@
     italLab.append(document.createTextNode(" 斜体 "), ital, italVal);
     srow.append(styleSel, italLab);
 
-    // --- two pickers: the glyph and its outline, because both colours carry the look
     const crow = el("div", "ssRow");
     const glyphColor = el("input");
     glyphColor.type = "color";
@@ -676,10 +838,9 @@
     snote.style.marginLeft = "0";
     snote.innerHTML = "模板一次设好字色与描边色，选「自定义」则回到参数面板里的颜色框。"
       + "<b>点阵发生器没有真正的斜体，它是把字形剪切</b>，所以斜着的 OSD 文字边缘是台阶状的。"
-      + "字色、描边色、阴影偏移在右侧参数面板的「字幕机」组里。";
+      + "字格高度、字宽/字高拉伸、字色与阴影偏移在右侧参数面板「06 字幕机」里均可打关键帧。";
     host.append(sl, srow, crow, snote);
 
-    // --- alignment, so a subtitle is placed rather than spaced
     const al = el("div", "palGroup", "对齐（不用再打空格挪位置）");
     const arow = el("div", "ssRow");
     const hsel = el("select", "ssSelMini");
@@ -706,7 +867,6 @@
     arow2.append(quick);
     host.append(al, arow, arow2);
 
-    // --- the position, which is the whole point of the feature
     const pl = el("div", "palGroup", "发生器位置");
     const psel = el("select", "ssSel");
     [["0", "画面成形之后（摄像机自身 OSD）"],
@@ -715,17 +875,12 @@
       o.value = v;
       psel.append(o);
     });
-    // Declared before use.  It was after, one line below `host.append(pl, psel, pstatus)`, and a
-    // `const` read before its declaration is a ReferenceError -- so the builder threw here and nothing
-    // after it, including the apply button and the two colour pickers, was ever created.
     const pstatus = el("div", "ssReadout");
     host.append(pl, psel, pstatus);
-    // The titler position puts the text through the recorder, so a worn tape eats it.  The user reported the
-    // text "lost" twice before anything said so -- the model was right and the interface was silent.
     psel.addEventListener("change", () => {
       pstatus.innerHTML = psel.value === "1"
-        ? "<b>注意</b>：字幕先写进画面、再经过磁带，所以失落、磁头磨损、"
-          + "<b>换头带（画面顶部那条）</b>会连字一起毁。字幕突然不见了先看这条。"
+        ? "<b>注意</b>：字幕先写进编码后的视频信号、再经过磁带，所以失落、磁头磨损、"
+          + "时基抖动会连字一起退化，同时<b>画面其余部分保持严格一致</b>。"
         : "<span class='ssDim'>字幕写在已成形的画面上，磁带损伤不落在字上。</span>";
     });
     psel.dispatchEvent(new Event("change"));
@@ -733,11 +888,9 @@
     pnote.style.marginLeft = "0";
     pnote.innerHTML = "位置<b>不是</b>画面上的先后，而是信号链里的位置："
       + "摄像机 OSD 写在已成形的画面上，所以之后的磁带损伤落在画面、<b>不落在字上</b>；"
-      + "字幕机录到磁带上，所以失落、磁头磨损、时基误差<b>连字一起毁</b>。"
-      + "差别正好在磁带很差的时候看得出来。";
+      + "字幕机录到磁带上，所以失落、磁头磨损、时基误差<b>连字一起毁</b>。";
     host.append(pnote);
 
-    // --- the enable switch and a live readout
     const row = el("div", "ssRow");
     const btn = el("button", "ghost", "应用到工程");
     row.append(btn);
@@ -760,8 +913,8 @@
       if (!ta.value.trim()) {
         warn.textContent = "";
       } else if (bad.length) {
-        warn.innerHTML = "字体 <b>" + font + "</b> 画不出：<b>" + bad.join(" ")
-          + "</b> —— 这些字会被<b>明确报告为缺字</b>，而不是画成方块。换柳宋或 A-POS。";
+        warn.innerHTML = "字体 <b>" + font + "</b> 仅支持英文/数字，画不出：<b>" + bad.join(" ")
+          + "</b> —— 这些字会被<b>明确报告为缺字</b>，请换中文字体（如柳宋、A-POS、黑体、宋体、卡拉OK等）。";
       } else {
         warn.textContent = "";
       }
@@ -770,16 +923,11 @@
       const cells = Array.from(ta.value).reduce(
         (a, c) => a + (c === "\n" ? 0 : (c.codePointAt(0) >= 0x3000 ? 2 : 1)), 0);
       const on = echk.checked && chars > 0;
-      state.innerHTML = on ? "<b>正在绘制</b>"
+      estate.innerHTML = on ? "<b>正在绘制</b>"
         : (chars > 0 ? "已关闭 —— 勾选「启用字幕机」后才会画" : "未输入文字");
-      state.style.color = on ? "#7fe0bd" : "#5c6a7e";
-      /* The frame's capacity, from the engine's own report when one has been rendered, and otherwise
-         estimated from the image width -- a line wider than the frame is clipped at the edge, because a
-         character generator does not wrap, and that is the commonest reason for "my text did not appear". */
+      estate.style.color = on ? "#7fe0bd" : "#5c6a7e";
       const rep = (SUI.osdReport) || null;
       const fit = rep && rep.cells_fit ? rep.cells_fit : null;
-      // `cells_wanted` is the line's declared width; the drawn width is capped at the frame, so only the
-      // wanted figure can show an overflow
       const used = Math.max(cells, rep && rep.cells_wanted ? rep.cells_wanted : 0);
       const over = rep ? !!rep.overflow : false;
       let width = "";
@@ -793,17 +941,12 @@
         + "</b> 个半格）。" + width + " 字格高度和字色在右侧参数面板里调。";
     };
 
-    /* The push is debounced: a subtitle is typed, not dragged, and one request per keystroke would
-       re-render the preview on every character.  700 ms is longer than the font-commit delay because
-       typing is continuous and a mid-word render is wasted. */
-    /* `explicitOff` records that a person deliberately unticked the box.  Without it, typing after unticking
-       would silently re-enable, and the control would appear not to work. */
     let explicitOff = false;
     const push = () => {
-      const idx = OSD_FONTS.findIndex(([k]) => k === fsel.value);
+      const fonts = getOsdFonts();
+      const idx = fonts.findIndex(([k]) => k === fsel.value);
       const hasText = ta.value.trim().length > 0;
       if (!explicitOff && hasText !== echk.checked) {
-        // typing enables, clearing disables -- the text field is the real control
         echk.checked = hasText;
       }
       pushProject({ params: { overlay: {
@@ -815,15 +958,12 @@
         valign: parseFloat(vsel.value) || 0,
         style: parseFloat(styleSel.value) || 0,
         italic: parseFloat(ital.value) || 0.0,
-        // the pickers write the same numbers the sliders do, so the layer stays the source of truth
         ...(hexToRgb(glyphColor.value)
           ? { red: hexToRgb(glyphColor.value)[0], green: hexToRgb(glyphColor.value)[1],
               blue: hexToRgb(glyphColor.value)[2] } : {}),
         ...(hexToRgb(outColor.value)
           ? { outline_red: hexToRgb(outColor.value)[0], outline_green: hexToRgb(outColor.value)[1],
               outline_blue: hexToRgb(outColor.value)[2] } : {}),
-        // `pos` sets both alignments in the engine, so leaving a stale non-zero value here would silently
-        // overrule the two dropdowns the user is looking at
         pos: 0,
       } } });
       refreshWarn();
@@ -838,8 +978,6 @@
     psel.onchange = push;
     hsel.onchange = push;
     vsel.onchange = push;
-    // on change, not on the apply button: a choice whose effect is invisible until an unrelated control is
-    // pressed reads as broken, and that is what was reported
     styleSel.onchange = push;
     ital.onchange = push;
     ital.oninput = () => {
@@ -862,19 +1000,11 @@
     };
     btn.onclick = push;
     btn.classList.add("osdApply");
-    erow.append(btn);            // into the pinned row
+    erow.append(btn);
     return osdEls;
   }
 
-  /* Push a project patch using the host's own setProject, so the editor shares one state store with the
-     rest of the interface rather than keeping a copy that can drift. */
-  /* Layer values must go under `params`: `App.set_project` merges `payload["params"]` per layer, so a
-     bare `{"overlay": {...}}` is ignored without complaint.  This interface has a second entry point,
-     `set_levels`, which *does* take a bare layer mapping -- using the wrong one fails silently in both
-     directions, so the shape is written down here rather than remembered. */
   function pushProject(patch) {
-    /* Both paths send the same nested shape.  The fallback used to send the bare patch, which the API
-       silently discards -- dead code while `app.js` is loaded, and a trap if it ever ran. */
     if (typeof setProject === "function") {
       setProject({ params: patch });
     } else if (typeof api === "function" && typeof jsonPost === "function") {
@@ -887,14 +1017,23 @@
   function syncOsd(d) {
     const e = osdPanels();
     if (!e) return;
+    // Rebuild font options if catalog arrived after initial panel construction
+    const fonts = getOsdFonts();
+    if (e.fsel.options.length !== fonts.length) {
+      e.fsel.textContent = "";
+      fonts.forEach(([k, label]) => {
+        const o = el("option", null, label);
+        o.value = k;
+        e.fsel.append(o);
+      });
+    }
     const cur = (d && d.params && d.params.overlay) || {};
-    // do not clobber what the user is typing: only adopt the server's value when the field is not focused
     if (document.activeElement !== e.ta) {
       const t = cur.text == null ? "" : String(cur.text);
       if (e.ta.value !== t) e.ta.value = t;
     }
     const idx = Math.round(Number(cur.font == null ? 0 : cur.font));
-    if (OSD_FONTS[idx]) e.fsel.value = OSD_FONTS[idx][0];
+    if (fonts[idx]) e.fsel.value = fonts[idx][0];
     e.psel.value = String(Math.round(Number(cur.at == null ? 0 : cur.at)));
     e.styleSel.value = String(Math.round(Number(cur.style == null ? 0 : cur.style)));
     e.glyphColor.value = rgbOf(cur, "red", "green", "blue");
@@ -905,11 +1044,6 @@
     e.vsel.value = String(Math.round(Number(cur.valign == null ? 0 : cur.valign)));
     SUI.osdReport = (d && d.osd_report) || null;
     e.chk.checked = Number(cur.enabled == null ? 0 : cur.enabled) > 0.5;
-    if (e.ta.value.trim().length && !e.chk.checked) {
-      // the server says off while the field has text: that is a legitimate state (the user unticked), so
-      // the state line explains it rather than the editor overriding it
-    }
-    // the engine's own report, if a frame has been rendered since
     const rep = (d && d.osd_report) || (S && S.osdReport) || null;
     if (e.state) { e.state.textContent = ""; }
     if (rep && rep.missing && rep.missing.length) {
@@ -919,10 +1053,6 @@
       e.warn.innerHTML = "字幕对比度<b>未知</b>——这一帧还没有量到文字背后的亮度，"
         + "先渲染一次再看。";
     } else if (rep && rep.legible === false) {
-      /* The engine measured the frame under the text and the text's own colour.  When they are too close the
-         subtitle is drawn and invisible, which is exactly what happened: white text on a white corner of the
-         picture, three glyphs reported as drawn and nothing to see.  The panel has to say so, because the
-         reason is a parameter two groups further down and no one would guess it. */
       e.warn.innerHTML = "<b>字幕画出来了但看不见</b>：文字亮度 " + rep.text_luma
         + " 与它背后" + (rep.background_luma != null ? "的<b>底色块</b>" : "的<b>画面</b>")
         + "亮度 " + rep.behind_luma + " 太接近（对比度 " + rep.contrast
@@ -931,7 +1061,6 @@
   }
 
   function mountTabs() {
-    // 在左侧面板已有内容之上插入三个按钮，用同一个 .tabs 容器
     let host = $("ssTabs");
     if (!host) {
       host = el("div", "tabs");
@@ -947,7 +1076,6 @@
       const b = el("button", "tab", label);
       b.onclick = () => {
         const showing = !$(id).classList.contains("hidden");
-        // 点已打开的按钮就收起，让出空间给参数列表
         panels.forEach(([other]) => $(other).classList.add("hidden"));
         if (!showing) $(id).classList.remove("hidden");
       };
@@ -958,7 +1086,6 @@
   function mountPanels() {
     const left = $("panelLeft");
     if (!left || $("envPanel")) return;
-    // 面板 HTML 由服务端作为一段模板下发，避免在 JS 里拼长字符串
     fetch("/static/session_panels.html")
       .then((r) => r.text())
       .then((html) => {
@@ -970,27 +1097,24 @@
         renderEnv();
         renderDevice();
         renderKeyframes();
-        // Not a silent catch.  A builder that throws leaves the tab present and the panel empty, and then
-      // the only symptom is a control the user cannot find.  The failure is put where it will be seen.
-      try {
-        osdPanels();
-      } catch (err) {
-        const p = $("osdPanel");
-        if (p) {
-          p.textContent = "";
-          const e = el("div", "ssWarn");
-          e.innerHTML = "<b>字幕面板构建失败</b>：" + (err && err.message ? err.message : err)
-            + "<br>这是界面缺陷，不是您操作的问题。";
-          p.append(e);
+        try {
+          osdPanels();
+        } catch (err) {
+          const p = $("osdPanel");
+          if (p) {
+            p.textContent = "";
+            const e = el("div", "ssWarn");
+            e.innerHTML = "<b>字幕面板构建失败</b>：" + (err && err.message ? err.message : err)
+              + "<br>这是界面缺陷，不是您操作的问题。";
+            p.append(e);
+          }
+          console.error("osdPanels failed:", err, err && err.stack);
         }
-        console.error("osdPanels failed:", err, err && err.stack);
-      }
         SUI.ready = true;
       })
       .catch(() => { /* 面板拿不到不该影响主界面 */ });
   }
 
-  /* applyProject 之后同步面板状态。app.js 会在每次收到 /api/project 时调用这里。 */
   function syncFromProject(d) {
     if (!d) return;
     SUI.env = d.environment || {};
@@ -1001,15 +1125,12 @@
       renderEnv();
       renderDevice();
       renderKeyframes();
-      // the editor is built from the project's own values, and reads them back from the same payload
-      try { syncOsd(d); } catch (err) { /* the editor must not take the interface down */ }
+      try { syncOsd(d); } catch (err) {}
     }
   }
 
   function init() {
     mountPanels();
-    const addT = $("tlAddTrack");
-    // 面板是异步插入的，所以按钮要等到位再绑
     const bind = setInterval(() => {
       if ($("tlAddTrack") && !$("tlAddTrack").dataset.bound) {
         $("tlAddTrack").dataset.bound = "1";
@@ -1041,22 +1162,29 @@
     init();
   }
 
-  window.SessionUI = { syncFromProject: syncFromProject, state: SUI };
+  window.SessionUI = {
+    syncFromProject: syncFromProject,
+    state: SUI,
+    trackInfo: trackInfo,
+    upsertKeyframe: upsertKeyframe,
+    removeKeyframe: removeKeyframe,
+    stepKeyframe: stepKeyframe,
+    focusTrack: focusTrack,
+    getOsdFonts: getOsdFonts,
+    renderKeyframes: renderKeyframes,
+    renderEnv: renderEnv,
+  };
 
-/* --- colour, as a picker rather than three sliders ------------------------------------------------
-   The parameters are `red`/`green`/`blue` and `outline_red`/`...`, six numbers to reach two colours.  A native
-   colour input writes the same three numbers, so the layer stays the source of truth and the numeric interface
-   keeps working. */
-function rgbOf(cur, rk, gk, bk) {
-  const c = (v) => Math.max(0, Math.min(255, Math.round(Number(v == null ? 0 : v) * 255)));
-  return "#" + [c(cur[rk]), c(cur[gk]), c(cur[bk])]
-    .map((v) => v.toString(16).padStart(2, "0")).join("");
-}
-function hexToRgb(hex) {
-  const m = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim());
-  if (!m) return null;
-  const n = parseInt(m[1], 16);
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-}
+  function rgbOf(cur, rk, gk, bk) {
+    const c = (v) => Math.max(0, Math.min(255, Math.round(Number(v == null ? 0 : v) * 255)));
+    return "#" + [c(cur[rk]), c(cur[gk]), c(cur[bk])]
+      .map((v) => v.toString(16).padStart(2, "0")).join("");
+  }
+  function hexToRgb(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
 
 })();

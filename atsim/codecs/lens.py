@@ -187,6 +187,8 @@ def coma(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     radius = np.sqrt(np.clip(r2, 1e-9, None))
     ux = nx / radius
     uy = ny / radius
+    if abs(spec.axis_offset) > 1e-4:
+        return _seidel_caustic_coma(rgb, a, float(spec.axis_offset))
     reach = 1.0 + 9.0 * a
     out = rgb.astype(np.float32).copy()
     steps = 4
@@ -194,15 +196,108 @@ def coma(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     xbase = np.arange(w)[None, :]
     for k in range(1, steps + 1):
         t = k / float(steps)
-        # **Sample from *inward* of each pixel, so the content lands outward.**  The sign was measured rather
-        # than reasoned about: with the opposite one, a dot to the right of the axis acquired its ink to the left
-        # and a dot to the left acquired it to the right -- a contraction, which is the mirror of a comet's tail.
-        # With this sign the ink goes outward and grows 0.67 -> 3.28 -> 8.78 as the parameter rises.
         sy = np.clip(ybase - np.round(uy * reach * t).astype(np.int32), 0, h - 1)
         sx = np.clip(xbase - np.round(ux * reach * t).astype(np.int32), 0, w - 1)
         gathered = rgb[sy, sx]
         falloff = ((1.0 - t) * 0.30 * a * np.clip(radius, 0.0, 1.0))[..., None]
         out = out + gathered * falloff
+    return out.astype(np.float32)
+
+
+def _bilinear_sample_2d(plane: np.ndarray, sy: np.ndarray, sx: np.ndarray) -> np.ndarray:
+    h, w = plane.shape[:2]
+    sy_c = np.clip(sy, 0.0, h - 1.001)
+    sx_c = np.clip(sx, 0.0, w - 1.001)
+    y0 = np.floor(sy_c).astype(np.int32)
+    x0 = np.floor(sx_c).astype(np.int32)
+    y1 = y0 + 1
+    x1 = x0 + 1
+    fy = sy_c - y0
+    fx = sx_c - x0
+    top = plane[y0, x0] * (1.0 - fx) + plane[y0, x1] * fx
+    bot = plane[y1, x0] * (1.0 - fx) + plane[y1, x1] * fx
+    return (top * (1.0 - fy) + bot * fy).astype(np.float32)
+
+
+def _seidel_caustic_coma(rgb: np.ndarray, a: float, axis_offset: float) -> np.ndarray:
+    """
+    Physical Seidel Coma + Tangential/Sagittal Caustic Wedge (Born & Wolf §5.3.2) for a tilted C-mount lens
+    with multi-blade auto-iris diffraction and chromatic coma dispersion.
+    """
+    h, w = rgb.shape[:2]
+    scale_w = w / 720.0
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    nx = (xx / max(1, w - 1)) * 2.0 - 1.0
+    ny = (yy / max(1, h - 1)) * 2.0 - 1.0
+    right_t = np.clip((nx + 0.15) / 0.75, 0.0, 1.0)
+    depth_t = np.clip((ny + 0.88) / 0.88, 0.0, 1.0)
+
+    lum = rgb @ LUMA
+    bg_lum = lowpass(lum, max(2.0, 16.0 * scale_w))
+    hot_m = np.clip((lum - np.maximum(bg_lum + 0.14, 0.74)) / 0.16, 0.0, 1.0)
+    if float(hot_m.max()) < 1e-4:
+        return rgb
+
+    emitter_narrow = lowpass(hot_m ** 1.15, max(0.4, 0.65 * scale_w))
+    emitter_base   = lowpass(hot_m ** 0.85, max(0.8, 1.45 * scale_w))
+    reach = (6.0 + 14.5 * a) * scale_w * (1.08 - 0.16 * depth_t)
+
+    # Three Seidel caustic lobe angles:
+    # Lobe 1: top tangential roof (~8 deg on left, ~11 deg on right)
+    # Lobe 2: central principal ray (~35 deg on left, ~21 deg on right)
+    # Lobe 3: left sagittal wall (~78 deg on left, ~72 deg on right)
+    ang1 = np.deg2rad(8.0 * (1.0 - right_t) + 11.0 * right_t + 3.0 * depth_t)
+    ang2 = np.deg2rad(35.0 * (1.0 - right_t) + 21.0 * right_t + 4.0 * depth_t)
+    ang3 = np.deg2rad(78.0 * (1.0 - right_t) + 72.0 * right_t - 2.0 * depth_t)
+
+    bundle_w = np.clip(emitter_base * 1.30, 0.0, 1.35)
+    tail_feather = np.zeros((h, w), np.float32)
+    tail_b = np.zeros((h, w), np.float32)
+    tail_g = np.zeros((h, w), np.float32)
+
+    lobe_defs = (
+        (ang1, 0.94 * (1.0 - right_t) + 1.12 * right_t, 0.96, 0.55),
+        (ang2, 1.08 * (1.0 - right_t) + 1.18 * right_t, 1.00, 0.65),
+        (ang3, 0.74 * (1.0 - right_t) + 0.66 * right_t, 0.95, 0.04),
+    )
+    for ang_f, r_sc, lw, blue_w in lobe_defs:
+        dx_l = np.cos(ang_f).astype(np.float32)
+        dy_l = np.sin(ang_f).astype(np.float32)
+        for frac in (0.10, 0.20, 0.30, 0.42, 0.54, 0.66, 0.80, 0.94, 1.10):
+            dist = reach * r_sc * frac
+            src_p = emitter_base if frac <= 0.36 else emitter_narrow
+            val = _bilinear_sample_2d(src_p, yy - dy_l * dist, xx - dx_l * dist)
+            w_core = lw * np.clip(1.68 - 1.58 * frac, 0.0, 1.25) * a
+            bundle_w = np.maximum(bundle_w, val * w_core * 2.20)
+            w_tail = np.exp(-0.5 * ((frac - 0.76) / 0.28) ** 2) * a
+            tail_feather += val * w_tail * (blue_w * 0.45)
+            tail_b += val * w_tail * blue_w
+            tail_g += val * w_tail * (blue_w * 0.48)
+
+    web_reach_scale = (0.76 - 0.38 * depth_t) * (1.0 - right_t) + (0.88 - 0.24 * depth_t) * right_t
+    for w_mix in (0.25, 0.50, 0.75):
+        for ang_a, ang_b in ((ang1, ang2), (ang2, ang3)):
+            ang_w = (1.0 - w_mix) * ang_a + w_mix * ang_b
+            dx_w = np.cos(ang_w).astype(np.float32)
+            dy_w = np.sin(ang_w).astype(np.float32)
+            for frac in (0.15, 0.30, 0.45, 0.60, 0.75):
+                dist = reach * web_reach_scale * frac
+                val = _bilinear_sample_2d(emitter_base, yy - dy_w * dist, xx - dx_w * dist)
+                w_web = np.clip(1.58 - 1.58 * frac, 0.0, 1.15) * a
+                bundle_w = np.maximum(bundle_w, val * w_web * 2.00)
+
+    bundle_w = lowpass(np.clip(bundle_w, 0.0, 1.35), max(0.45, 0.58 * scale_w))
+    core_blend = np.clip((bundle_w - 0.28) / 0.52, 0.0, 1.0)[..., None]
+
+    out = rgb * (1.0 - core_blend) + np.ones_like(rgb) * core_blend
+
+    tf_smooth = lowpass(np.clip(tail_feather, 0.0, 0.85), max(0.9, 1.5 * scale_w))
+    tb_smooth = lowpass(np.clip(tail_b, 0.0, 0.85), max(1.0, 1.6 * scale_w))
+    tg_smooth = lowpass(np.clip(tail_g, 0.0, 0.85), max(1.0, 1.6 * scale_w))
+    skirt_w = (1.0 - core_blend[..., 0] * 0.88) * (1.0 - 0.25 * right_t)
+    out[..., 2] = np.clip(out[..., 2] + (0.22 * tf_smooth + 0.36 * tb_smooth) * skirt_w, 0.0, 1.15)
+    out[..., 1] = np.clip(out[..., 1] + (0.20 * tf_smooth + 0.16 * tg_smooth) * skirt_w, 0.0, 1.15)
+    out[..., 0] = np.clip(out[..., 0] + (0.04 * tf_smooth - 0.16 * tb_smooth) * skirt_w, 0.0, 1.15)
     return out.astype(np.float32)
 
 

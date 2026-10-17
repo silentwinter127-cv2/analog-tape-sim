@@ -18,13 +18,6 @@ apart and the strings overlapped.
 thin strokes and the internal gaps of a dense character are lost wherever they fall between samples. Where
 downscaling is genuinely needed it is now a block *mean* over an integer factor, which keeps the pixel
 structure as structure.
-
-**And one reading of mine was too quick.** I inferred "bitmap-derived" from a small count of distinct
-coordinates. That is only suggestive: the real evidence is that the coordinates are multiples of a common
-step -- A-POS's capitals span 924 units in exact multiples of 42, which is a 22-pixel cell at 42 units per
-pixel. `gcd_nz` came out as 1 for two of the three because a single off-grid coordinate in one sampled
-glyph drags the GCD to 1, so the statistic was not measuring what I thought. The conclusion still holds --
-the outlines are visibly grid-aligned -- but it now rests on the coordinate spacing rather than on a count.
 """
 from __future__ import annotations
 
@@ -65,6 +58,8 @@ class OSDPlan:
     #: a dark border around every glyph.  This is what a real camcorder's OSD uses: it makes the text readable
     #: on any picture without obscuring any of it, which a box does not.
     outline: float = 1.0
+    #: border thickness in pixels (scales with frame resolution when > 240p)
+    outline_px: int = 1
     #: the outline's own colour.  A generator's outline is a separate pen, not a darkened copy of the glyph --
     #: which is why green-inside-black and red-inside-black are both possible and neither is a shade of white.
     outline_colour: tuple[float, float, float] = (0.02, 0.03, 0.05)
@@ -109,6 +104,11 @@ class CharacterGenerator:
         self._face = None
 
     # ------------------------------------------------------------------ geometry
+    def _eff_stretch(self) -> tuple[float, float]:
+        sx = float(self.plan.stretch_x) * float(getattr(self.spec, "rom_stretch_x", 1.0))
+        sy = float(self.plan.stretch_y) * float(getattr(self.spec, "rom_stretch_y", 1.0))
+        return sx, sy
+
     def cell(self) -> tuple[int, int]:
         """
         (half-cell width, cell height) in pixels.
@@ -132,14 +132,15 @@ class CharacterGenerator:
         """
         half, _h = self.cell()
         cell_w = half * 2 if full else half
-        sx = float(self.plan.stretch_x)
+        sx, _sy = self._eff_stretch()
         gap = int(self.plan.letter_gap)
         return max(1, int(round(cell_w * sx)) + gap)
 
     def line_pitch(self) -> int:
         """The vertical distance between successive lines: the cell, scaled, plus the line gap."""
         _half, cell_h = self.cell()
-        return max(2, int(round(cell_h * float(self.plan.stretch_y))) + int(self.plan.line_gap))
+        _sx, sy = self._eff_stretch()
+        return max(2, int(round(cell_h * sy)) + int(self.plan.line_gap))
 
     def line_pixels(self, text: str) -> int:
         """The width a line will actually occupy, in pixels."""
@@ -172,22 +173,17 @@ class CharacterGenerator:
         half, _h = self.cell()
         cw = half * 2 if is_full_width(ch) else half
         plan_iter = self.plan.italic
-        plan_str = self.plan.stretch_x
-        plan_sty = self.plan.stretch_y
+        sx, sy = self._eff_stretch()
         # **The transform belongs in the key.**  Without it the first glyph rendered at a given cell size is
         # returned for every later shear and stretch -- which is why the rendered italic measurement showed both
         # signs leaning the same way while the same shear applied to a plain mask was correctly signed.
         key = "%s|%d|%d|%.4f|%.4f|%.4f" % (ch, cw, cell_h, float(plan_iter),
-                                           float(plan_str), float(plan_sty))
+                                           float(sx), float(sy))
         got = self._cache.get(key)
         if got is not None:
             return got if got.size else None
 
         from PIL import Image, ImageDraw
-        # Render at the cell's own size, not at a multiple.  A bitmap font is designed on a pixel grid, so
-        # rendering at that grid reproduces the ROM; rendering larger and averaging back invents grey levels
-        # that the apparatus does not have.  Measured with a 4x render and a block mean: 52 distinct levels
-        # in OSD's 'R' and 22 in A-POS's, against 2 for Lyusung whose grid happened to line up.
         face = self._face_for(cell_h)
         big = Image.new("L", (cw + 2, cell_h + 2), 0)      # 1 px slack so an overhang is not clipped
         d = ImageDraw.Draw(big)
@@ -201,10 +197,7 @@ class CharacterGenerator:
                 pass
         a = np.asarray(big, np.float32) / 255.0
         small = a[1:1 + cell_h, 1:1 + cw]
-        # **Scale first, shear second**, and both by re-indexing the mask.  A nearest-neighbour scale of a
-        # one-bit glyph keeps it one-bit, which is the whole character of the look; filtering it would smooth the
-        # edges and remove the reason to use a bitmap face at all.
-        sx, sy = float(self.plan.stretch_x), float(self.plan.stretch_y)
+        # **Scale first, shear second**, and both by re-indexing the mask.
         if abs(sx - 1.0) > 1e-3 or abs(sy - 1.0) > 1e-3:
             hh, ww = small.shape
             nw = max(1, int(round(ww * max(0.05, sx))))
@@ -215,19 +208,6 @@ class CharacterGenerator:
                          hh - 1).astype(np.int32)
             small = small[yi][:, xi]
         if abs(self.plan.italic) > 1e-3:
-            # Slant about the glyph's own ink centre, with room to spare.  Derived on a known mask and printed
-            # as characters before it came here, because three earlier versions of this one operation each
-            # failed differently and the failure showed only as a percentage of lost ink.
-            #
-            # The three faults, in order, all of them now fixed and each of them real:
-            #   * no padding -- a row shifted past the mask's edge was lost, 31% of the ink, asymmetrically;
-            #   * padding but pivoting on the *mask's* middle row -- a glyph does not fill its mask, so the whole
-            #     glyph sat to one side of the pivot and the shear degenerated into a translation;
-            #   * and the assignment itself: `out[r, src0+off : src1+off] = wide[r, src0:src1]` uses the same
-            #     column index on both sides, so every pixel stayed where it was.  **The row has to move.**
-            #
-            # The ink count is not conserved and should not be: a two-pixel stroke shifted by three lands
-            # differently, which is nearest-neighbour arithmetic on a bitmap glyph rather than clipping.
             slant = float(self.plan.italic)
             hh, ww = small.shape
             ink_rows = np.where((small > 0.05).any(axis=1))[0]
@@ -239,9 +219,6 @@ class CharacterGenerator:
             wide[:, pad:pad + ww] = small
             out_s = np.zeros((hh, out_w), np.float32)
             for r in range(hh):
-                # **Negated so that a positive slant leans right**, which is what the panel's number suggests.
-                # Measured before: `+0.5` moved the top quarter of the ink 7 px *left* of the bottom quarter on
-                # an 'H', and `-0.5` moved it 7 px right -- perfectly mirrored and backwards.
                 off = int(round((pivot - r) * slant))
                 d0 = max(0, pad + off)
                 d1 = min(out_w, pad + off + ww)
@@ -253,8 +230,6 @@ class CharacterGenerator:
         else:
             self._shear_pad = 0
         if self.plan.hard_edges:
-            # one bit per pixel, as the ROM is.  The midpoint is the only defensible threshold: a value at
-            # or above half coverage is more on than off.
             small = (small >= 0.5).astype(np.float32)
         self._cache[key] = small
         return small if small.size else None
@@ -264,16 +239,30 @@ class CharacterGenerator:
 
     # ------------------------------------------------------------------ drawing
     def draw(self, rgb: np.ndarray) -> tuple[np.ndarray, dict]:
+        out, reported, _mask = self.draw_with_mask(rgb)
+        return out, reported
+
+    def draw_with_mask(self, rgb: np.ndarray) -> tuple[np.ndarray, dict, np.ndarray]:
+        """
+        Draw the character generator overlay onto `rgb`, returning `(out_rgb, reported, changed_mask)`.
+
+        `changed_mask` is a float32 `(H, W)` weight in `0..1` marking every pixel modified by the
+        character generator (glyphs, outline, shadow, or background box).  This lets the pre-tape
+        slot (`overlay.at == 1`) composite the generator's output onto the existing signal & carrier
+        *only where the generator actually drew*, leaving the rest of the frame's encoded signal
+        untouched.
+        """
         out = rgb
         plan = self.plan
         half, cell_h = self.cell()
+        h, w = rgb.shape[:2]
+        zero_mask = np.zeros((h, w), np.float32)
         reported: dict = {"drawn": 0, "missing": [], "lines": len(plan.lines),
                           "cell": [half, cell_h], "font": self.font_key,
                           "halign": plan.halign, "valign": plan.valign}
         if not plan.lines or plan.opacity <= 1e-3:
-            return out, reported
+            return out, reported, zero_mask
 
-        h, w = rgb.shape[:2]
         layer = np.zeros((h, w), np.float32)
         missing: set[str] = set()
 
@@ -297,7 +286,6 @@ class CharacterGenerator:
             y = y0_block + line.row * (pitch + plan.gap)
             if y >= h or y + cell_h < 0:
                 continue
-            # alignment first, then the line's own column offset, so an explicit placement still works
             line_w = self.line_pixels(line.text or "")
             if plan.halign == 1:
                 x = plan.margin_x + max(0, (usable_w - line_w) // 2)
@@ -310,8 +298,6 @@ class CharacterGenerator:
                 full = is_full_width(ch)
                 cw = self.adv(full)
                 if x >= w:
-                    # a generator does not wrap; it runs off the edge.  The remaining characters of this
-                    # line are counted as wanted but not drawn, so the overflow is visible in the report.
                     break
                 g = self._glyph(ch, cell_h)
                 if g is None or not self.spec.can_draw(ch):
@@ -320,13 +306,11 @@ class CharacterGenerator:
                     drawn_cells += 2 if full else 1
                     continue
                 gh, gw = g.shape[:2]
-                # the mask may be wider than the cell because the shear was given room; the ink inside it
-                # starts `pad` pixels in, so the stamp moves left by that much to stay in the cell
-                x = x - int(getattr(self, "_shear_pad", 0))
-                y0, x0 = max(0, y), max(0, x)
-                y1, x1 = min(h, y + gh), min(w, x + gw)
+                x_draw = x - int(getattr(self, "_shear_pad", 0))
+                y0, x0 = max(0, y), max(0, x_draw)
+                y1, x1 = min(h, y + gh), min(w, x_draw + gw)
                 if y1 > y0 and x1 > x0:
-                    sub = g[y0 - y:y1 - y, x0 - x:x1 - x]
+                    sub = g[y0 - y:y1 - y, x0 - x_draw:x1 - x_draw]
                     dest = layer[y0:y1, x0:x1]
                     np.maximum(dest, sub, out=dest)
                     reported["drawn"] += 1
@@ -337,14 +321,6 @@ class CharacterGenerator:
                     drawn_cells += 2 if full else 1
                 x += cw
         reported["missing"] = sorted(missing)
-        # the widest line in cells, and the frame's capacity, so an overflowing line is visible before it
-        # is rendered and silently clipped at the edge
-        # `wanted` is the width the line declares, `drawn` how much of it reached the frame, and `fit` how
-        # much the frame holds.  The old report only had the drawn width, which is capped at `fit` -- so a
-        # line that ran off the edge could never be reported as too wide, which is exactly the case a person
-        # needs told.
-        # the *stretched* width, in half-advances, so a line widened by `stretch_x` is measured by the space it
-        # will actually take.  Reporting the unstretched count would say a line fits while it runs off the edge.
         adv_half = self.adv(False)
         reported["cells_wanted"] = max(
             [(self.line_pixels(l.text or "") + max(1, adv_half) - 1) // max(1, adv_half)
@@ -352,18 +328,16 @@ class CharacterGenerator:
         reported["cells_drawn"] = drawn_cells
         reported["cells_fit"] = self.cells_wide(w)
         reported["overflow"] = reported["cells_wanted"] > reported["cells_fit"]
-        # kept for anything already reading the old name
         reported["cells_used"] = reported["cells_drawn"]
         if reported["drawn"] == 0:
-            return out, reported
+            return out, reported, zero_mask
 
-        a = layer * float(np.clip(plan.opacity, 0.0, 1.0))
+        op = float(np.clip(plan.opacity, 0.0, 1.0))
+        a = layer * op
         base = out.astype(np.float32, copy=True)
+        changed = a.copy()
 
         if plan.background is not None:
-            # the ink's own extent, so the box follows the stretched glyphs and the line pitch rather than the
-            # nominal cell height -- which is why a `line_gap` produced a wider gap in the placement and none in
-            # the picture
             rows = np.where(layer.max(axis=1) > 0)[0]
             cols = np.where(layer.max(axis=0) > 0)[0]
             if rows.size and cols.size:
@@ -372,7 +346,8 @@ class CharacterGenerator:
                 c0, c1 = max(0, cols[0] - pad), min(w, cols[-1] + pad + 1)
                 bg = np.array(plan.background, np.float32)
                 box = base[r0:r1, c0:c1]
-                base[r0:r1, c0:c1] = box + (bg[None, None, :] - box) * float(plan.opacity)
+                base[r0:r1, c0:c1] = box + (bg[None, None, :] - box) * op
+                changed[r0:r1, c0:c1] = np.maximum(changed[r0:r1, c0:c1], op)
 
         if plan.shadow > 1e-3:
             ox = int(plan.shadow_x) if plan.shadow_x else max(1, cell_h // 12)
@@ -384,35 +359,33 @@ class CharacterGenerator:
             xd = slice(max(0, -ox), a.shape[1] + min(0, -ox))
             sh[yd, xd] = a[ys, xs]
             base = base * (1.0 - sh[..., None] * plan.shadow)
+            np.maximum(changed, np.clip(sh * float(plan.shadow), 0.0, 1.0), out=changed)
 
         if plan.outline > 1e-3:
-            # one cell of dark border, drawn *under* the glyphs.  A dilation by one pixel in each direction
-            # is exactly a border, and it costs three shifted maxima rather than a convolution.
             ring = a.copy()
-            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
-                sh = np.zeros_like(a)
-                ys = slice(max(0, dy), a.shape[0] + min(0, dy))
-                yd = slice(max(0, -dy), a.shape[0] + min(0, -dy))
-                xs = slice(max(0, dx), a.shape[1] + min(0, dx))
-                xd = slice(max(0, -dx), a.shape[1] + min(0, -dx))
-                sh[yd, xd] = a[ys, xs]
-                np.maximum(ring, sh, out=ring)
+            rad = max(1, int(getattr(plan, "outline_px", 1)))
+            for _step in range(rad):
+                cur_r = ring.copy()
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+                    sh = np.zeros_like(cur_r)
+                    ys = slice(max(0, dy), cur_r.shape[0] + min(0, dy))
+                    yd = slice(max(0, -dy), cur_r.shape[0] + min(0, -dy))
+                    xs = slice(max(0, dx), cur_r.shape[1] + min(0, dx))
+                    xd = slice(max(0, -dx), cur_r.shape[1] + min(0, -dx))
+                    sh[yd, xd] = cur_r[ys, xs]
+                    np.maximum(ring, sh, out=ring)
             border = np.clip(ring - a, 0.0, 1.0) * float(plan.outline)
-            # the outline's own pen, not a darkened copy of the glyph
             dark = np.asarray(plan.outline_colour, np.float32)
             base = base * (1.0 - border[..., None]) + dark[None, None, :] * border[..., None]
+            np.maximum(changed, np.clip(border, 0.0, 1.0), out=changed)
 
         col = np.array(plan.colour, np.float32)
         out = base * (1.0 - a[..., None]) + col[None, None, :] * a[..., None]
 
-        # Legibility is a property of the whole overlay, so it is judged here -- once, after the box and the
-        # glyphs have been composited and the frame's own pixels exist.  Measuring it inside the drawing loop
-        # is what produced `behind=None` with a background set: the box had not been drawn yet.
         COEF = np.array([0.299, 0.587, 0.114], np.float32)
         text_luma = float(np.asarray(plan.colour, np.float32) @ COEF)
         reported["text_luma"] = round(text_luma, 4)
         if plan.background is not None:
-            # the text sits on the box, not on the picture
             bg = float(np.asarray(plan.background, np.float32) @ COEF)
             reported["background_luma"] = round(bg, 4)
             behind = bg
@@ -420,20 +393,15 @@ class CharacterGenerator:
             reported["contrast"] = round(abs(behind - text_luma), 4)
             reported["legible"] = reported["contrast"] >= 0.18
         elif plan.outline > 1e-3:
-            # an outline gives the text its own dark backdrop whatever is underneath, so it is legible by
-            # construction -- which is the reason real camcorders use one
             dark = float(np.asarray(plan.outline_colour, np.float32) @ COEF)
             reported["behind_luma"] = round(dark, 4)
             reported["contrast"] = round(abs(dark - text_luma), 4)
             reported["legible"] = reported["contrast"] >= 0.18
         else:
-            # the frame under the text was not measured, so legibility is *unknown*.  Falling back to a mid
-            # grey reported a comfortable contrast for white text on a bright frame -- a judgement about a
-            # number that was never measured, which is the fault this whole check exists to avoid.
             reported["behind_luma"] = None
             reported["contrast"] = None
             reported["legible"] = None
-        return out.astype(np.float32), reported
+        return out.astype(np.float32), reported, np.clip(changed > 1e-4, 0.0, 1.0).astype(np.float32)
 
 
 def parse_lines(spec) -> list[OSDLine]:
@@ -441,17 +409,12 @@ def parse_lines(spec) -> list[OSDLine]:
     if spec is None:
         return []
     if isinstance(spec, str):
-        # Each line gets its own row.  Without this every line was drawn at row 0 and they landed on top of
-        # one another -- a fault no single-line test could show, and the first thing a person types is more
-        # than one line.
         return [OSDLine(t, 0, i) for i, t in enumerate(spec.split("\n"))]
     out: list[OSDLine] = []
     for i, item in enumerate(spec):
         if isinstance(item, str):
             out.append(OSDLine(item, 0, i))
         elif isinstance(item, dict):
-            # an explicit `row` is an offset from this line's own position, so a caller may place a line
-            # where it likes and let the rest stack below it rather than all sharing that row
             out.append(OSDLine(str(item.get("text", "")),
                                int(item.get("col", 0)), i + int(item.get("row", 0))))
     return out

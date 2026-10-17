@@ -1,0 +1,71 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "Sony 工业枪机 CCD（BNC 转 AV 复合视频采集卡直采）",
+  "standard": "pal",
+  "seed": 20240101,
+  "fps": 25.0,
+  "params": {
+    "camera": {
+      "sensor_type": 0.0,
+      "sensor_noise": 0.012,
+      "ccd_gain": 0.05,
+      "sharpness": 1.16,
+      "dynamic_range": 7.8,
+      "coma": 0.75,
+      "axis_offset": 0.5,
+      "overflow_drain": 0.65,
+      "chroma_aberration": 0.08,
+      "longitudinal_ca": 0.05,
+      "color_cast": 0.0,
+      "white_balance_temp": 0.0,
+      "ccd_smear": 0.0,
+      "halation": 0.0
+    },
+    "format": {
+      "luma_bandwidth": 5.0,
+      "chroma_bandwidth": 1.75,
+      "filter_kind": 0.0,
+      "chroma_vertical_averaging": 0.08,
+      "comb_depth": 0.95,
+      "cross_color": 0.04,
+      "cross_luma": 0.02,
+      "color_noise": 0.015,
+      "edge_boost": 0.18,
+      "chroma_gain": 1.38
+    },
+    "codec": {
+      "dv_enabled": 0.0
+    },
+    "tape": {
+      "tape_speed": 0.0,
+      "tape_stability": 1.0,
+      "wear": 0.0,
+      "dropout_rate": 0.0,
+      "noise_floor": 0.008,
+      "line_jitter": 0.0,
+      "walk_amplitude": 0.0,
+      "micro_jitter": 0.0,
+      "vertical_instability": 0.0,
+      "head_switching": 0.0,
+      "tracking_error": 0.0,
+      "crease_rate": 0.0
+    },
+    "player": {
+      "transport_jitter": 0.0,
+      "tbc_enabled": 1.0,
+      "tbc_strength": 1.0,
+      "tbc_residual": 0.0,
+      "head_wear": 0.0,
+      "frequency_response": -0.15,
+      "luma_bandwidth": 5.0,
+      "chroma_bandwidth": 1.75,
+      "comb_depth": 0.95,
+      "cross_color": 0.04,
+      "cross_luma": 0.02
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  }
+}

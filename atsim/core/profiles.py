@@ -252,14 +252,19 @@ def build_schema() -> ParamSchema:
                     "实测：原来靠调低泛光来提对比，结果对比从 0.2185 掉到 0.2069，方向相反。")
     # --- the night-vision modes ------------------------------------------------
     cam.define("nv_mode", "夜视模式 0关/1NightShot/2Super/3ColorSlow", 0.00, 0.0, 3.0, unit="", group=g,
-               phys_min=0.0, phys_max=3.0, source="索尼 Digital 8 / DSC-F717 的三种夜视功能",
-               help="**从物理底层重建的索尼夜视功能。**"
+               phys_min=0.0, phys_max=3.0, source="通用 DV / Digital 8 / DSC-F717 的三种夜视模式（含 DCR-TRV 慢快门对应关系）",
+               help="**从物理底层重建的索尼夜视功能（保持通用 DV 的三种夜视模式）。**"
                 "**默认 0（关闭）：模式是被选择的功能，不是一个一直在运行的机制。**"
-                "0 = 关；1 = NightShot（拆掉红外截止滤镜 + 开红外照明，显示为绿单色）；"
-                "2 = Super NightShot（更长曝光 + 帧积累，所以【更亮且更少噪】）；"
-                "3 = Color Slow Shutter（保留彩色、只放慢快门）。"
-                "对照素材 `索尼F717夜视测试` 的分段实测：绿段 G 占比 0.44-0.58、色相散度 0.06-0.18；"
-                "彩色段 G 占比 0.28-0.30、色相散度 0.24-0.37。")
+                "0 = 关；1 = NightShot（拉下夜视拨杆：拆掉红外截止滤镜 + 开红外照明，正常快门，显示为绿单色）；"
+                "2 = Super NightShot（红外夜视 + 慢快门/多帧累积，所以【更亮且更少噪】；"
+                "在 **Sony DCR-TRV 系列（如 DCR-TRV310E）** 上，拉下夜视键为 `NightShot`，"
+                "按一下机身 `SLOW SHUTTER` 键显示 `NIGHTSHOT 1`，再按一下显示 `NIGHTSHOT 2`——"
+                "两者即本模式下不同档位的慢快门/帧累积，可通过 `nv_accumulate` / `nv_shutter_frames` 控制档位）；"
+                "3 = Color Slow Shutter（保留彩色、只放慢快门，不拆红外滤镜）。"
+                "对照实拍素材 `10月13日.mp4`（`c_0001..c_0207`，遮除 OSD）分段实测："
+                "TRV `NightShot`（`c_0063..c_0091`）mean 0.278、G 占比 0.377、R/G 0.731；"
+                "TRV `NightShot 1`（`c_0109..c_0135`）mean 0.268、G 占比 0.415、R/G 0.556；"
+                "TRV `NightShot 2`（`c_0136..c_0168`）mean 0.363、G 占比 0.440、R/G 0.464、B/G 0.812。")
     cam.define("nv_illuminator", "红外照明强度", 1.20, 0.0, 4.0, unit="0-4", group=g,
                phys_min=0.0, phys_max=0.6,
                help="**平方反比、且在锥形光束内**——所以近场被照亮、走廊远处归黑。"
@@ -462,7 +467,7 @@ def build_schema() -> ParamSchema:
     #: **Kept so an existing project still loads, and inert because the cell size now decides.**  A stale value here
     #: would otherwise silently override the physical parameter, which is the "preset that removes a control" fault
     #: this file records three times.
-    cam.define("nv_nir_grid", "材质判定网格（已废弃，由格子边长决定）", 8, 2, 32, group=g,
+    cam.define("nv_nir_grid", "材质判定网格（已废弃，由格子边长决定）", 8.0, 2.0, 32.0, group=g,
                phys_min=2, phys_max=32,
                help="**已废弃**：块数是随分辨率变化的物理量，所以判定改由 `nv_nir_cell_px`（格子边长，单位像素）"
                     "决定，这个参数不再被读取。保留是为了让旧工程仍能导入，并让找到它的人读到原因。")
@@ -734,7 +739,7 @@ def build_schema() -> ParamSchema:
     # The receiver's Y/C separator.  Four real designs of different eras, and the choice
     # is what decides the shape of the coloured fringes on hard edges: a cheap set uses a
     # band split, a better one a glass delay line, a good one two lines or a 2-D comb.
-    fmt.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 5, unit="0-4", group=g,
+    fmt.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 5.0, unit="0-4", group=g,
                step=1.0, phys_min=0.0, phys_max=4.0,
                source="消费级接收机的四种分离方案（同年代分层）",
                help="**这是器件选择，不是效果旋钮。** 0=带通分离（廉价机，无延迟线）；"
@@ -900,6 +905,11 @@ def build_schema() -> ParamSchema:
                     "（约 2.2×/3.4×）、控制轨迹信号变弱使时基更不稳（约 1.9×/2.8×）。"
                     "色度欠载方式不变，所以色度带宽不随速度改变——这也是为什么"
                     "LP/EP 素材里亮度电平基本不变，坏的是色度分层与稳定度。")
+    tpe.define("sp_lp_mix", "SP/LP 混合交界包络", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.8,
+               source="COSMAG E-180（180分 SP / 360分 LP 混合录制）+ 夏普 VC-A62DT 4视频磁头切换",
+               help="同一盘磁带上 SP（49 μm 磁迹）与 LP（24.5 μm 磁迹）混合录制或跨档自动切换时，"
+                    "4 视频磁头（2×SP + 2×LP）读取窄保护带磁迹产生的 FM 包络起伏与 629 kHz 色度相位颤动。")
     g = "走带与时基误差"
     tpe.define("tape_stability", "走带稳定性", 0.55, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=1.0, source="磁带盒与走带机构机械状态",
@@ -937,6 +947,25 @@ def build_schema() -> ParamSchema:
                     "涂层脱落会直接毁掉微弱的色度载波，颗粒若带上彩色就错了。"
                     "它与「色度增益」「消隐电平」共同构成发霉格的三要素："
                     "去饱和 + 变暗 + 高频颗粒。")
+    g = "存档带物理失效（COSMAG E-180 标定）"
+    tpe.define("demagnetization", "消磁（剩磁衰减）", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.9,
+               source="COSMAG E-180 存档带采录失败段（消磁）：Wallace 剩磁损耗与色度消隐",
+               help="磁粉层剩磁 M_r 随岁月或外部磁场消退。按 Wallace 电磁感应定律，高频 FM 亮度载波"
+                    "（3.8–4.8 MHz）与微弱的 629 kHz 欠载色度先跌破限幅器与 ACC 阈值，"
+                    "导致画面细节发虚、反差坍塌、伴随限幅器雪花噪波并触发色度消隐（去饱和）。")
+    tpe.define("base_cracking", "带基龟裂（PET 微裂纹）", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.9,
+               source="COSMAG E-180 存档带采录失败段（带基龟裂）：磁头掠过微裂纹的间距损耗",
+               help="老化聚酯（PET）带基产生横跨 5.9° 螺旋磁迹的脆性微裂纹网。当夏普 VC-A62DT 的 4 颗"
+                    "视频磁头高速掠过裂纹台阶时，磁头-磁带间距 d 瞬间跳变（54.6·d/λ dB 间距损耗），"
+                    "形成斜向/横向双极性 FM 失锁黑白尖峰裂纹与局部行相位滑移。")
+    tpe.define("base_breakage", "带基破损（折损/断带失步）", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.9,
+               source="COSMAG E-180 存档带采录失败段（带基破损）：下沿 1×时间轴 CTL 磁头失锁",
+               help="带基边缘破损、撕裂或接带折痕同时破坏螺旋视频轨与磁带下沿 25 Hz 时间轴控制轨（CTL）。"
+                    "夏普 VC-A62DT 的 1 颗时间轴磁头失去 CTL 脉冲后，主导轴伺服瞬间失步，"
+                    "在破损横带处产生剧烈的行同步剪切、场跳动与全宽原生 FM 雪花。")
 
     g = "亮度电平"
     tpe.define("luma_pedestal", "消隐电平偏移", 0.0, -0.5, 0.3, unit="0-1", group=g,
@@ -1110,6 +1139,21 @@ def build_schema() -> ParamSchema:
                group=g, step=1.0)
     tpe.define("shuttle_block", "宏块边长", 16.0, 8.0, 32.0, unit="px", group=g,
                step=8.0, phys_min=16.0, phys_max=16.0, source="DV 宏块为 16x16 亮度像素")
+    tpe.define("shuttle_guard_bars", "跨轨噪波条（Cue/Review 搜索）", 0.0, 0.0, 1.0, unit="0-1",
+               group=g, phys_min=0.0, phys_max=1.0,
+               source="螺旋扫描磁鼓倍速搜索 RF 包络周期塌陷（罗大佑《首都》MV 实测标定）",
+               help="模拟磁带倍速快进/倒带搜索（Cue/Review）时，旋转磁头斜跨 |N-1| 条磁迹，"
+                    "RF 包络周期性穿过相邻磁迹保护带/方位角零点，产生垂直等距向下滚动的"
+                    "双峰解调雪花横条、行同步黑槽切口与行剪切。")
+    tpe.define("shuttle_bar_luma", "噪波条灰白平台电平", 0.565, 0.20, 0.95, unit="IRE",
+               group=g, phys_min=0.45, phys_max=0.82,
+               source="FM 限幅器失锁零交越自激电平（《首都》MV 19.5s 实测 0.562，6.0s 实测 0.750）",
+               help="RF 包络跌破 FM 限幅器门限时，解调器锁定在限幅器自激中值形成的灰白横条亮度。")
+    tpe.define("shuttle_PIP_bars", "画中画子窗轨数倍频", 0.0, 0.0, 1.0, unit="bool",
+               group=g, step=1.0, phys_min=0.0, phys_max=1.0,
+               source="《首都》MV 6.0s 上半幅子窗（Y ∈ [0, 0.562H]，9x 倍速 8 条主+副噪波条）",
+               help="开启后仅在画面上半幅子窗（Y ∈ [0, 0.562H]）施加约 9x 倍速的密集跨轨噪波条"
+                    "（周期 129.3 px），下半幅保持正常重放（对应《首都》MV 分屏切换台合成结构）。")
 
     g = "广播链路信噪比"
     rf.define("broadcast_noise", "广播噪声", 0.0, 0.0, 1.0, unit="0-1", group=g,
@@ -1139,6 +1183,11 @@ def build_schema() -> ParamSchema:
     cn.define("hdmi_corrosion", "HDMI 氧化", 0.0, 0.0, 1.0, unit="0-1", group=g,
               phys_min=0.0, phys_max=0.6,
               help="氧化层是差的导体，接触电阻上升，结点更像开路而不是匹配负载。")
+    cn.define("aspect_squeeze", "16:9→4:3 二次压扁", 0.0, 0.0, 1.5, unit="次", group=g,
+              phys_min=0.0, phys_max=1.0, source="机顶盒 720p60 16:9 固定输出 → HDMI-AV 压入 4:3 行宽",
+              help="机顶盒（如小米盒子 720p60）固定输出 16:9 宽屏，经 HDMI-AV 与 PAL-D 调制进入 4:3 录像机"
+                   "（松下 NV-J27）时被横向压缩为 3/4（0.75），导致原本 4:3 的画面被再次横向压扁为 9:16"
+                   "（两侧各留 12.5% 消隐黑边）。1.0 = 一次 16:9→4:3 横向压扁（×0.75）。")
     g = "AV / RCA 接口"
     cn.define("av_present", "AV 接口", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
               phys_min=0.0, phys_max=1.0, source="RCA 复合视频（黄莲花头）")
@@ -1195,6 +1244,13 @@ def build_schema() -> ParamSchema:
                step=1.0, source="TBC / 数字时基校正器")
     ply.define("tbc_strength", "时基校正强度", 1.0, 0.0, 1.0, unit="0-1", group=g)
     ply.define("tbc_residual", "校正残差", 0.0, 0.0, 1.0, unit="0-1", group=g)
+    ply.define("stabilizer_stages", "多级串接画面稳定（H96+M9E）", 0.0, 0.0, 2.0, unit="级", group=g,
+               step=1.0, phys_min=0.0, phys_max=2.0,
+               source="夏普 VC-A62DT（主采录）→ 夏普 VC-H96（一级稳定）→ 夏普 VC-M9E（二级稳定）→ 天创恒达 TC-UB530",
+               help="0=单机直出｜1=接入二级录像机（夏普 VC-H96，一级画面稳定）｜2=再串接三级录像机"
+                    "（夏普 VC-M9E，二级画面稳定）。每一级串联录像机的行 AFC 与同步再生电路会逐级滤除"
+                    "COSMAG E-180 磁带的时基漂移与 CTL 失步抖动，同时引入两级 75Ω 复合缓冲与 1H 延迟线"
+                    "的轻微色度右移（约 0.85 px/级）及黑电平钳位，确保天创恒达 TC-UB530 采集卡与 OBS Studio 32.0 不丢帧。")
     ply.define("line_delay", "行延迟", 0.0, -8.0, 8.0, unit="px", group=g,
                phys_min=-3.0, phys_max=3.0, source="色度相对亮度的群延迟")
     g = "磁头与频响"
@@ -1215,7 +1271,7 @@ def build_schema() -> ParamSchema:
                phys_min=0.4, phys_max=1.2)
     # A deck's own separator.  Kept separate from the format layer's copy because a
     # camcorder and a deck are two different receivers, and each chose its own design.
-    ply.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 5, unit="0-4", group=g,
+    ply.define("separation_kind", "Y/C 分离方式", 0.0, 0.0, 5.0, unit="0-4", group=g,
                step=1.0, phys_min=0.0, phys_max=4.0,
                source="消费级接收机的四种分离方案（同年代分层）",
                help="**器件选择，不是效果旋钮。** 0=带通分离（廉价机，无延迟线）；"
@@ -1381,11 +1437,14 @@ def build_schema() -> ParamSchema:
                     "两者都是真实设备；差别正好在磁带很差的时候看得出来。")
     osd.define("enabled", "启用字幕机", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
                phys_min=0.0, phys_max=1.0)
-    osd.define("font", "字体", 0.0, 0.0, 2.0, unit="0-2", group=g, step=1.0,
-               phys_min=0.0, phys_max=2.0,
-               help="0 = **VCR OSD Mono**（仅英文/数字——对汉字会**明确报告缺字**而不是画方块）；"
-                    "1 = **柳宋**（中英文数字，6763 汉字）；2 = **A-POS 点阵**（中英文数字，20902 汉字）。"
-                    "字体不可用时不会让渲染失败：叠字是可选的，而链路其余部分已经做完了。")
+    osd.define("font", "字体", 0.0, 0.0, 19.0, unit="0-19", group=g, step=1.0,
+               phys_min=0.0, phys_max=19.0,
+               help="字符发生器字库选择（共 20 款点阵/等宽/电视/卡拉OK字体）："
+                    "0 = VCR OSD Mono、1 = 柳宋、2 = A-POS 点阵、3 = OCR-A、4 = OCR-B、"
+                    "5 = Ming-Imperial、6 = OCR-A 扩展、7 = 中易黑体、8 = 中易宋体、"
+                    "9 = MS 明朝、10 = MS 哥特、11 = 细明体、12 = Consolas、13 = Courier New、"
+                    "14 = Century Gothic、15 = Sony Handycam 窄高体、16 = Panasonic VCR 扁宽点阵、"
+                    "17 = LD/VCD 卡拉OK 大粗宋、18 = LD/VCD 卡拉OK 综艺粗黑、19 = CCTV 监控时间码。")
     osd.define("text", "字幕文本", "", 0.0, 1.0, unit="text", kind="text", group=g,
                help="可多行（换行即多行）。**不换行、不重排**——一行超出右边缘的部分直接丢失，"
                     "因为真实字符发生器没有断行逻辑。汉字占两格、西文占一格。")
@@ -1571,11 +1630,55 @@ MEDIA_PROFILES = {
     "vhs_worn": {"label": "磨损 VHS 带", "note": "多次走带后的磁介质", "layers": {
         "tape": {"wear": 0.55, "dropout_rate": 0.9, "noise_floor": 0.32,
                  "crease_rate": 0.35, "chroma_loss": 0.22}}},
+    "cosmag_e180_pal_splp_good": {
+        "label": "COSMAG E-180（PAL/SP/LP 混合 · 258分钟采录成功段）",
+        "note": "标称 180分钟(SP)/360分钟(LP) 混合录制磁带中成功抢救的 258 分钟段落：SP/LP 磁迹切换包络、轻度岁月磨损与偶发磁粉失落",
+        "layers": {
+            "format": {"luma_bandwidth": 2.95, "chroma_bandwidth": 0.62, "chroma_gain": 0.94, "color_noise": 0.20},
+            "tape": {"tape_speed": 0.0, "sp_lp_mix": 0.42, "tape_stability": 0.68, "line_jitter": 0.22,
+                     "walk_amplitude": 0.18, "row_timebase": 0.08, "wear": 0.24, "dropout_rate": 0.38,
+                     "noise_floor": 0.16, "crease_rate": 0.14, "demagnetization": 0.08,
+                     "base_cracking": 0.04, "binder_loss": 0.03, "head_switching": 0.78,
+                     "head_switch_lines": 6.0, "tracking_error": 0.24}}},
+    "cosmag_e180_pal_splp_fail": {
+        "label": "COSMAG E-180（PAL/SP/LP 混合 · 61分钟采录失败段：消磁/龟裂/发霉/破损）",
+        "note": "61 分钟高危失效段落：同时爆发剩磁衰减（消磁）、PET 带基脆性微裂纹（带基龟裂）、潮湿黏合剂霉变脱粉（发霉）与边缘破损 CTL 控制轨失步（带基破损）",
+        "layers": {
+            "format": {"luma_bandwidth": 2.35, "chroma_bandwidth": 0.48, "chroma_gain": 0.38, "color_noise": 0.42},
+            "tape": {"tape_speed": 1.0, "sp_lp_mix": 0.75, "tape_stability": 0.28, "line_jitter": 0.65,
+                     "walk_amplitude": 0.55, "row_timebase": 0.45, "wear": 0.68, "dropout_rate": 2.10,
+                     "noise_floor": 0.38, "crease_rate": 0.65, "binder_loss": 0.34, "shed_grain": 0.38,
+                     "demagnetization": 0.52, "base_cracking": 0.62, "base_breakage": 0.58,
+                     "stiction_rate": 0.85, "stiction_amount": 0.65,
+                     "row_chroma_error": 0.26, "row_chroma_phase": 40.0,
+                     "head_switching": 0.95, "head_switch_lines": 10.0, "tracking_error": 0.62}}},
     "svhs": {"label": "S-VHS", "note": "亮度带宽约 5 MHz，色度仍欠载", "layers": {
         "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 0.75}}},
-    "hi8": {"label": "Hi8", "note": "模拟行记录，无宏块结构", "layers": {
-        "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 0.75},
-        "tape": {"shuttle_mode": 1.0}}},
+    "hi8": {"label": "Hi8", "note": "Sony 1/4 英寸 CCD + 模拟行记录（4.2 MHz FM 亮度 + 743 kHz 欠载色度），无宏块结构", "layers": {
+        "camera": {"sensor_type": 0.0, "sensor_noise": 0.09, "ccd_gain": 0.68,
+                   "sharpness": 0.80, "chroma_aberration": 0.05, "dynamic_range": 7.5,
+                   "color_cast": 0.45, "white_balance_temp": 0.0,
+                   "ccd_smear": 0.28, "halation": 0.28},
+        "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 0.75,
+                   "chroma_vertical_averaging": 0.55, "comb_depth": 0.65,
+                   "cross_color": 0.28, "cross_luma": 0.18, "color_noise": 0.22,
+                   "edge_boost": 0.24},
+        "tape": {"shuttle_mode": 1.0, "tape_stability": 0.76, "wear": 0.15,
+                 "dropout_rate": 0.15, "noise_floor": 0.14, "line_jitter": 0.14,
+                 "walk_amplitude": 0.10, "micro_jitter": 0.08,
+                 "head_switching": 0.35, "head_switch_lines": 6.0,
+                 "tracking_error": 0.15}}},
+    "digital8": {"label": "Digital8", "note": "Sony 1/4 英寸 CCD + 在 Hi8 8mm 磁带上记录 DV25 (4:1:1 + DCT) 数字分量流", "layers": {
+        "camera": {"sensor_type": 0.0, "sensor_noise": 0.08, "ccd_gain": 0.65,
+                   "sharpness": 0.82, "chroma_aberration": 0.04, "dynamic_range": 7.5,
+                   "color_cast": 0.45, "white_balance_temp": 0.0,
+                   "ccd_smear": 0.25, "halation": 0.25},
+        "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0,
+                   "chroma_vertical_averaging": 0.0, "color_noise": 0.04, "edge_boost": 0.18},
+        "codec": {"dv_enabled": 1.0, "dv_quality": 0.90, "dv_base_step": 0.015},
+        "tape": {"shuttle_mode": 2.0, "dropout_rate": 0.0, "noise_floor": 0.03,
+                 "line_jitter": 0.03, "walk_amplitude": 0.02, "micro_jitter": 0.03,
+                 "head_switching": 0.0}}},
     "video8": {"label": "Video8", "note": "8mm 家用机，带宽低于 Hi8", "layers": {
         "format": {"luma_bandwidth": 3.0}, "tape": {"shuttle_mode": 1.0}}},
     "minidv": {"label": "MiniDV", "note": "数字分支：4:1:1 + DCT", "layers": {
@@ -1609,6 +1712,54 @@ PLAYER_PROFILES = {
     "deck_jvc_srs388e": {"label": "JVC SR-S388E（S-VHS 编辑机）",
                          "note": "信号过差时会丢弃磁带画面并输出自身蓝底 + OSD",
                          "layers": {"player": {"tbc_enabled": 1.0, "tbc_strength": 0.95}}},
+    "deck_sharp_vca62dt_only": {
+        "label": "夏普 VC-A62DT（主采录机直出：4视频磁头 + 1音频磁头 + 1时间轴磁头）",
+        "note": "主采录机单机工作：4 颗旋转视频磁头（2×SP + 2×LP）负责读取混合磁迹，1 颗固定音频磁头，1 颗 25Hz 时间轴控制磁头（CTL）；未接后续画面稳定机时，老带时基摆动直接暴露",
+        "layers": {
+            "player": {"tbc_enabled": 0.0, "stabilizer_stages": 0.0, "transport_jitter": 0.32,
+                       "head_wear": 0.16, "preemphasis": 0.24, "ringing": 0.16, "ringing_freq": 0.50,
+                       "luma_bandwidth": 3.1, "chroma_bandwidth": 0.65, "separation_kind": 2.0,
+                       "comb_depth": 0.65, "cross_color": 0.28, "cross_luma": 0.18, "color_noise": 0.18}}},
+    "deck_sharp_vca62dt_h96_stage1": {
+        "label": "夏普 VC-A62DT → 夏普 VC-H96（二级采录 · 一级画面稳定）",
+        "note": "主采录机 VC-A62DT 复合信号进入二级录像机夏普 VC-H96 进行一级行同步再生与水平 AFC 钳位稳定",
+        "layers": {
+            "player": {"tbc_enabled": 1.0, "tbc_strength": 0.72, "tbc_residual": 0.08,
+                       "stabilizer_stages": 1.0, "transport_jitter": 0.14, "head_wear": 0.14,
+                       "preemphasis": 0.22, "ringing": 0.15, "ringing_freq": 0.50,
+                       "luma_bandwidth": 3.0, "chroma_bandwidth": 0.62, "separation_kind": 2.0,
+                       "comb_depth": 0.72, "cross_color": 0.22, "cross_luma": 0.14, "color_noise": 0.15}}},
+    "deck_sharp_vca62dt_h96_m9e_cascade": {
+        "label": "夏普 VC-A62DT → 夏普 VC-H96（一级稳定）→ 夏普 VC-M9E（二级稳定）三机级联",
+        "note": "完整三级录像机时基接力：主采录机 VC-A62DT（4视频+1音频+1时间轴磁头）→ 二级 VC-H96（一级画面稳定）→ 三级 VC-M9E（二级画面稳定），将行同步抖动压缩 ~90% 后送入天创恒达 TC-UB530 采集卡",
+        "layers": {
+            "player": {"tbc_enabled": 1.0, "tbc_strength": 0.92, "tbc_residual": 0.03,
+                       "stabilizer_stages": 2.0, "transport_jitter": 0.06, "head_wear": 0.12,
+                       "preemphasis": 0.20, "ringing": 0.14, "ringing_freq": 0.50,
+                       "luma_bandwidth": 2.9, "chroma_bandwidth": 0.60, "separation_kind": 2.0,
+                       "comb_depth": 0.78, "cross_color": 0.18, "cross_luma": 0.12, "color_noise": 0.12}}},
+    "deck_panasonic_j27": {
+        "label": "松下 NV-J27（PAL-D 捷克/中国制式录像机 · VHF 6频道/AV输出）",
+        "note": "PAL-D 制式（6.5 MHz 伴音间隔、VHF 6 频道 171.25 MHz 图像载波）高频头解调与 1H 玻璃延迟线 Y/C 分离，经 AV 复合端子进入电脑 USB 采集卡",
+        "layers": {
+            "player": {"tbc_enabled": 0.0, "transport_jitter": 0.14, "head_wear": 0.08,
+                       "preemphasis": 0.28, "ringing": 0.22, "ringing_freq": 0.52,
+                       "luma_bandwidth": 3.4, "chroma_bandwidth": 0.68,
+                       "separation_kind": 2.0, "comb_depth": 0.68,
+                       "cross_color": 0.32, "cross_luma": 0.22, "color_noise": 0.14}}},
+    "deck_panasonic_nv180": {
+        "label": "松下 NV-180（1986 背包便携式 VHS 录像机）",
+        "note": "双磁头斜进扫描便携机：石英锁相平稳走带 + 底部 7 行磁头切换水平跳变与右侧 HBI 黑边阶跃 + 550 kHz 欠载色度群延迟拖尾与高频预加重过冲（对照 1986 松下初代 CCD + NV-180 实拍标定）",
+        "layers": {
+            "tape": {"tape_speed": 0.0, "tape_stability": 0.88, "line_jitter": 0.04,
+                     "walk_amplitude": 0.04, "micro_jitter": 0.03, "row_timebase": 0.02,
+                     "head_switching": 0.90, "head_switch_lines": 4.0, "tracking_error": 0.52,
+                     "dropout_rate": 0.08, "noise_floor": 0.06, "wear": 0.08},
+            "player": {"tbc_enabled": 1.0, "tbc_strength": 0.88, "tbc_residual": 0.04,
+                       "transport_jitter": 0.05, "head_wear": 0.10,
+                       "preemphasis": 0.32, "ringing": 0.18, "ringing_freq": 0.48,
+                       "luma_bandwidth": 2.8, "chroma_bandwidth": 0.55, "comb_depth": 0.72,
+                       "cross_color": 0.18, "cross_luma": 0.12, "color_noise": 0.10}}},
 }
 
 DISPLAY_PROFILES = {
@@ -1620,6 +1771,10 @@ DISPLAY_PROFILES = {
         "vignette": 0.18, "interlace_flicker": 0.18, "geometry_warp": 0.08}}},
     "capture_card": {"label": "采集卡直入", "note": "不经显像管，几何与扫描线不参与",
                      "layers": {"display": {"enabled": 0.0}}},
+    "tc_ub530_obs_mkv": {
+        "label": "天创恒达 TC-UB530 采集卡 → 神舟 HASEE K680E-G6D1（OBS Studio 32.0 MKV）",
+        "note": "天创恒达 TC-UB530 USB 复合采集卡（PAL 720×576@25fps BT.601 YUV422 ADC）直入神舟 K680E-G6D1 笔记本，由 OBS Studio 32.0 封装为 MKV 数字母带",
+        "layers": {"display": {"enabled": 0.0}}},
 }
 
 CAMERA_PROFILES = {
@@ -1632,6 +1787,24 @@ CAMERA_PROFILES = {
         "camera": {"sensor_type": 2.0, "fixed_pattern": 0.12, "sensor_noise": 0.10}}},
     "lens_worn": {"label": "镜头磨损/发霉", "layers": {"camera": {
         "lens_wear": 0.55, "halation": 0.18, "lens_flare": 0.22}}},
+    "sony_cctv_bnc": {
+        "label": "Sony 工业枪机 CCD（C 口镜头 + BNC 复合输出）",
+        "note": "C/CS 口大光圈镜头光轴偏心赛德尔彗差（三瓣散射扇面）+ 自动光圈叶片衍射暗槽 + CCD 防晕溢出漏极（VOD/HOD）U 型前缘黑边 + 100 IRE 白削波平台与 2D 孔径轮廓过冲",
+        "layers": {"camera": {
+            "sensor_type": 0.0, "sensor_noise": 0.015, "ccd_gain": 0.08,
+            "sharpness": 1.18, "dynamic_range": 7.8,
+            "coma": 0.75, "axis_offset": 0.50, "overflow_drain": 0.65,
+            "chroma_aberration": 0.12, "longitudinal_ca": 0.08,
+            "ccd_smear": 0.0, "halation": 0.0}}},
+    "panasonic_ccd_1986": {
+        "label": "1986 松下初代单板 CCD 肩扛摄像机",
+        "note": "初代 1/2 英寸补色马赛克（Ye/Cy/Mg/Gr）行间转移 CCD：6.8 档动态范围、天空与水面高光青蓝偏色（Cy+Gr 晚饱和）、暖色中间调保留与高光晕染（对照 1986 松下初代 CCD + NV-180 实拍标定）",
+        "layers": {"camera": {
+            "sensor_type": 0.0, "sensor_noise": 0.025, "fixed_pattern": 0.02,
+            "dynamic_range": 6.8, "exposure": 0.08, "white_balance_temp": -0.06,
+            "color_cast": 0.12, "highlight_tint": 0.68,
+            "sharpness": 1.12, "chroma_aberration": 0.05, "longitudinal_ca": 0.04,
+            "halation": 0.22, "halation_source_colour": 0.70, "ccd_smear": 0.12}}},
 }
 
 PROFILE_LIBRARY = {
@@ -1651,11 +1824,18 @@ PROFILE_LIBRARY = {
 #   tools/verify.py); its absolute level is a modelling choice, not a measurement.
 # The reference camcorder this project was largely calibrated against.
 SONY_DCR_TRV310E = {"label": "Sony DCR-TRV310E", "layers": {
-    "camera": {"sensor_type": 0.0, "sensor_noise": 0.07, "sharpness": 0.85,
-               "chroma_aberration": 0.05, "dynamic_range": 7.5},
-    "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 0.75, "edge_boost": 0.30},
-    "codec": {"dv_enabled": 1.0, "dv_quality": 1.0},
-    "player": {"tbc_enabled": 0.0, "head_wear": 0.25, "transport_jitter": 0.35},
+    "camera": {"sensor_type": 0.0, "sensor_noise": 0.08, "ccd_gain": 0.65,
+               "sharpness": 0.82, "chroma_aberration": 0.04, "dynamic_range": 7.5,
+               "color_cast": 0.45, "white_balance_temp": 0.0,
+               "ccd_smear": 0.25, "halation": 0.25},
+    "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0,
+               "chroma_vertical_averaging": 0.0, "color_noise": 0.04, "edge_boost": 0.18},
+    "codec": {"dv_enabled": 1.0, "dv_quality": 0.90, "dv_base_step": 0.015},
+    "tape": {"dropout_rate": 0.0, "noise_floor": 0.02, "line_jitter": 0.02,
+             "walk_amplitude": 0.02, "micro_jitter": 0.02, "head_switching": 0.0,
+             "shuttle_mode": 2.0},
+    "player": {"tbc_enabled": 1.0, "head_wear": 0.05, "transport_jitter": 0.05,
+               "luma_bandwidth": 5.0, "chroma_bandwidth": 2.0},
     "display": {"enabled": 0.0},
 }}
 
@@ -1669,6 +1849,18 @@ CAMCORDER_PRESETS = {
         "display": {"enabled": 0.0}}},
     "panasonic_m9000": {"label": "Panasonic M9000（肩扛 VHS）", "layers": PLAYER_PROFILES[
         "deck_panasonic_m9000"]["layers"] | {"display": {"enabled": 0.0}}},
+    "panasonic_1986_nv180": {
+        "label": "1986 松下初代 CCD 肩扛机 + NV-180 背包录像机",
+        "layers": {
+            **CAMERA_PROFILES["panasonic_ccd_1986"]["layers"],
+            "format": {"filter_kind": 2.0, "filter_sections": 2.0,
+                       "luma_bandwidth": 2.8, "chroma_bandwidth": 0.55,
+                       "chroma_vertical_averaging": 0.85, "comb_depth": 0.72,
+                       "cross_color": 0.18, "cross_luma": 0.12, "color_noise": 0.10,
+                       "edge_boost": 0.35, "chroma_gain": 1.05},
+            **PLAYER_PROFILES["deck_panasonic_nv180"]["layers"],
+            "display": {"enabled": 0.0},
+        }},
 }
 
 FACTORY_PRESETS = {
@@ -1720,21 +1912,26 @@ FACTORY_PRESETS = {
         }},
     "mouldy_archive": {
         "label": "发霉存档带",
-        "note": "潮湿存放：黏合剂吸水、磁粉层脱落。色度先死、亮度塌陷、高频颗粒",
+        "note": "潮湿存放：黏合剂吸水、磁粉层脱落。色度先死、亮度塌陷、高频颗粒（对照 SVHS录像带翻录P制烂碟.mp4 发霉脱粉段标定）",
         "layers": {
-            "format": {"chroma_gain": 0.12},
-            "tape": {"binder_loss": 0.35, "shed_grain": 0.75, "luma_pedestal": -0.16,
-                     "dropout_rate": 1.8, "noise_floor": 0.45},
+            "camera": {"ccd_smear": 0.0, "halation": 0.05, "fixed_pattern": 0.0},
+            "format": {"chroma_gain": 0.04, "color_noise": 0.01, "cross_color": 0.02},
+            "tape": {"binder_loss": 0.35, "shed_grain": 0.32, "luma_pedestal": -0.06,
+                     "dropout_rate": 1.8, "noise_floor": 0.25, "dropout_color": 0.02},
+            "player": {"cross_color": 0.02, "color_noise": 0.01, "head_wear": 0.10},
             "display": {"enabled": 0.0},
         }},
     "svhs_disc_rot": {
         "label": "S-VHS 烂碟转录",
-        "note": "磁迹严重劣化：亮度基底塌陷、色度污染极重（参考素材实测 sat 0.94 / mean 0.09）",
+        "note": "磁迹严重劣化：直流恢复/消隐钳位失常导致亮度基底塌陷而色度过饱和保留（实测 sat 0.92 / mean 0.20），伴随整行色相错乱与跟踪撕裂（对照 SVHS录像带翻录P制烂碟.mp4 标定）",
         "layers": {
-            "format": {"luma_bandwidth": 4.6, "chroma_gain": 1.0},
-            "tape": {"tape_stability": 0.4, "wear": 0.7, "luma_pedestal": -0.30,
-                     "dropout_rate": 1.6, "noise_floor": 0.35, "tracking_error": 0.6},
-            "player": {"transport_jitter": 0.6, "head_wear": 0.55},
+            "camera": {"ccd_smear": 0.0, "halation": 0.10, "sensor_noise": 0.04},
+            "format": {"luma_bandwidth": 4.6, "chroma_gain": 1.65, "color_noise": 0.32},
+            "tape": {"tape_stability": 0.4, "wear": 0.65, "luma_pedestal": -0.22,
+                     "dropout_rate": 1.6, "noise_floor": 0.28, "tracking_error": 0.6,
+                     "row_chroma_error": 0.22, "row_chroma_phase": 38.0,
+                     "row_chroma_gain": 0.25},
+            "player": {"transport_jitter": 0.55, "head_wear": 0.45},
             "display": {"enabled": 0.0},
         }},
     "broadcast_1992_weak": {
@@ -1749,21 +1946,119 @@ FACTORY_PRESETS = {
         }},
     "vcd_352x240": {
         "label": "Video CD（MPEG-1 352x240）",
-        "note": "VCD 编码：4:2:0 色度、粗量化、运动补偿预测。"
+        "note": "VCD 编码：352x240 四分之一分辨率重采样、4:2:0 色度、粗量化、运动补偿预测。"
                 "伪影跟着**预测成败**走，不是逐帧独立的噪声——"
-                "这是它区别于 DV 与模拟通路的地方。",
+                "这是它区别于 DV 与模拟通路的地方（对照 爱威_深圳音像公司开头.mp4 标定）。",
         "layers": {
-            "camera": {"sensor_noise": 0.03, "sharpness": 0.9},
-            "format": {"luma_bandwidth": 3.1, "chroma_bandwidth": 0.6,
-                       "chroma_vertical_averaging": 0.5, "cross_color": 0.2,
-                       "cross_luma": 0.12, "color_noise": 0.12},
-            "codec": {"codec_kind": 2.0, "vcd_quality": 1.0,
+            "camera": {"sensor_noise": 0.02, "sharpness": 1.0, "ccd_smear": 0.0,
+                       "halation": 0.05, "chroma_aberration": 0.0, "fixed_pattern": 0.0},
+            "format": {"luma_bandwidth": 3.5, "chroma_bandwidth": 0.8,
+                       "chroma_vertical_averaging": 0.35, "cross_color": 0.15,
+                       "cross_luma": 0.10, "color_noise": 0.08},
+            "codec": {"codec_kind": 2.0, "vcd_quality": 0.85,
+                      "vcd_width": 352.0, "vcd_height": 240.0,
                       "vcd_motion_comp": 1.0, "vcd_bitrate_kbps": 1150.0},
-            "tape": {"tape_speed": 0.0, "tape_stability": 0.85, "wear": 0.1,
-                     "dropout_rate": 0.05, "noise_floor": 0.06,
+            "tape": {"tape_speed": 0.0, "tape_stability": 0.90, "wear": 0.05,
+                     "dropout_rate": 0.0, "noise_floor": 0.04,
                      "head_switching": 0.0},
-            "player": {"tbc_enabled": 1.0, "transport_jitter": 0.1,
-                       "head_wear": 0.1},
+            "player": {"tbc_enabled": 1.0, "transport_jitter": 0.08,
+                       "head_wear": 0.08},
+            "display": {"enabled": 0.0},
+        }},
+    "vcd_crt_offscreen": {
+        "label": "VCD 碟机 → 家用 CRT 电视屏摄（爱威音像片头实拍）",
+        "note": "MPEG-1 352x240 4:2:0 运动补偿块伪影 + 家用球面 CRT 显像管（管面曲率、轻微梯形失真、高光泛光与扫描线，对照 爱威_深圳音像公司开头.mp4 标定）",
+        "layers": {
+            "camera": {"sensor_noise": 0.02, "sharpness": 1.0, "ccd_smear": 0.0,
+                       "halation": 0.08, "chroma_aberration": 0.02, "fixed_pattern": 0.0},
+            "format": {"luma_bandwidth": 3.5, "chroma_bandwidth": 0.8,
+                       "chroma_vertical_averaging": 0.35, "cross_color": 0.15,
+                       "cross_luma": 0.10, "color_noise": 0.08},
+            "codec": {"codec_kind": 2.0, "vcd_quality": 0.85,
+                      "vcd_width": 352.0, "vcd_height": 240.0,
+                      "vcd_motion_comp": 1.0, "vcd_bitrate_kbps": 1150.0},
+            "tape": {"tape_speed": 0.0, "tape_stability": 0.92, "wear": 0.0,
+                     "dropout_rate": 0.0, "noise_floor": 0.02, "head_switching": 0.0},
+            "player": {"tbc_enabled": 1.0, "transport_jitter": 0.05, "head_wear": 0.05},
+            "display": {"enabled": 1.0, "gamma": 1.05, "contrast": 0.52, "brightness": 0.48,
+                        "saturation": 0.60, "scanlines": 0.04, "spot_sigma": 0.95,
+                        "bloom": 0.22, "curvature": 0.18, "trapezoid_x": 0.03,
+                        "vignette": 0.16, "interlace_flicker": 0.02, "reflection": 0.03},
+        }},
+    "zibo_1992_rf_weak": {
+        "label": "1992 淄博电视台动画片弱信号实拍（RF 雪花 + 行失锁 + VHS 录放）",
+        "note": "开路电视射频载噪比骤降：中频宽带雪花与 AGC 黑电平抬升将亮度与色度一并淹没（sat 降至 ~0.23，hf 升至 ~0.58），伴随行 AFC 失锁撕裂与 VHS 底部磁头切换带（对照 1992年淄博电视台动画片播放中的信号异常录像.mp4 标定）",
+        "layers": {
+            "camera": {"sensor_noise": 0.02, "ccd_smear": 0.0, "halation": 0.08,
+                       "chroma_aberration": 0.02, "fixed_pattern": 0.0, "sharpness": 0.92},
+            "format": {"luma_bandwidth": 2.8, "chroma_bandwidth": 0.65,
+                       "chroma_gain": 0.48, "chroma_vertical_averaging": 0.65,
+                       "comb_depth": 0.35, "cross_color": 0.28, "cross_luma": 0.18,
+                       "color_noise": 0.52},
+            "rf": {"signal_dbm": -74.0, "adjacent_channel": 0.22,
+                   "broadcast_noise": 0.45, "sync_loss_threshold_db": 32.0,
+                   "sync_loss_amount": 1.0},
+            "tape": {"tape_speed": 0.0, "tape_stability": 0.48, "wear": 0.32,
+                     "shed_grain": 0.06, "luma_pedestal": 0.06, "row_timebase": 0.32,
+                     "line_jitter": 0.55, "dropout_rate": 0.85, "noise_floor": 0.26,
+                     "row_chroma_error": 0.24, "row_chroma_phase": 42.0,
+                     "row_chroma_gain": 0.25, "head_switching": 0.75,
+                     "head_switch_lines": 12.0, "tracking_error": 0.40},
+            "player": {"transport_jitter": 0.50, "tbc_enabled": 0.0, "head_wear": 0.35,
+                       "cross_color": 0.25, "color_noise": 0.45},
+            "display": {"enabled": 0.0},
+        }},
+    "panasonic_1986_ccd_nv180": {
+        "label": "1986 松下初代 CCD 肩扛摄像机 + NV-180 背包录像机（实拍标定）",
+        "note": "1986 年初代补色马赛克 CCD 肩扛机经多芯脐带线接入松下 NV-180 便携式 VHS 背包机：6.8 档动态范围与天空高光青蓝偏色（R/G≈0.60, B/G≈1.03）、2.8 MHz 亮度孔径预加重白边过冲、550 kHz 欠载色度群延迟右移拖尾（~5 px）、底部 7 行磁头切换水平跳变与右侧 31-49 px HBI 黑边阶跃及底行半行消隐截断（对照 10月16日.mp4 标定）",
+        "layers": {
+            "camera": {
+                "sensor_type": 0.0, "sensor_noise": 0.025, "fixed_pattern": 0.02,
+                "dynamic_range": 6.8, "exposure": 0.08, "white_balance_temp": -0.06,
+                "color_cast": 0.12, "highlight_tint": 0.68,
+                "sharpness": 1.12, "chroma_aberration": 0.05, "longitudinal_ca": 0.04,
+                "halation": 0.22, "halation_source_colour": 0.70, "ccd_smear": 0.12,
+            },
+            "format": {
+                "filter_kind": 2.0, "filter_sections": 2.0,
+                "luma_bandwidth": 2.8, "chroma_bandwidth": 0.55,
+                "chroma_vertical_averaging": 0.85, "comb_depth": 0.72,
+                "cross_color": 0.18, "cross_luma": 0.12, "color_noise": 0.10,
+                "edge_boost": 0.35, "chroma_gain": 1.05,
+            },
+            "tape": {
+                "tape_speed": 0.0, "tape_stability": 0.88, "line_jitter": 0.04,
+                "walk_amplitude": 0.04, "micro_jitter": 0.03, "row_timebase": 0.02,
+                "head_switching": 0.90, "head_switch_lines": 4.0, "tracking_error": 0.52,
+                "dropout_rate": 0.08, "noise_floor": 0.06, "wear": 0.08,
+            },
+            "player": {
+                "tbc_enabled": 1.0, "tbc_strength": 0.88, "tbc_residual": 0.04,
+                "transport_jitter": 0.05, "head_wear": 0.10,
+                "preemphasis": 0.32, "ringing": 0.18, "ringing_freq": 0.48,
+                "luma_bandwidth": 2.8, "chroma_bandwidth": 0.55, "comb_depth": 0.72,
+                "cross_color": 0.18, "cross_luma": 0.12, "color_noise": 0.10,
+            },
+            "display": {"enabled": 0.0},
+        }},
+    "beijing_youth_vhs_1990s": {
+        "label": "1990 年代 VHS 出版带片头（北京市青少年音像出版社实拍）",
+        "note": "PAL VHS SP 原版出版带：3.0 MHz 亮度与 629 kHz 欠载色度横向洇色、高光金色光晕、偶发整行错色与底部磁头切换带（对照 北京市青少年音像出版社片头(VHS_1990年后).mp4 标定）",
+        "layers": {
+            "camera": {"sensor_noise": 0.03, "ccd_smear": 0.0, "halation": 0.22,
+                       "halation_source_colour": 0.85, "chroma_aberration": 0.03,
+                       "fixed_pattern": 0.0, "sharpness": 0.88},
+            "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.68,
+                       "chroma_vertical_averaging": 0.85, "comb_depth": 0.50,
+                       "cross_color": 0.35, "cross_luma": 0.22, "color_noise": 0.18,
+                       "edge_boost": 0.22, "chroma_gain": 1.02},
+            "tape": {"tape_speed": 0.0, "tape_stability": 0.68, "wear": 0.18,
+                     "dropout_rate": 0.25, "noise_floor": 0.14, "line_jitter": 0.22,
+                     "row_chroma_error": 0.06, "row_chroma_phase": 28.0,
+                     "head_switching": 0.75, "head_switch_lines": 12.0,
+                     "tracking_error": 0.32},
+            "player": {"transport_jitter": 0.28, "tbc_enabled": 0.0, "head_wear": 0.20,
+                       "frequency_response": 0.10},
             "display": {"enabled": 0.0},
         }},
     "curving_stripes": {
@@ -1808,22 +2103,331 @@ FACTORY_PRESETS = {
                        "head_wear": 0.45},
             "display": {"enabled": 0.0},
         }},
+    "digital8_trv310e": {
+        "label": "Sony DCR-TRV310E（Digital8 自动白平衡实拍）",
+        "note": "1/4 英寸 互补色 CFA CCD + 低照度 AGC 三分量噪波（CDS 横向散粒噪 + CFA 差分色斑 + 光学黑行钳位）+ 自然冷灰青 AWB（对照 10月15日.mp4 标定；调低白平衡色温可切至深蓝）",
+        "layers": {
+            "camera": {"sensor_type": 0.0, "sensor_noise": 0.08, "ccd_gain": 0.65,
+                       "sharpness": 0.82, "chroma_aberration": 0.04, "dynamic_range": 7.5,
+                       "color_cast": 0.45, "white_balance_temp": 0.0,
+                       "ccd_smear": 0.25, "halation": 0.25},
+            "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0,
+                       "chroma_vertical_averaging": 0.0, "color_noise": 0.04, "edge_boost": 0.18},
+            "codec": {"dv_enabled": 1.0, "dv_quality": 0.90, "dv_base_step": 0.015},
+            "tape": {"dropout_rate": 0.0, "noise_floor": 0.03, "line_jitter": 0.03,
+                     "walk_amplitude": 0.02, "micro_jitter": 0.03, "head_switching": 0.0,
+                     "shuttle_mode": 2.0},
+            "player": {"tbc_enabled": 1.0, "head_wear": 0.05, "transport_jitter": 0.05,
+                       "luma_bandwidth": 5.0, "chroma_bandwidth": 2.0},
+            "display": {"enabled": 0.0},
+        }},
+    "digital8_trv310e_indoor": {
+        "label": "Sony DCR-TRV310E（室内 3200K 锁定 · 深蓝实拍）",
+        "note": "锁定室内钨丝灯白平衡 ([F✋] white_balance_temp = -0.50) 下的深钴蓝冷调 + 低照度 AGC 噪波（对照实拍 c_0203.jpg 标定）",
+        "layers": {
+            "camera": {"sensor_type": 0.0, "sensor_noise": 0.08, "ccd_gain": 0.65,
+                       "sharpness": 0.82, "chroma_aberration": 0.04, "dynamic_range": 7.5,
+                       "color_cast": 0.45, "white_balance_temp": -0.50,
+                       "ccd_smear": 0.25, "halation": 0.25},
+            "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0,
+                       "chroma_vertical_averaging": 0.0, "color_noise": 0.04, "edge_boost": 0.18},
+            "codec": {"dv_enabled": 1.0, "dv_quality": 0.90, "dv_base_step": 0.015},
+            "tape": {"dropout_rate": 0.0, "noise_floor": 0.03, "line_jitter": 0.03,
+                     "walk_amplitude": 0.02, "micro_jitter": 0.03, "head_switching": 0.0,
+                     "shuttle_mode": 2.0},
+            "player": {"tbc_enabled": 1.0, "head_wear": 0.05, "transport_jitter": 0.05,
+                       "luma_bandwidth": 5.0, "chroma_bandwidth": 2.0},
+            "display": {"enabled": 0.0},
+        }},
+    "cosmag_e180_sharp_cascade_258m": {
+        "label": "COSMAG E-180(PAL/SP/LP) → 夏普A62DT(4磁头) → H96(一级稳定) → M9E(二级稳定) → TC-UB530 → K680E(OBS 32.0 MKV · 258分钟成功段)",
+        "note": "COSMAG E-180（180分SP/360分LP混合，成功采录 258 分钟）经夏普 VC-A62DT（4视频+1音频+1时间轴磁头）读取，串接夏普 VC-H96（一级画面稳定）与夏普 VC-M9E（二级画面稳定）两级同步再生锁相，再经天创恒达 TC-UB530 采集卡在神舟 HASEE K680E-G6D1 上由 OBS Studio 32.0 录为 MKV：画面行同步极稳，保留三机级联 2.9 MHz 柔和带宽、1.7 px 级联色度右移、SP/LP 混合包络及底部 6 行被锁定的磁头切换带",
+        "layers": {
+            "camera": {
+                "sensor_noise": 0.02, "noise_grain": 1.2, "fixed_pattern": 0.0,
+                "sharpness": 0.96, "dynamic_range": 8.5, "halation": 0.12,
+                "halation_source_colour": 0.75, "ccd_smear": 0.0,
+            },
+            "format": {
+                "filter_kind": 1.0, "filter_sections": 3.0,
+                "luma_bandwidth": 2.95, "chroma_bandwidth": 0.62,
+                "chroma_vertical_averaging": 0.82, "separation_kind": 2.0,
+                "comb_depth": 0.72, "cross_color": 0.22, "cross_luma": 0.14,
+                "edge_boost": 0.22, "color_noise": 0.16, "chroma_gain": 0.95,
+            },
+            "connector": {
+                "av_present": 1.0, "av_moisture": 0.04, "av_corrosion": 0.02,
+                "av_ground_loop": 0.03, "mains_hz": 50.0,
+            },
+            "tape": {
+                "tape_speed": 0.0, "sp_lp_mix": 0.42, "tape_stability": 0.68,
+                "line_jitter": 0.22, "walk_amplitude": 0.18, "micro_jitter": 0.08,
+                "row_timebase": 0.08, "wear": 0.24, "dropout_rate": 0.38,
+                "noise_floor": 0.16, "crease_rate": 0.14,
+                "demagnetization": 0.08, "base_cracking": 0.04, "binder_loss": 0.03,
+                "head_switching": 0.78, "head_switch_lines": 6.0, "tracking_error": 0.22,
+            },
+            "player": {
+                "tbc_enabled": 1.0, "tbc_strength": 0.92, "tbc_residual": 0.03,
+                "stabilizer_stages": 2.0, "transport_jitter": 0.06, "head_wear": 0.12,
+                "preemphasis": 0.20, "ringing": 0.14, "ringing_freq": 0.50,
+                "luma_bandwidth": 2.9, "chroma_bandwidth": 0.60,
+                "separation_kind": 2.0, "comb_depth": 0.78,
+                "cross_color": 0.18, "cross_luma": 0.12, "color_noise": 0.12,
+            },
+            "display": {"enabled": 0.0},
+        }},
+    "cosmag_e180_sharp_cascade_61m_fail": {
+        "label": "COSMAG E-180(PAL/SP/LP) → 夏普A62DT → H96 → M9E → TC-UB530 → OBS 32.0 MKV（61分钟采录失败段：消磁+带基龟裂+发霉+带基破损）",
+        "note": "还原 61 分钟采录失败段落的四种复合介质绝症：1.消磁（剩磁衰减致 FM 载波跌入雪花、ACC 压死色度）；2.带基龟裂（PET 微裂纹横跨螺旋轨引发斜向黑白限幅尖峰与行错位）；3.发霉（黏合剂吸水脱粉形成固定暗斑与宽带粗颗粒）；4.带基破损（边缘撕裂导致 1×时间轴磁头丢失 25Hz CTL 脉冲，突破 H96+M9E 两级稳定极限产生局部横带撕裂与原生雪花）",
+        "layers": {
+            "camera": {
+                "sensor_noise": 0.03, "noise_grain": 1.4, "fixed_pattern": 0.0,
+                "sharpness": 0.88, "dynamic_range": 8.0, "halation": 0.10, "ccd_smear": 0.0,
+            },
+            "format": {
+                "filter_kind": 1.0, "filter_sections": 3.0,
+                "luma_bandwidth": 2.35, "chroma_bandwidth": 0.48,
+                "chroma_vertical_averaging": 0.88, "separation_kind": 2.0,
+                "comb_depth": 0.65, "cross_color": 0.28, "cross_luma": 0.20,
+                "edge_boost": 0.15, "color_noise": 0.38, "chroma_gain": 0.40,
+            },
+            "connector": {
+                "av_present": 1.0, "av_moisture": 0.08, "av_corrosion": 0.05,
+                "av_ground_loop": 0.06, "mains_hz": 50.0,
+            },
+            "tape": {
+                "tape_speed": 1.0, "sp_lp_mix": 0.75, "tape_stability": 0.28,
+                "line_jitter": 0.65, "walk_amplitude": 0.55, "micro_jitter": 0.25,
+                "row_timebase": 0.45, "wear": 0.68, "dropout_rate": 2.10,
+                "noise_floor": 0.38, "crease_rate": 0.65,
+                "binder_loss": 0.34, "shed_grain": 0.38, "luma_pedestal": -0.06,
+                "demagnetization": 0.52, "base_cracking": 0.62, "base_breakage": 0.58,
+                "stiction_rate": 0.85, "stiction_amount": 0.65,
+                "row_chroma_error": 0.26, "row_chroma_phase": 40.0,
+                "head_switching": 0.95, "head_switch_lines": 10.0, "tracking_error": 0.62,
+            },
+            "player": {
+                "tbc_enabled": 1.0, "tbc_strength": 0.78, "tbc_residual": 0.14,
+                "stabilizer_stages": 2.0, "transport_jitter": 0.22, "head_wear": 0.32,
+                "preemphasis": 0.18, "ringing": 0.16, "ringing_freq": 0.48,
+                "luma_bandwidth": 2.4, "chroma_bandwidth": 0.50,
+                "separation_kind": 2.0, "comb_depth": 0.65,
+                "cross_color": 0.25, "cross_luma": 0.18, "color_noise": 0.35,
+            },
+            "display": {"enabled": 0.0},
+        }},
+    "mibox_vhf6_panasonic_j27_pal_d": {
+        "label": "小米盒子 720p60 → HDMI-AV → PAL-D VHF 6频道(171.25MHz) → 松下 NV-J27 → AV采集卡（16:9→4:3 二次压扁）",
+        "note": "小米盒子（720P 60Hz 强制 16:9 输出）→ HDMI-AV 转换盒 → PAL-D 射频调制（VHF 6 频道：168–176 MHz，图像载波 171.25 MHz，伴音载波 177.75 MHz，6.5 MHz 伴音间隔）经闭路电视同轴线进入松下 NV-J27 录像机高频头，4:3 原图被 16:9→4:3 二次横向压缩为 ×0.75（9:16 瘦长比例 + 两侧 12.5% 消隐黑边），再由录像机 AV 端子输出至电脑采集卡",
+        "layers": {
+            "camera": {
+                "sensor_noise": 0.0, "noise_grain": 1.0, "fixed_pattern": 0.0,
+                "chroma_aberration": 0.0, "motion_blur": 0.18, "sharpness": 1.04,
+                "exposure": 0.0, "white_balance_temp": 0.0, "ccd_smear": 0.0,
+                "halation": 0.08, "halation_source_colour": 0.70, "dynamic_range": 9.5,
+            },
+            "format": {
+                "filter_kind": 2.0, "filter_sections": 2.0,
+                "luma_bandwidth": 3.4, "chroma_bandwidth": 0.68,
+                "chroma_vertical_averaging": 0.78, "separation_kind": 2.0,
+                "comb_depth": 0.68, "cross_color": 0.32, "cross_luma": 0.22,
+                "edge_boost": 0.30, "color_noise": 0.14, "chroma_gain": 1.04,
+            },
+            "connector": {
+                "hdmi_present": 1.0, "hdmi_moisture": 0.0, "hdmi_corrosion": 0.0,
+                "aspect_squeeze": 1.0,
+                "av_present": 1.0, "av_moisture": 0.04, "av_corrosion": 0.02,
+                "av_ground_loop": 0.06, "mains_hz": 50.0,
+                "rf_present": 1.0, "rf_moisture": 0.04, "rf_corrosion": 0.02,
+                "rf_shielding": 0.18,
+            },
+            "rf": {
+                "channel_mhz": 8.0, "carrier_offset_mhz": 1.25,
+                "signal_dbm": -54.0, "noise_figure_db": 7.5,
+                "sync_loss_threshold_db": 28.0, "sync_loss_amount": 0.4,
+                "adjacent_channel": 0.18, "broadcast_noise": 0.04,
+            },
+            "tape": {
+                "tape_speed": 0.0, "tape_stability": 0.92, "line_jitter": 0.05,
+                "walk_amplitude": 0.04, "micro_jitter": 0.04, "vertical_instability": 0.01,
+                "head_switching": 0.0, "dropout_rate": 0.0, "noise_floor": 0.04, "wear": 0.0,
+            },
+            "player": {
+                "tbc_enabled": 0.0, "transport_jitter": 0.14, "head_wear": 0.08,
+                "preemphasis": 0.28, "ringing": 0.22, "ringing_freq": 0.52,
+                "luma_bandwidth": 3.4, "chroma_bandwidth": 0.68,
+                "separation_kind": 2.0, "comb_depth": 0.68,
+                "cross_color": 0.32, "cross_luma": 0.22, "color_noise": 0.14,
+            },
+            "display": {"enabled": 0.0},
+        }},
+    "hdmi_av_rf_hdmi_damp": {
+        "label": "HDMI→AV→RF→HDMI 回路（RF 接口受潮实拍）",
+        "note": "HDMI 数字源 → AV 复合转换盒 → RF 射频调制（频道 86）→ 受潮同轴 RF 接口（介电常数骤升 + 氧化整流）→ 高频头解调 → HDMI 采集：双稳态行同步延迟（右侧 HBI 黑边内缩与撕裂）、色同步门偏移反相（蓝屏翻转为炽烈红橙与横向失锁彩带）、斜向 6.4×10.2px 驻波差拍网格纹及行钳位充放电横条（对照实拍 RF转录.mp4 标定）",
+        "layers": {
+            "camera": {"sensor_noise": 0.0, "noise_grain": 0.0, "sharpness": 1.0,
+                       "chroma_aberration": 0.0, "ccd_smear": 0.0, "halation": 0.0},
+            "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 1.1,
+                       "chroma_vertical_averaging": 0.25, "comb_depth": 0.45,
+                       "cross_color": 0.35, "cross_luma": 0.22, "color_noise": 0.12,
+                       "edge_boost": 0.20, "chroma_gain": 1.0},
+            "codec": {"dv_enabled": 0.0},
+            "connector": {"hdmi_present": 1.0, "hdmi_moisture": 0.0, "hdmi_corrosion": 0.0,
+                          "av_present": 1.0, "av_moisture": 0.12, "av_corrosion": 0.08, "av_ground_loop": 0.08,
+                          "rf_present": 1.0, "rf_moisture": 0.80, "rf_corrosion": 0.35, "rf_shielding": 0.20},
+            "rf": {"channel_mhz": 6.0, "carrier_offset_mhz": 1.25, "signal_dbm": -68.0,
+                   "noise_figure_db": 10.0, "sync_loss_threshold_db": 32.0,
+                   "sync_loss_amount": 1.0, "adjacent_channel": 0.35, "broadcast_noise": 0.08},
+            "tape": {"tape_speed": 0.0, "tape_stability": 1.0, "wear": 0.0,
+                     "dropout_rate": 0.0, "noise_floor": 0.0, "line_jitter": 0.0,
+                     "walk_amplitude": 0.0, "micro_jitter": 0.0, "vertical_instability": 0.0,
+                     "head_switching": 0.0, "tracking_error": 0.0, "crease_rate": 0.0},
+            "player": {"transport_jitter": 0.0, "tbc_enabled": 1.0, "tbc_strength": 1.0,
+                       "tbc_residual": 0.0, "head_wear": 0.0, "frequency_response": 0.0},
+            "display": {"enabled": 0.0},
+        }},
+    "sony_cctv_composite": {
+        "label": "Sony 工业枪机 CCD（BNC 转 AV 复合视频采集卡直采）",
+        "note": "Sony Color Video Camera 工业枪机（外绑 12V 锂电 + DC 自动光圈 C 口镜头）经 BNC-RCA 复合视频线直入 USB 采集卡：赛德尔彗差三瓣扇形、自动光圈叶片衍射暗缺口、CCD 溢出漏极（VOD/HOD）前缘黑弧、上缘暖橙色散与右下钴蓝彗尾（对照实拍 477B4B7BED73D24392E50BA6BE1C3B65.jpg 标定）",
+        "layers": {
+            "camera": {"sensor_type": 0.0, "sensor_noise": 0.012, "ccd_gain": 0.05,
+                       "sharpness": 1.16, "dynamic_range": 7.8,
+                       "coma": 0.75, "axis_offset": 0.50, "overflow_drain": 0.65,
+                       "chroma_aberration": 0.08, "longitudinal_ca": 0.05,
+                       "color_cast": 0.0, "white_balance_temp": 0.0,
+                       "ccd_smear": 0.0, "halation": 0.0},
+            "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 1.75,
+                       "filter_kind": 0.0, "chroma_vertical_averaging": 0.08,
+                       "comb_depth": 0.95, "cross_color": 0.04, "cross_luma": 0.02,
+                       "color_noise": 0.015, "edge_boost": 0.18, "chroma_gain": 1.38},
+            "codec": {"dv_enabled": 0.0},
+            "tape": {"tape_speed": 0.0, "tape_stability": 1.0, "wear": 0.0,
+                     "dropout_rate": 0.0, "noise_floor": 0.008, "line_jitter": 0.0,
+                     "walk_amplitude": 0.0, "micro_jitter": 0.0, "vertical_instability": 0.0,
+                     "head_switching": 0.0, "tracking_error": 0.0, "crease_rate": 0.0},
+            "player": {"transport_jitter": 0.0, "tbc_enabled": 1.0, "tbc_strength": 1.0,
+                       "tbc_residual": 0.0, "head_wear": 0.0, "frequency_response": -0.15,
+                       "luma_bandwidth": 5.0, "chroma_bandwidth": 1.75,
+                       "comb_depth": 0.95, "cross_color": 0.04, "cross_luma": 0.02},
+            "display": {"enabled": 0.0},
+        }},
+    "hi8_trv": {
+        "label": "Sony CCD-TRV（Hi8 模拟 8mm 摄像机）",
+        "note": "同代 Sony 1/4 英寸 互补色 CFA CCD + 低照度 AGC 噪波 + Hi8 高带模拟 FM 亮度 (4.2 MHz) 与 743 kHz 欠载色度记录",
+        "layers": {
+            "camera": {"sensor_type": 0.0, "sensor_noise": 0.09, "ccd_gain": 0.68,
+                       "sharpness": 0.80, "chroma_aberration": 0.05, "dynamic_range": 7.5,
+                       "color_cast": 0.45, "white_balance_temp": 0.0,
+                       "ccd_smear": 0.28, "halation": 0.28},
+            "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 0.75,
+                       "chroma_vertical_averaging": 0.55, "comb_depth": 0.65,
+                       "cross_color": 0.28, "cross_luma": 0.18, "color_noise": 0.22,
+                       "edge_boost": 0.24, "chroma_gain": 1.0},
+            "codec": {"dv_enabled": 0.0},
+            "tape": {"tape_speed": 0.0, "tape_stability": 0.76, "wear": 0.15,
+                     "dropout_rate": 0.15, "noise_floor": 0.14, "line_jitter": 0.14,
+                     "walk_amplitude": 0.10, "micro_jitter": 0.08,
+                     "head_switching": 0.35, "head_switch_lines": 6.0,
+                     "tracking_error": 0.15, "shuttle_mode": 1.0},
+            "player": {"transport_jitter": 0.18, "tbc_enabled": 0.0, "head_wear": 0.18,
+                       "frequency_response": 0.08, "luma_bandwidth": 4.2,
+                       "chroma_bandwidth": 0.75, "comb_depth": 0.65,
+                       "cross_color": 0.28, "cross_luma": 0.18},
+            "display": {"enabled": 0.0},
+        }},
     "minidv_clean": {
         "label": "MiniDV 干净",
         "layers": {"codec": {"dv_enabled": 1.0, "dv_quality": 1.0}, "display": {"enabled": 0.0}}},
     "minidv_shuttle": {
-        "label": "MiniDV 快进/倒带搜索",
-        "note": "解码器用缓冲区旧帧补齐——成片、带锯齿边缘的方块残留",
-        "layers": {"codec": {"dv_enabled": 1.0},
-                   "tape": {"shuttle_speed": 5.0, "shuttle_stale": 0.19,
-                            "shuttle_cluster": 0.55, "shuttle_carry": 0.45,
-                            "shuttle_mode": 2.0}}},
+        "label": "MiniDV / Digital8 快进/倒带搜索",
+        "note": "解码器用缓冲区旧帧补齐——成片、带锯齿边缘的 16x16 宏块残留",
+        "layers": {
+            "camera": {"sensor_type": 0.0, "sensor_noise": 0.08, "ccd_gain": 0.65,
+                       "sharpness": 0.82, "chroma_aberration": 0.04, "dynamic_range": 7.5,
+                       "color_cast": 0.45, "white_balance_temp": 0.0,
+                       "ccd_smear": 0.25, "halation": 0.25},
+            "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0,
+                       "chroma_vertical_averaging": 0.0, "color_noise": 0.04, "edge_boost": 0.18},
+            "codec": {"dv_enabled": 1.0, "dv_quality": 0.90, "dv_base_step": 0.015},
+            "tape": {"shuttle_speed": 5.0, "shuttle_stale": 0.19,
+                     "shuttle_cluster": 0.55, "shuttle_carry": 0.45,
+                     "shuttle_mode": 2.0, "dropout_rate": 0.0, "noise_floor": 0.03,
+                     "line_jitter": 0.03, "walk_amplitude": 0.02, "micro_jitter": 0.03,
+                     "head_switching": 0.0},
+            "player": {"tbc_enabled": 1.0, "head_wear": 0.05, "transport_jitter": 0.05,
+                       "luma_bandwidth": 5.0, "chroma_bandwidth": 2.0},
+            "display": {"enabled": 0.0},
+        }},
+    "capital_mv_cue_4bars": {
+        "label": "1992 罗大佑《首都》MV · 全屏 5x 快进跨轨扫描线（4条双峰噪波条 · 19.5s 实测标定）",
+        "note": "螺旋扫描磁鼓 5x 倍速搜索（Cue/Review）跨越 |5-1|=4 条磁迹：垂直等距 (281 px) 向下滚动 (68 px/帧) 的 4 条灰白限幅器噪波条 (L=0.565) + 尾部 H-Sync 电压黑槽切口 (L=0.25) 与副峰回弹 + 629 kHz 欠载色度消隐",
+        "layers": {
+            "camera": {"sensor_noise": 0.03, "sharpness": 0.90, "dynamic_range": 8.0},
+            "format": {"luma_bandwidth": 3.2, "chroma_bandwidth": 0.65,
+                       "chroma_vertical_averaging": 0.65, "comb_depth": 0.70,
+                       "color_noise": 0.14, "edge_boost": 0.20, "chroma_gain": 0.95},
+            "codec": {"dv_enabled": 0.0},
+            "tape": {"shuttle_speed": 5.0, "shuttle_stale": 0.22,
+                     "shuttle_span": 10.0, "shuttle_wave": 16.0,
+                     "shuttle_mode": 1.0, "shuttle_guard_bars": 0.95,
+                     "shuttle_bar_luma": 0.565, "shuttle_PIP_bars": 0.0,
+                     "tape_stability": 0.72, "line_jitter": 0.16,
+                     "walk_amplitude": 0.12, "noise_floor": 0.12,
+                     "dropout_rate": 0.08, "head_switching": 0.45,
+                     "head_switch_lines": 8.0, "tracking_error": 0.20},
+            "player": {"tbc_enabled": 0.0, "transport_jitter": 0.18,
+                       "head_wear": 0.15, "luma_bandwidth": 3.2, "chroma_bandwidth": 0.65},
+            "display": {"enabled": 0.0},
+        }},
+    "capital_mv_pip_9bars": {
+        "label": "1992 罗大佑《首都》MV · 分屏子窗 9x 搜索扫描线（8条主副噪波条 · 6.0s 实测标定）",
+        "note": "DVE 切换台上半幅子窗（Y ∈ [0, 0.562H]）输入 9x 倍速搜索画面：主条周期 129.3 px、含方位角副条共 8 条水平噪波带以 21 px/帧匀速下滚，峰值 L=0.750，行同步错位右移 +48 px，下半幅红衣队列保持正常锁相播放",
+        "layers": {
+            "camera": {"sensor_noise": 0.03, "sharpness": 0.92, "dynamic_range": 8.0},
+            "format": {"luma_bandwidth": 3.4, "chroma_bandwidth": 0.68,
+                       "chroma_vertical_averaging": 0.60, "comb_depth": 0.72,
+                       "color_noise": 0.12, "edge_boost": 0.22, "chroma_gain": 1.0},
+            "codec": {"dv_enabled": 0.0},
+            "tape": {"shuttle_speed": 5.0, "shuttle_stale": 0.24,
+                     "shuttle_span": 8.0, "shuttle_wave": 18.0,
+                     "shuttle_mode": 1.0, "shuttle_guard_bars": 0.95,
+                     "shuttle_bar_luma": 0.750, "shuttle_PIP_bars": 1.0,
+                     "tape_stability": 0.75, "line_jitter": 0.14,
+                     "walk_amplitude": 0.10, "noise_floor": 0.10,
+                     "dropout_rate": 0.05, "head_switching": 0.0},
+            "player": {"tbc_enabled": 0.0, "transport_jitter": 0.15,
+                       "head_wear": 0.12, "luma_bandwidth": 3.4, "chroma_bandwidth": 0.68},
+            "display": {"enabled": 0.0},
+        }},
     "hi8_shuttle": {
         "label": "Hi8 快进/倒带搜索",
-        "note": "模拟行记录：满宽横向条带、垂直边缘参差",
-        "layers": {"tape": {"shuttle_speed": 5.0, "shuttle_stale": 0.19,
-                            "shuttle_span": 8.0, "shuttle_wave": 14.0,
-                            "shuttle_mode": 1.0}}},
+        "note": "Sony 1/4 英寸 CCD 色彩与低照度噪波 + 模拟螺旋扫描跨磁迹方位角失锁噪波条、行同步斜坡剪切与 743 kHz 欠载色度消隐",
+        "layers": {
+            "camera": {"sensor_type": 0.0, "sensor_noise": 0.09, "ccd_gain": 0.68,
+                       "sharpness": 0.80, "chroma_aberration": 0.05, "dynamic_range": 7.5,
+                       "color_cast": 0.45, "white_balance_temp": 0.0,
+                       "ccd_smear": 0.28, "halation": 0.28},
+            "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 0.75,
+                       "chroma_vertical_averaging": 0.55, "comb_depth": 0.65,
+                       "cross_color": 0.28, "cross_luma": 0.18, "color_noise": 0.22,
+                       "edge_boost": 0.24, "chroma_gain": 1.0},
+            "codec": {"dv_enabled": 0.0},
+            "tape": {"tape_speed": 0.0, "tape_stability": 0.72, "wear": 0.16,
+                     "dropout_rate": 0.18, "noise_floor": 0.15, "line_jitter": 0.18,
+                     "walk_amplitude": 0.14, "micro_jitter": 0.10,
+                     "head_switching": 0.45, "head_switch_lines": 8.0,
+                     "tracking_error": 0.22,
+                     "shuttle_speed": 5.0, "shuttle_stale": 0.19,
+                     "shuttle_span": 8.0, "shuttle_wave": 14.0,
+                     "shuttle_cluster": 0.55, "shuttle_carry": 0.45,
+                     "shuttle_mode": 1.0},
+            "player": {"transport_jitter": 0.22, "tbc_enabled": 0.0, "head_wear": 0.18,
+                       "frequency_response": 0.10, "luma_bandwidth": 4.2,
+                       "chroma_bandwidth": 0.75, "comb_depth": 0.65,
+                       "cross_color": 0.25, "cross_luma": 0.16},
+            "display": {"enabled": 0.0},
+        }},
 
     # --- demonstrations of the dimensions added later -------------------------
     # Every one of these defaults to off -- an unrequested dimension must not move an existing preset --

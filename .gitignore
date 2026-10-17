@@ -25,3 +25,7 @@ venv/
 .idea/
 Thumbs.db
 desktop.ini
+
+# agent hand-off bundles (compressed copies of this repository: not source, and large)
+_agent_upload/
+*.zip

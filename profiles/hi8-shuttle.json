@@ -1,0 +1,71 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "Hi8 Rewind / Fast-Forward Search",
+  "standard": "ntsc",
+  "seed": 20240101,
+  "params": {
+    "camera": {
+      "sensor_type": 0.0,
+      "sensor_noise": 0.09,
+      "ccd_gain": 0.68,
+      "sharpness": 0.8,
+      "chroma_aberration": 0.05,
+      "dynamic_range": 7.5,
+      "color_cast": 0.45,
+      "white_balance_temp": 0.0,
+      "ccd_smear": 0.28,
+      "halation": 0.28
+    },
+    "format": {
+      "luma_bandwidth": 4.2,
+      "chroma_bandwidth": 0.75,
+      "chroma_vertical_averaging": 0.55,
+      "comb_depth": 0.65,
+      "cross_color": 0.28,
+      "cross_luma": 0.18,
+      "color_noise": 0.22,
+      "edge_boost": 0.24,
+      "chroma_gain": 1.0
+    },
+    "codec": {
+      "dv_enabled": 0.0
+    },
+    "tape": {
+      "tape_speed": 0.0,
+      "tape_stability": 0.72,
+      "wear": 0.16,
+      "dropout_rate": 0.18,
+      "noise_floor": 0.15,
+      "line_jitter": 0.18,
+      "walk_amplitude": 0.14,
+      "micro_jitter": 0.1,
+      "head_switching": 0.45,
+      "head_switch_lines": 8.0,
+      "tracking_error": 0.22,
+      "shuttle_speed": 5.0,
+      "shuttle_stale": 0.19,
+      "shuttle_span": 8.0,
+      "shuttle_wave": 14.0,
+      "shuttle_cluster": 0.55,
+      "shuttle_carry": 0.45,
+      "shuttle_mode": 1.0
+    },
+    "player": {
+      "transport_jitter": 0.22,
+      "tbc_enabled": 0.0,
+      "head_wear": 0.18,
+      "frequency_response": 0.1,
+      "luma_bandwidth": 4.2,
+      "chroma_bandwidth": 0.75,
+      "comb_depth": 0.65,
+      "cross_color": 0.25,
+      "cross_luma": 0.16
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  },
+  "_factory_preset": "hi8_shuttle",
+  "_note": "Sony 1/4 英寸 CCD 色彩与低照度噪波 + 模拟螺旋扫描跨磁迹方位角失锁噪波条、行同步斜坡剪切与 743 kHz 欠载色度消隐"
+}

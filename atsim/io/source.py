@@ -94,8 +94,16 @@ class StillSource:
         self.path = str(path)
         rgb = load_image(self.path).astype(np.float32)
         if scale and abs(scale - 1.0) > 1e-6:
-            step = max(1, int(round(1.0 / max(1e-6, scale))))
-            rgb = rgb[::step, ::step]
+            h0, w0 = rgb.shape[:2]
+            nh = max(2, int(round(h0 * scale)))
+            nw = max(2, int(round(w0 * scale)))
+            try:
+                from PIL import Image as _PILImage
+                pil = _PILImage.fromarray((np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
+                rgb = np.asarray(pil.resize((nw, nh), _PILImage.LANCZOS), dtype=np.float32) / 255.0
+            except Exception:
+                step = max(1, int(round(1.0 / max(1e-6, scale))))
+                rgb = rgb[::step, ::step]
         self._rgb = np.ascontiguousarray(rgb)
         self.height, self.width = self._rgb.shape[:2]
         self.fps = float(fps)

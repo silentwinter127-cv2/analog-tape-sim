@@ -1,13 +1,22 @@
 {
   "kind": "atsim.config",
   "version": 1,
-  "exported": "2026-10-15T00:34:28",
+  "exported": "2026-10-15T15:09:09",
   "name": "NightShot -- Sony DCR-TRV310E",
   "standard": "ntsc",
   "seed": 20240101,
   "params": {
     "camera": {
-      "nv_mode": 2.0
+      "nv_mode": 1.0
+    },
+    "format": {
+      "chroma_bandwidth": 2.0,
+      "chroma_vertical_averaging": 0.0,
+      "color_noise": 0.02,
+      "luma_bandwidth": 5.0
+    },
+    "codec": {
+      "dv_enabled": 1.0
     },
     "rf": {
       "adjacent_channel": 0.2,
@@ -15,8 +24,16 @@
       "signal_dbm": -74.0
     },
     "tape": {
-      "dropout_rate": 0.6,
-      "noise_floor": 0.3
+      "dropout_rate": 0.0,
+      "head_switching": 0.0,
+      "line_jitter": 0.02,
+      "micro_jitter": 0.02,
+      "noise_floor": 0.02,
+      "walk_amplitude": 0.02
+    },
+    "player": {
+      "chroma_bandwidth": 2.0,
+      "luma_bandwidth": 5.0
     },
     "display": {
       "enabled": 0.0

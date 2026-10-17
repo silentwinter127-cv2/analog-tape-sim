@@ -226,10 +226,16 @@ class GraphExecutor:
             sig = buf.meta.get("signal")
             if sig is None:
                 sig = SignalFrame.from_rgb(buf.rgb, self.std)
+            rgb_in = sig.to_rgb()
+            conn_cfg = self.ctx.layer("connector") or {}
+            sq = float(conn_cfg.get("aspect_squeeze", 0.0))
+            if sq > 1e-4:
+                from ..stages.connector import ConnectorStage
+                rgb_in, _ = ConnectorStage._apply_aspect_squeeze(rgb_in, sq)
             # A converter box really does encode the picture itself, so the
             # format layer runs here rather than being borrowed from elsewhere.
             fmt = self._format_clone()
-            comp = fmt.apply(FrameBuffer(sig.to_rgb(), None, index, buf.time,
+            comp = fmt.apply(FrameBuffer(rgb_in, None, index, buf.time,
                                          self.std, dict(buf.meta)))
             return comp, comp.meta["signal"].to_rgb()
 
@@ -273,13 +279,25 @@ class GraphExecutor:
                 ph = np.asarray(ph, dtype=np.float32).reshape(-1, 1)
                 c, s = np.cos(ph), np.sin(ph)
                 i, q = i * c - q * s, i * s + q * c
-            out = FrameBuffer(buf.rgb, base, index, buf.time, self.std,
-                              {**buf.meta, "format": "composite"})
-            out.meta["signal"] = SignalFrame(y.astype(np.float32),
-                                             i.astype(np.float32),
-                                             q.astype(np.float32))
+            sig_rf = SignalFrame(y.astype(np.float32),
+                                 i.astype(np.float32),
+                                 q.astype(np.float32))
+            conn_cfg = self.ctx.layer("connector") or {}
+            rf_m = float(conn_cfg.get("rf_moisture", 0.0))
+            rf_c = float(conn_cfg.get("rf_corrosion", 0.0))
+            rf_sh = float(conn_cfg.get("rf_shielding", 0.0))
+            meta_out = {**buf.meta, "format": "composite"}
+            if rf_m > 1e-4 or rf_c > 1e-4:
+                from ..codecs.connectors import CONNECTORS, degrade_rf_signal
+                rgb_damp, c_info = degrade_rf_signal(
+                    sig_rf.to_rgb(), CONNECTORS["rf"], rf_m, rf_c, rf_sh, index, int(self.seed) + 23)
+                sig_rf = SignalFrame.from_rgb(rgb_damp, self.std)
+                info.update(c_info)
+                sig_rf._rf_direct = True
+            out = FrameBuffer(sig_rf.to_rgb(), base, index, buf.time, self.std, meta_out)
+            out.meta["signal"] = sig_rf
             out.meta["rf"] = info
-            return out, out.meta["signal"].to_rgb()
+            return out, sig_rf.to_rgb()
 
         raise RuntimeError(f"no implementation for node kind {kind!r}")
 
@@ -304,6 +322,10 @@ class GraphExecutor:
         # downstream needs one must be re-derived rather than reconstructed
         if up.kind in ("encoder", "hdmi_to_av", "rf_tuner"):
             sig = SignalFrame.from_rgb(buf.rgb, self.std)
+            if up.kind == "rf_tuner":
+                _cc = self.ctx.layer("connector") or {}
+                if float(_cc.get("rf_moisture", 0.0)) > 1e-4 or float(_cc.get("rf_corrosion", 0.0)) > 1e-4:
+                    sig._rf_direct = True
             buf.composite = composite_encode(sig.y, sig.i, sig.q, self.std,
                                              chroma_gain=0.63)
             buf.meta["signal"] = sig

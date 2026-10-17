@@ -21,6 +21,18 @@
     <button id="btnTimeline">缺陷时间线</button>
     <button id="btnMatrix">效果矩阵</button>
     <button id="btnFaults">故障速查</button>
+    <select id="exportScale" class="qsel" title="导出静帧与离线渲染的输出分辨率档位">
+      <option value="1.0" selected>导出尺寸: 1.0x 原画</option>
+      <option value="sd720">导出尺寸: 720p 标清母带</option>
+      <option value="0.75">导出尺寸: 0.75x 高清</option>
+      <option value="0.5">导出尺寸: 0.50x 预览同尺</option>
+    </select>
+    <select id="exportQuality" class="qsel" title="导出静帧格式与离线渲染编码画质 (CRF)">
+      <option value="lossless">导出画质: 极高 (PNG / CRF 12)</option>
+      <option value="high" selected>导出画质: 标准 (PNG / CRF 16)</option>
+      <option value="medium">导出画质: 均衡 (JPG 92% / CRF 20)</option>
+      <option value="draft">导出画质: 快速 (JPG 82% / CRF 24)</option>
+    </select>
     <button id="btnStill">导出静帧</button>
     <button id="btnSave">保存工程</button>
     <button id="btnExport" title="把整套设置导出成一个 JSON 文件，别人导入后能得到同样的画面">导出设置</button>
@@ -56,6 +68,20 @@
     <div class="scrub">
       <input id="timeSlider" type="range" min="0" max="100" value="12" step="0.5">
       <span id="timeLabel" class="mono">t = 0.40 s</span>
+      <select id="previewScale" class="qsel" title="实时预览分辨率缩放（越低越流畅，越高细节越完整）">
+        <option value="0.25">预览: 0.25x 极速</option>
+        <option value="0.35">预览: 0.35x 流畅</option>
+        <option value="0.5" selected>预览: 0.50x 标准</option>
+        <option value="sd720">预览: 720p 标清</option>
+        <option value="0.75">预览: 0.75x 高清</option>
+        <option value="1.0">预览: 1.00x 原画</option>
+      </select>
+      <select id="previewQuality" class="qsel" title="实时预览图像传输质量">
+        <option value="75">画质: JPG 75%</option>
+        <option value="88" selected>画质: JPG 88%</option>
+        <option value="95">画质: JPG 95%</option>
+        <option value="100">画质: PNG 无损</option>
+      </select>
       <label class="chk"><input id="abToggle" type="checkbox" checked> A/B 对比</label>
       <label class="chk"><input id="autoRefresh" type="checkbox" checked> 自动刷新</label>
       <label class="chk"><input id="engineGraph" type="checkbox"> 用节点图渲染</label>

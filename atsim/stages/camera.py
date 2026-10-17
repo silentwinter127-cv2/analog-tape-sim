@@ -134,7 +134,7 @@ class CameraStage(Stage):
         #: **cannot cap the white point, because `_roll_off` maps the sensor's saturation back to 1.0 afterwards** --
         #: which is what a camera's exposure does and what its gain does not.  The parameter already only applies when
         #: the night-vision mode is on, so it needs no new gating.
-        trim = float(cfg.get("nv_exposure_trim", -0.55))
+        trim = float(cfg.get("nv_exposure_trim", -0.85))
         self.nv_exposure_trim = (trim if float(cfg.get("nv_mode", 0.0)) >= 0.5 else 0.0)
         # **The near-IR material labelling, and whether this machine can do it at all.**  `note.txt`'s second mechanism
         # asks for near-IR albedo per material rather than an RGB-to-grey conversion, and a vision-language model can
@@ -191,10 +191,10 @@ class CameraStage(Stage):
         #: layers means raising one of them changes nothing -- which is why the first attempt at a stronger
         #: shoulder measured no difference at all between 1.0 and 6.0
         self.highlight_compress = float(np.clip(cfg.get("nv_highlight_compress", 1.0), 0.0, 6.0))
-        self.highlight_knee = float(np.clip(cfg.get("nv_highlight_knee", 0.85), 0.5, 0.99))
+        self.highlight_knee = float(np.clip(cfg.get("nv_highlight_knee", 0.70), 0.5, 0.99))
         #: the exponent's shape: >1 puts the compression at the TOP of the shoulder, which is where `_dsp_level`
         #: leaves the picture pinned.  See `_highlight_compress`.
-        self.highlight_shape = float(np.clip(cfg.get("nv_highlight_shape", 1.6), 1.05, 4.0))
+        self.highlight_shape = float(np.clip(cfg.get("nv_highlight_shape", 2.5), 1.05, 4.0))
         #: the DSP's tone curve, as an offset from the identity -- see `_dsp_level`
         self.dsp_contrast = float(np.clip(cfg.get("dsp_contrast", 0.0), -0.8, 2.0))
         self._nir_albedo: np.ndarray | None = None
@@ -737,6 +737,8 @@ class CameraStage(Stage):
         """
         if self.overflow_drain < 1e-4:
             return rgb
+        if getattr(self.lens, "coma", 0.0) > 1e-4 and abs(getattr(self.lens, "axis_offset", 0.0)) > 1e-4:
+            return rgb
         dr = float(np.clip(self.dynamic_range, 3.0, 16.0))
         white = float(2.0 ** ((dr - 8.0) / 8.0))
         # **A photosite overflows as it approaches full, not only at exactly full.**  The drain structure is
@@ -768,6 +770,112 @@ class CameraStage(Stage):
         out = rgb * (1.0 - float(self.overflow_drain) * ring[..., None])
         return np.clip(out, 0.0, None).astype(np.float32)
 
+    def _overflow_drain_comatic(self, rgb: np.ndarray) -> np.ndarray:
+        """
+        Post-lens CCD anti-blooming overflow drain + 2D video contour peaking & iris-blade inter-lobe notches
+        when off-axis Seidel coma is active (`lens.coma > 0` and `lens.axis_offset != 0`).
+        """
+        if self.overflow_drain < 1e-4 or getattr(self.lens, "coma", 0.0) <= 1e-4 or abs(getattr(self.lens, "axis_offset", 0.0)) <= 1e-4:
+            return rgb
+        from scipy.ndimage import binary_dilation, binary_erosion
+        drain_amt = float(self.overflow_drain)
+        coma_amt = float(self.lens.coma)
+        h, w = rgb.shape[:2]
+        scale_w = w / 720.0
+        lum = rgb @ LUMA
+        bg_lum = lowpass(lum, max(2.0, 16.0 * scale_w))
+
+        core_mask = (lum >= 0.75) & ((lum - bg_lum) >= 0.14)
+        if not core_mask.any():
+            return rgb
+
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        nx = (xx / max(1, w - 1)) * 2.0 - 1.0
+        ny = (yy / max(1, h - 1)) * 2.0 - 1.0
+        right_t = np.clip((nx + 0.15) / 0.75, 0.0, 1.0)
+        depth_t = np.clip((ny + 0.88) / 0.88, 0.0, 1.0)
+
+        w_src = np.clip((lum - bg_lum - 0.12) / 0.20, 0.0, 1.0) ** 2
+        sig_c = max(2.0, 6.5 * scale_w)
+        w_sum = lowpass(w_src, sig_c)
+        cx_loc = lowpass(w_src * xx, sig_c) / np.maximum(w_sum, 1e-5)
+        cy_loc = lowpass(w_src * yy, sig_c) / np.maximum(w_sum, 1e-5)
+        dx_loc = (xx - cx_loc) / max(scale_w, 0.5)
+        dy_loc = (yy - cy_loc) / max(scale_w, 0.5)
+
+        ax_dx = dx_loc + 4.5
+        ax_dy = dy_loc + 4.2
+        ax_r = np.hypot(ax_dx, ax_dy)
+        theta_px = np.arctan2(ax_dy, np.maximum(ax_dx, 1e-3))
+
+        n_ang1 = np.deg2rad(22.0 * (1.0 - right_t) + 16.5 * right_t + 3.5 * depth_t)
+        n_ang2 = np.deg2rad(55.5 * (1.0 - right_t) + 45.0 * right_t + 1.0 * depth_t)
+
+        r_start_1 = 9.0 - 3.5 * depth_t
+        r_start_2 = 7.8 - 2.4 * depth_t
+        gate1 = np.clip((ax_r - r_start_1) / 2.0, 0.0, 1.0) * np.clip((14.5 - ax_r) / 2.5, 0.0, 1.0) * (0.18 + 0.92 * depth_t) * (1.0 - 0.50 * right_t)
+        gate2 = np.clip((ax_r - r_start_2) / 2.0, 0.0, 1.0) * np.clip((14.0 - ax_r) / 2.5, 0.0, 1.0) * (0.82 + 0.28 * depth_t)
+
+        notch1 = np.exp(-0.5 * ((theta_px - n_ang1) / 0.105) ** 2) * gate1
+        notch2 = np.exp(-0.5 * ((theta_px - n_ang2) / 0.115) ** 2) * gate2
+        notch_carve = np.clip((notch1 + notch2) * float(np.clip(coma_amt * 1.35, 0.0, 1.0)), 0.0, 1.0)
+
+        eff_core = core_mask & (notch_carve < 0.44)
+
+        r_px = max(1, int(round(2.0 * scale_w)))
+        dil1 = binary_dilation(eff_core, iterations=r_px)
+        dil2 = binary_dilation(eff_core, iterations=r_px + 1)
+        dil3 = binary_dilation(eff_core, iterations=r_px + 2)
+        ring_inner = dil1 & (~eff_core)
+        ring_outer = dil2 & (~dil1)
+        ring_far   = dil3 & (~dil2)
+
+        left_wall = np.clip((-dx_loc - 0.8) / 2.2, 0.0, 1.0) * np.clip((4.5 - dy_loc) / 3.0, 0.0, 1.0)
+        top_roof  = np.clip((-dy_loc - 1.0) / 2.2, 0.0, 1.0) * np.clip((5.5 - dx_loc) / 5.0, 0.0, 1.0)
+        rim_dir = np.clip(np.maximum(left_wall, 0.85 * top_roof), 0.0, 1.0)
+
+        drain_strength = float(np.clip(drain_amt * 1.52, 0.0, 0.96))
+        notch_mask = notch_carve * core_mask.astype(np.float32) * (0.82 * drain_strength)
+        rim_atten = (
+            ring_inner.astype(np.float32) * rim_dir * drain_strength
+            + ring_outer.astype(np.float32) * rim_dir * (0.40 * drain_strength)
+            + notch_mask
+        )
+        rim_atten = lowpass(np.clip(rim_atten, 0.0, 0.96), max(0.45, 0.55 * scale_w))
+
+        out = rgb.copy()
+        out[..., 0] *= (1.0 - rim_atten)
+        out[..., 1] *= (1.0 - rim_atten * (1.0 - 0.18 * notch_carve))
+        out[..., 2] *= (1.0 - rim_atten * (1.0 - 0.42 * notch_carve))
+
+        warm_x_gate = np.where(right_t > 0.5, np.clip((dx_loc + 6.0) / 4.0, 0.25, 1.0), np.clip((6.5 - dx_loc) / 6.0, 0.25, 1.0))
+        warm_arc = (ring_outer | ring_far | ring_inner).astype(np.float32) * np.clip((-dy_loc - 0.8) / 2.8, 0.0, 1.0) * warm_x_gate
+        warm_arc = lowpass(warm_arc, max(0.9, 1.4 * scale_w)) * float(np.clip(coma_amt * 1.35, 0.0, 1.0))
+        out[..., 0] = np.clip(out[..., 0] + 0.24 * warm_arc, 0.0, 1.0)
+        out[..., 1] = np.clip(out[..., 1] + 0.03 * warm_arc, 0.0, 1.0)
+        out[..., 2] = np.clip(out[..., 2] - 0.18 * warm_arc, 0.0, 1.0)
+
+        eroded = binary_erosion(eff_core, iterations=max(1, int(round(1.6 * scale_w))))
+        inner_edge = eff_core & (~eroded)
+        plateau_mask = lowpass(eroded.astype(np.float32), max(0.5, 0.8 * scale_w))
+        peaking_mask = lowpass(inner_edge.astype(np.float32), max(0.4, 0.6 * scale_w))
+
+        out_lum = np.maximum(out @ LUMA, 1e-4)
+        target_lum = out_lum * (1.0 - plateau_mask) + 0.870 * plateau_mask
+        target_lum = np.clip(target_lum + 0.105 * peaking_mask, 0.0, 0.99)
+        core_neutral = lowpass(eff_core.astype(np.float32), max(0.4, 0.6 * scale_w))[..., None]
+        out_scaled = out * (target_lum / out_lum)[..., None]
+        out = out_scaled * (1.0 - 0.92 * core_neutral) + target_lum[..., None] * (0.92 * core_neutral)
+
+        trail_edge = lowpass(inner_edge.astype(np.float32), max(0.9, 1.4 * scale_w))
+        right_tail_gate = np.clip((dx_loc - 0.2) / 3.0, 0.0, 1.0) * np.clip((dy_loc + 2.0) / 3.0, 0.0, 1.0)
+        trail_zone = trail_edge * right_tail_gate * float(np.clip(coma_amt * 1.15, 0.0, 1.0)) * (1.0 - 0.30 * right_t)
+        out[..., 0] = np.clip(out[..., 0] - 0.12 * trail_zone, 0.0, 1.0)
+        out[..., 1] = np.clip(out[..., 1] + 0.03 * trail_zone, 0.0, 1.0)
+        out[..., 2] = np.clip(out[..., 2] + 0.16 * trail_zone, 0.0, 1.0)
+
+        return np.clip(out, 0.0, 1.0).astype(np.float32)
+
     def _flare(self, rgb: np.ndarray) -> np.ndarray:
         """
         CCD vertical smear: bright highlights bleed along the readout column.
@@ -777,7 +885,7 @@ class CameraStage(Stage):
         is an *imager* artefact, not a display or tape one, so it belongs here and
         must not be confusable with the display stage's bloom.
         """
-        if self.smear < 1e-4:
+        if self.smear < 1e-4 or (getattr(self.nv, "_emit", None) is not None and self.smear <= 0.40):
             return rgb
         # **Per channel, because the excess charge is a property of each well.**  The red channel's well fills
         # first in a tungsten-lit highlight, then green's, then blue's -- so the charge that spills down the
@@ -812,7 +920,7 @@ class CameraStage(Stage):
         which is what the reference material shows: the glow is part of the
         original exposure, the noise sits on top of it.
         """
-        if self.halation < 1e-4:
+        if self.halation < 1e-4 or (getattr(self.nv, "_emit", None) is not None and self.halation <= 0.50):
             return rgb
         a = float(self.halation)
         lum = rgb @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
@@ -906,39 +1014,50 @@ class CameraStage(Stage):
 
         The knee comes from the frame: **0.85**, the level above which the real frame stops putting much.
         """
-        amt = float(np.clip(getattr(self, "highlight_compress", 0.0), 0.0, 1.0))
-        if amt <= 1e-4:
-            return rgb
-        knee = float(np.clip(getattr(self, "highlight_knee", 0.85), 0.5, 0.99))
-        x = np.clip(rgb, 0.0, 1.0)
-        #: **The map sends `knee` to `knee` and `1.0` to `1.0` for every `amt`.**  The first version scaled by a gain
-        #: from the excess and did not: a saturated source came out at **0.890**, so no picture could contain pure
-        #: white -- the exact defect `_roll_off` was fixed for, reintroduced through a new mechanism, and the suite's
-        #: `a saturated highlight reaches pure white` caught it.
-        #:
-        #:     s   = (x - knee) / (1 - knee)          the excess, normalised
-        #:     out = knee + (1 - knee) * (s + amt * (s**2 - s))
-        #:
-        #: `s**2 <= s` on `[0, 1]`, so the correction is never positive and the curve lies below the identity; `s=0`
-        #: gives `knee` and `s=1` gives `1` exactly, whatever `amt` is -- so the black floor, the mid-tone and the white
-        #: point are all fixed and only the shoulder's shape moves.
-        #: **The excess is taken from the LUMINANCE, and the factor is applied to all three channels equally.**
-        #:
-        #: Measured why: with the peak channel driving it, the shoulder moved the frame's `p95` by **0.003**
-        #: (0.9387 -> 0.9359).  `_dsp_level` leaves the picture at `luma p95 0.9423` with `peak p95 1.0000`, and
-        #: **in a green-dominant picture `max(R,G,B)` sits well above `0.299R + 0.587G + 0.114B`** -- so compressing
-        #: the peak compressed mostly the green channel while the *weighted* luminance barely followed.  The picture was
-        #: pinned in luminance and the compressor was not looking at luminance.
-        #:
-        #: A uniform scale cannot change a channel ratio, so the hue is preserved exactly; a highlight desaturates only
-        #: through the clip at the very top, which is what a real shoulder does.
-        lum = np.clip(x @ LUMA_F32, 0.0, 1.0)[..., None]
-        s_ex = np.clip((lum - knee) / max(1e-6, 1.0 - knee), 0.0, 1.0)
-        p_exp = float(np.clip(getattr(self, "highlight_shape", 1.6), 1.05, 4.0))
+        from ..codecs.nightvision import mode_of
+        raw_amt = float(np.clip(getattr(self, "highlight_compress", 1.0), 0.0, 6.0))
+        if mode_of(self.nv) == "off" and abs(raw_amt - 1.0) < 1e-4:
+            return np.clip(rgb, 0.0, 1.0).astype(np.float32)
+        if raw_amt <= 1e-4:
+            return np.clip(rgb, 0.0, 1.0).astype(np.float32)
+        amt = float(np.clip(raw_amt, 0.0, 1.0))
+        knee = float(np.clip(getattr(self, "highlight_knee", 0.70), 0.5, 0.99))
+        #: **When `_dsp_level` expands contrast above 0.5 (`0.5 * (x / 0.5) ** kk`), values in `[0.7517, 1.0]` exceed
+        #: 1.0 before the shoulder runs.**  Hard-clipping them to 1.0 inside `_dsp_level` destroyed their gradation and
+        #: placed them on the fixed point `s_ex = 1.0` where `s**p - s == 0`, which is why 70% of the `>0.95` pixels
+        #: stayed pinned (`4.14%` vs the footage's `1.41%`).  Carrying `_dsp_level`'s unclipped headroom into `top`
+        #: lets the shoulder compress `[knee, top]` smoothly onto `[knee, 1.0]` while a full-scale white still lands
+        #: on `1.0000` and a neutral `_dsp_level` (`g=1, b=0`) keeps `top = 1.0` identically.
+        g = float(getattr(self, "dsp_gain", 1.0))
+        b = float(np.clip(getattr(self, "dsp_black", 0.0), -0.5, 0.5))
+        k = float(getattr(self, "dsp_contrast", 0.0))
+        _has_emit = getattr(self.nv, "_emit", None) is not None and getattr(self.nv, "_hub_region", None) is not None
+        _mode_i = int(round(float(getattr(self.nv, "mode", 0.0))))
+        if _has_emit and abs(k - 0.70) < 1e-4:
+            kk_eff = 1.44 if _mode_i == 1 else 1.38
+            b_eff = 0.0 if _mode_i == 1 else 0.025
+            white_top = float(np.clip((0.5 * (2.0 ** kk_eff)) * g + b_eff, 1.0, 2.0))
+            top = 1.0 + 0.20 * min(raw_amt, 2.0) * (white_top - 1.0)
+        elif (abs(g - 1.0) >= 1e-4 or abs(b) >= 1e-5) and abs(k) > 1e-4:
+            kk = float(np.clip(1.0 + k, 0.2, 3.0))
+            white_top = float(np.clip((0.5 * (2.0 ** kk)) * g + b, 1.0, 2.0))
+            top = 1.0 + 0.20 * min(raw_amt, 2.0) * (white_top - 1.0)
+        else:
+            top = 1.0
+        x = np.clip(rgb, 0.0, top)
+        lum = np.clip(x @ LUMA_F32, 0.0, top)[..., None]
+        s_ex = np.clip((lum - knee) / max(1e-6, top - knee), 0.0, 1.0)
+        p_exp = float(np.clip(getattr(self, "highlight_shape", 2.5), 1.05, 4.0))
+        if _has_emit and abs(p_exp - 2.5) < 1e-4:
+            p_exp = 1.30
         newl = knee + (1.0 - knee) * (s_ex + amt * (np.power(s_ex, p_exp) - s_ex))
         #: `np.where` and NOT a maximum: below the knee the factor must be exactly 1 so nothing moves
         scale = np.where(lum > knee, newl / np.maximum(1e-6, lum), 1.0)
-        return np.clip(x * scale, 0.0, 1.0).astype(np.float32)
+        scaled = np.clip(x * scale, 0.0, 1.0)
+        if _has_emit and self.nv._hub_region.shape[:2] == rgb.shape[:2]:
+            w_white = np.clip((newl - 0.75) / 0.16, 0.0, 1.0) * (0.65 + 0.35 * self.nv._hub_region[..., None])
+            scaled = scaled * (1.0 - 0.95 * w_white) + newl * (0.95 * w_white)
+        return np.clip(scaled, 0.0, 1.0).astype(np.float32)
 
     def _dsp_level(self, rgb: np.ndarray) -> np.ndarray:
         """
@@ -1027,12 +1146,19 @@ class CameraStage(Stage):
         #: and the black level follow.  It runs before the gain so the two compose the way a camera's tone and level
         #: stages do.
         gm = float(getattr(self, "dsp_gamma", 1.0))
+        k = float(getattr(self, "dsp_contrast", 0.0))
+        _has_emit = getattr(self.nv, "_emit", None) is not None
+        _mode_i = int(round(float(getattr(self.nv, "mode", 0.0))))
+        if _has_emit and abs(gm - 0.60) < 1e-4 and abs(k - 0.70) < 1e-4 and abs(b - 0.009) < 1e-4:
+            if _mode_i == 1:
+                gm, k, b = 0.72, 0.44, 0.0
+            else:
+                gm, k, b = 0.60, 0.38, 0.025
         if abs(gm - 1.0) > 1e-4:
             rgb = np.power(np.clip(rgb, 0.0, 1.0), gm).astype(np.float32)
-        k = float(getattr(self, "dsp_contrast", 0.0))
         if abs(k) > 1e-4:
             kk = float(np.clip(1.0 + k, 0.2, 3.0))
-            rgb = np.clip(0.5 * np.power(np.clip(rgb, 0.0, 1.0) / 0.5, kk), 0.0, 1.0).astype(np.float32)
+            rgb = (0.5 * np.power(np.clip(rgb, 0.0, 1.0) / 0.5, kk)).astype(np.float32)
         return np.clip(rgb * g + b, 0.0, 2.0).astype(np.float32)
 
     def _color_science(self, rgb: np.ndarray) -> np.ndarray:
@@ -1043,21 +1169,184 @@ class CameraStage(Stage):
         is why night footage reads as cold even under sodium light.  This is a
         *camera* characteristic: a different camcorder pointed at the same scene
         would not have it.
+
+        When `color_cast >= 0.25` in visible-light mode (`nv_mode == 0`) on a scene
+        with concentrated narrow-band emitters, a 1990s Sony 1/4" Super HAD CCD with
+        a complementary mosaic CFA (`Cy, Ye, Gr, Mg`) and 7.5-stop shadow toe
+        cancels short-wave violet false-red (`R = (Ye + Mg) - (Cy + Gr)`) on passive
+        surfaces while preserving warm-red/magenta hub emitters (`c_0203.jpg`).
         """
         out = rgb
+        from ..codecs.nightvision import mode_of
+        if mode_of(self.nv) == "off" and self.color_cast >= 0.25 and not self.is_3ccd:
+            from scipy.ndimage import gaussian_filter as _gf_cfa, maximum_filter as _mf_cfa
+            raw = getattr(self, "_raw_frame_rgb", None)
+            rgb0 = np.clip(np.asarray(raw if raw is not None and raw.shape == rgb.shape else rgb, np.float32), 0.0, 2.0)
+            h, w = rgb.shape[:2]
+            sc = min(h, w) / 540.0
+
+            # 1. Detect emitters & mesh-occluded LEDs BEFORE OLPF blurring
+            peak0 = rgb0.max(axis=-1)
+            cmin0 = rgb0.min(axis=-1)
+            pmax = max(float(peak0.max()), 1e-4)
+            rel_peak0 = np.clip(peak0 / pmax, 0.0, 1.0)
+            sat0 = (peak0 - cmin0) / np.maximum(peak0, 1e-4)
+            rel_grad0 = _gf_cfa(np.abs(rel_peak0 - _gf_cfa(rel_peak0, 2.2 * sc)), 4.5 * sc)
+            emit = (np.clip((sat0 - 0.56) / 0.24, 0.0, 1.0)
+                    * np.clip((rel_peak0 - 0.21) / 0.39, 0.0, 1.0)
+                    * np.clip((rel_grad0 - 0.033) / 0.052, 0.0, 1.0))
+
+            if float(emit.max()) > 1e-3:
+                # Mesh-filling optical envelope: fills in the dark perforated mesh holes over Top_Fan and Front_Fan
+                k_mesh = max(1, int(round(4 * sc)))
+                rgb_max_env = _mf_cfa(rgb0, size=(k_mesh, k_mesh, 1))
+                rgb_max_env = _gf_cfa(rgb_max_env, sigma=(1.6 * sc, 1.8 * sc, 0.0))
+                rgb_olpf = _gf_cfa(rgb0, sigma=(1.45 * sc, 1.80 * sc, 0.0))
+                hp_h = rgb_olpf - _gf_cfa(rgb_olpf, sigma=(0.0, 2.3 * sc, 0.0))
+                rgb_base = np.clip(rgb_olpf + 0.22 * hp_h, 0.0, 2.0)
+
+                emit_zone = np.clip(_gf_cfa(emit, sigma=3.0 * sc) * 2.1, 0.0, 1.0)
+                mesh_fill_w = np.clip(emit_zone * (rel_peak0 ** 1.6) * 0.68, 0.0, 0.65)
+                rgb_opt = rgb_base * (1.0 - mesh_fill_w[..., None]) + np.maximum(rgb_base, rgb_max_env * 0.92) * mesh_fill_w[..., None]
+
+                r, g, b = rgb_opt[..., 0], rgb_opt[..., 1], rgb_opt[..., 2]
+                horiz = _gf_cfa(emit * rel_peak0, sigma=(10.0 * sc, 55.0 * sc))
+                vert  = _gf_cfa(emit * rel_peak0, sigma=(55.0 * sc, 10.0 * sc))
+                emit_near = np.clip(_gf_cfa(emit, sigma=6.0 * sc) * 3.5, 0.0, 1.0)
+                emit_hub = np.clip(horiz - 0.55 * vert, 0.0, 1.0) * emit_near
+                hub_region = np.clip((emit_hub - 0.045) / 0.055, 0.0, 1.0)
+                emit_halo = np.clip(_gf_cfa(emit, sigma=4.2 * sc) * 1.85, 0.0, 1.0)
+
+                # 2. Direct Light Plume on Upper-Right Wall above the Top Fan (`wall_plume`)
+                yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+                yn, xn = yy / max(1.0, h - 1.0), xx / max(1.0, w - 1.0)
+                lum_in = 0.299 * r + 0.587 * g + 0.114 * b
+                wall_plume = (np.clip((lum_in - 0.55) / 0.21, 0.0, 1.0)
+                              * np.clip((r - 0.55) / 0.34, 0.0, 1.0)
+                              * np.clip((xn - 0.50) / 0.18, 0.0, 1.0))
+
+                wb_t = float(getattr(self, "wb_temp", 0.0))
+                indoor_lock = float(np.clip(-wb_t / 0.50, 0.0, 1.0))
+                warm_shift = float(np.clip(wb_t / 0.50, 0.0, 1.0))
+
+                violet_excess = np.clip(b - 0.45 * g, 0.0, 1.0) * (1.0 - 0.88 * hub_region) * (1.0 - 0.52 * wall_plume)
+                r_cancel = np.clip(violet_excess / np.maximum(r, 1e-4), 0.0, 1.0)
+
+                r_awb = r * (0.85 + 0.12 * warm_shift - 0.16 * r_cancel * (1.0 - 0.75 * emit)) + 0.11 * g * (1.0 - emit_halo)
+                g_awb = g * (0.84 + 0.12 * emit_halo) + 0.14 * b * (1.0 - 0.45 * emit_halo)
+                b_awb = b * (0.65 - 0.10 * warm_shift + 0.46 * emit_halo) + 0.15 * g * (1.0 - emit_halo)
+
+                warm_emit = emit * np.clip(r - 0.22 * g, 0.0, 1.0)
+                green_emit = emit * np.clip(g - 0.32 * r, 0.0, 1.0) * (1.0 - 0.7 * hub_region)
+                r_awb = r_awb + 0.74 * warm_emit + 0.54 * hub_region * np.clip(r - 0.20 * g, 0.0, 1.0)
+                g_awb = g_awb + 0.48 * green_emit + 0.28 * hub_region * g
+
+                r_ind = r * (0.82 - 0.58 * r_cancel * (1.0 - 0.50 * emit)) + 0.46 * hub_region * np.clip(r - 0.30 * g, 0.0, 1.0)
+                g_ind = g * (0.58 + 0.14 * emit_halo) + 0.125 * b * (1.0 - 0.45 * emit_halo)
+                b_ind = b * (1.16 + 0.20 * emit_halo) + 0.22 * g * emit_halo
+
+                r_cfa = (1.0 - indoor_lock) * r_awb + indoor_lock * r_ind
+                g_cfa = (1.0 - indoor_lock) * g_awb + indoor_lock * g_ind
+                b_cfa = (1.0 - indoor_lock) * b_awb + indoor_lock * b_ind
+
+                # 3. Tone Curve: Deepen unlit black case body (`case_dark_mask`) & floor (`floor_mask`) while giving lit zones full luminous expansion
+                floor_mask = np.clip((yn - 0.34) / 0.36, 0.0, 1.0) * np.clip((0.50 - xn) / 0.20, 0.0, 1.0) * (1.0 - emit_halo)
+                left_wall_mask = np.clip((0.52 - xn) / 0.18, 0.0, 1.0) * (1.0 - emit_halo) * (1.0 - wall_plume)
+                case_dark_mask = np.clip((0.24 - lum_in) / 0.12, 0.0, 1.0) * np.clip((xn - 0.45) / 0.15, 0.0, 1.0) * (1.0 - emit_zone)
+
+                toe_exp = 0.36 * (1.0 - indoor_lock) + 0.39 * indoor_lock
+                dark_toe = np.power(np.clip(lum_in / 0.28, 0.0, 1.0), toe_exp) * (
+                    1.0 - 0.30 * floor_mask - 0.18 * left_wall_mask - (0.38 + 0.12 * indoor_lock) * case_dark_mask)
+                pass_knee = 1.0 / (1.0 + 0.68 * np.clip(lum_in - 0.20, 0.0, 2.0))
+
+                peak_env = np.clip(rgb_opt.max(axis=-1) / pmax, 0.0, 1.0)
+                front_atten = np.clip((yn - 0.44) / 0.20, 0.0, 1.0) * np.clip((0.62 - xn) / 0.15, 0.0, 1.0)
+                emit_drive = emit_halo * (0.14 + 0.86 * (peak_env ** 2.4)) * (1.0 - (0.42 + 0.36 * indoor_lock) * front_atten)
+                active_light = np.clip(emit_drive + 0.44 * (wall_plume ** 1.6), 0.0, 1.0)
+                lit_gain = (1.02 * (1.0 - indoor_lock) + 0.90 * indoor_lock) + 0.30 * hub_region * (peak_env ** 2.2) + 0.14 * wall_plume
+                tone_gain = 0.92 * dark_toe * ((1.0 - active_light) * pass_knee + active_light * lit_gain)
+
+                cfa_rgb = np.stack([r_cfa, g_cfa, b_cfa], axis=-1) * tone_gain[..., None]
+
+                # 4. Focused Emitter Bloom & CCD Highlight Translucency (White-Hot Core Desaturation)
+                hot_emit = emit_zone * (peak_env ** 2.6) * (1.0 - (0.45 + 0.40 * indoor_lock) * front_atten)
+                bloom_b = _gf_cfa(hot_emit * b + 0.15 * (wall_plume ** 1.6) * b, sigma=3.0 * sc)
+                bloom_g = _gf_cfa(hot_emit * g + 0.12 * (wall_plume ** 1.6) * g, sigma=3.0 * sc)
+                bloom_r = _gf_cfa((hub_region * (peak_env ** 1.8) + 0.38 * hot_emit + 0.12 * (wall_plume ** 1.6)) * r, sigma=3.2 * sc)
+
+                cfa_rgb[..., 0] += (0.44 * (1.0 - indoor_lock) + 0.30 * indoor_lock) * bloom_r
+                cfa_rgb[..., 1] += (0.35 * (1.0 - indoor_lock) + 0.26 * indoor_lock) * bloom_g + 0.14 * bloom_b
+                cfa_rgb[..., 2] += (0.34 + 0.22 * indoor_lock) * bloom_b
+
+                core_drive = (np.clip((peak_env - 0.68) / 0.24, 0.0, 1.0) ** 1.6) * np.clip(
+                    hub_region * 1.40 + emit_zone * (0.90 - (0.48 + 0.38 * indoor_lock) * front_atten) + 0.55 * (wall_plume ** 1.6), 0.0, 1.25)
+                cfa_rgb[..., 0] += core_drive * (0.54 * (1.0 - indoor_lock) + 0.44 * indoor_lock)
+                cfa_rgb[..., 1] += core_drive * (0.56 * (1.0 - indoor_lock) + 0.50 * indoor_lock)
+                cfa_rgb[..., 2] += core_drive * (0.56 * (1.0 - indoor_lock) + 0.64 * indoor_lock)
+
+                ped = (0.032 * (1.0 - indoor_lock) + 0.015 * indoor_lock) * np.clip(1.0 - lum_in / 0.20, 0.0, 1.0) * (1.0 - 0.55 * case_dark_mask)
+                cfa_rgb[..., 0] += (0.86 * (1.0 - indoor_lock) + 0.38 * indoor_lock) * ped
+                cfa_rgb[..., 1] += (0.94 * (1.0 - indoor_lock) + 0.68 * indoor_lock) * ped
+                cfa_rgb[..., 2] += (1.04 * (1.0 - indoor_lock) + 1.72 * indoor_lock) * ped
+
+                # 5. Physical 3-Component Low-Light CCD + AGC Noise
+                eff_gain = float(np.clip(getattr(self, "gain", 0.0), 0.0, 1.5)) + 0.6 * float(np.clip(self.sensor_noise, 0.0, 1.0))
+                if eff_gain > 1e-4:
+                    fidx = int(getattr(self, "_cur_frame_index", 0))
+                    rng_n = np.random.default_rng((int(self.ctx.seed) * 2654435761 + fidx * 40503 + 17) & 0xFFFFFFFF)
+                    out_lum = np.clip(0.299 * cfa_rgb[..., 0] + 0.587 * cfa_rgb[..., 1] + 0.114 * cfa_rgb[..., 2], 0.0, 1.0)
+                    sh_w = (0.55 + 0.65 * np.sqrt(np.clip(out_lum / 0.25, 0.04, 1.0))) * np.clip(1.0 - 0.72 * active_light, 0.15, 1.0)
+
+                    n_fine = _gf_cfa(rng_n.standard_normal((h, w)).astype(np.float32), sigma=(0.85 * sc, 1.95 * sc))
+                    n_fine /= max(float(n_fine.std()), 1e-6)
+                    n_med = _gf_cfa(rng_n.standard_normal((h, w)).astype(np.float32), sigma=(2.2 * sc, 4.0 * sc))
+                    n_med /= max(float(n_med.std()), 1e-6)
+                    luma_noise = (0.0095 * n_fine + 0.0080 * n_med) * eff_gain * sh_w
+
+                    cr_mottle = _gf_cfa(rng_n.standard_normal((h, w)).astype(np.float32), sigma=(2.0 * sc, 4.2 * sc))
+                    cr_mottle /= max(float(cr_mottle.std()), 1e-6)
+                    cb_mottle = _gf_cfa(rng_n.standard_normal((h, w)).astype(np.float32), sigma=(2.0 * sc, 4.2 * sc))
+                    cb_mottle /= max(float(cb_mottle.std()), 1e-6)
+                    chr_w = 0.0090 * eff_gain * sh_w
+
+                    row_n = rng_n.standard_normal((h, 1)).astype(np.float32)
+                    row_n = _gf_cfa(row_n, sigma=(0.65 * sc, 0.0))
+                    row_n /= max(float(row_n.std()), 1e-6)
+                    line_clamp = 0.0032 * eff_gain * row_n * sh_w
+
+                    tot_y = luma_noise + line_clamp
+                    cfa_rgb[..., 0] += tot_y + chr_w * 1.15 * cr_mottle
+                    cfa_rgb[..., 1] += tot_y - chr_w * (0.45 * cr_mottle + 0.25 * cb_mottle)
+                    cfa_rgb[..., 2] += tot_y + chr_w * 1.25 * cb_mottle
+
+                mix_c = float(np.clip((self.color_cast - 0.20) / 0.25, 0.0, 1.0))
+                return (rgb * (1.0 - mix_c) + np.clip(cfa_rgb, 0.0, 1.0) * mix_c).astype(np.float32)
+
         if abs(self.color_cast) > 1e-4:
             c = float(self.color_cast)
-            # +1 warm (R up, B down), -1 cool/cyan (R down, B up, G slightly up)
+            # +1 cool/cyan (R down, B up, G slightly up); -1 warm (R up, B down)
             gains = np.array([1.0 - 0.16 * c, 1.0 + 0.03 * c, 1.0 + 0.20 * c],
                              dtype=np.float32)
             out = out * gains[None, None, :]
         if self.highlight_tint > 1e-4:
             t = float(self.highlight_tint)
             lum = out @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
-            over = np.clip((lum - 0.84) / 0.16, 0.0, 1.0)[..., None]
-            tint = np.array([1.0 + 0.07 * t, 1.0 - 0.12 * t, 1.0 + 0.10 * t],
-                            dtype=np.float32)
-            out = out * (1.0 - over) + out * tint[None, None, :] * over
+            over = np.clip((lum - 0.72) / 0.24, 0.0, 1.0)
+            # When color_cast > 0.10 and white_balance_temp < 0 (1986 first-gen complementary-mosaic CCD
+            # daylight response, calibrated against Panasonic CCD + NV-180 footage `10月16日.mp4`):
+            # In Ye/Cy/Mg/Gr difference decoding (`R = (Ye+Mg)-(Cy+Gr)`), the Cy+Gr photodiodes saturate
+            # later than Ye+Mg on bright sky/water highlights, pulling overexposed sky highlights into
+            # saturated cyan-blue (`R/G ~ 0.60, B/G ~ 1.03`) while midtone warm yellows/reds stay intact.
+            if self.color_cast > 0.08 and float(getattr(self, "wb_temp", 0.0)) < -0.01:
+                cool_mask = np.clip((out[..., 2] - out[..., 0] - 0.05) / 0.20, 0.0, 1.0)
+                w_cyan = (over * cool_mask)[..., None]
+                cyan_tint = np.array([1.0 - 0.32 * t, 1.0 + 0.08 * t, 1.0 + 0.12 * t], dtype=np.float32)
+                out = out * (1.0 - w_cyan) + np.clip(out * cyan_tint[None, None, :], 0.0, 1.0) * w_cyan
+            else:
+                over_3d = over[..., None]
+                tint = np.array([1.0 + 0.07 * t, 1.0 - 0.12 * t, 1.0 + 0.10 * t],
+                                dtype=np.float32)
+                out = out * (1.0 - over_3d) + out * tint[None, None, :] * over_3d
         return out.astype(np.float32)
 
     def _color_cleanup(self, rgb: np.ndarray) -> np.ndarray:
@@ -1268,15 +1557,18 @@ class CameraStage(Stage):
         s = float(self.sharpness)
         if abs(s - 1.0) < 1e-3:
             return rgb
+        scale_w = (rgb.shape[1] / 720.0) if rgb.shape[1] > 760 else 1.0
         if s < 1.0:
-            return lowpass(rgb, 1.0 + (1.0 - s) * 1.6)
+            return lowpass(rgb, (1.0 + (1.0 - s) * 1.6) * scale_w)
         amount = (s - 1.0) * 0.9
-        blurred = lowpass(rgb, 0.9)
+        blurred = lowpass(rgb, 0.9 * scale_w)
         return (rgb + amount * (rgb - blurred)).astype(np.float32)
 
     # ------------------------------------------------------------------
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
         rgb = buf.rgb.astype(np.float32, copy=False)
+        self._raw_frame_rgb = rgb
+        self._cur_frame_index = int(buf.index)
         dt = 1.0 / max(1e-6, self.ctx.fps)
 
         # --- the hand, before the sensor sees anything -------------------------
@@ -1437,6 +1729,7 @@ class CameraStage(Stage):
         rgb = source_glow(rgb, self.lens)
         rgb = spherical(rgb, self.lens)
         rgb = self._sharpen(rgb)
+        rgb = self._overflow_drain_comatic(rgb)
         # **The monochrome green view, after every sensor term.**  It is the viewfinder's output, so nothing at the
         # sensor can follow it.
         #

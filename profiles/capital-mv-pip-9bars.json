@@ -1,0 +1,54 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "1992 罗大佑《首都》MV · 分屏子窗 9x 搜索扫描线（8条主副噪波条 · 6.0s 实测标定）",
+  "note": "DVE 切换台上半幅子窗（Y ∈ [0, 0.562H]）输入 9x 倍速搜索画面：主条周期 129.3 px、含方位角副条共 8 条水平噪波带以 21 px/帧匀速下滚，峰值 L=0.750，行同步错位右移 +48 px，下半幅红衣队列保持正常锁相播放",
+  "standard": "ntsc",
+  "seed": 20240101,
+  "fps": 30.0,
+  "params": {
+    "camera": {
+      "sensor_noise": 0.03,
+      "sharpness": 0.92,
+      "dynamic_range": 8.0
+    },
+    "format": {
+      "luma_bandwidth": 3.4,
+      "chroma_bandwidth": 0.68,
+      "chroma_vertical_averaging": 0.6,
+      "comb_depth": 0.72,
+      "color_noise": 0.12,
+      "edge_boost": 0.22,
+      "chroma_gain": 1.0
+    },
+    "codec": {
+      "dv_enabled": 0.0
+    },
+    "tape": {
+      "shuttle_speed": 5.0,
+      "shuttle_stale": 0.24,
+      "shuttle_span": 8.0,
+      "shuttle_wave": 18.0,
+      "shuttle_mode": 1.0,
+      "shuttle_guard_bars": 0.95,
+      "shuttle_bar_luma": 0.75,
+      "shuttle_PIP_bars": 1.0,
+      "tape_stability": 0.75,
+      "line_jitter": 0.14,
+      "walk_amplitude": 0.1,
+      "noise_floor": 0.1,
+      "dropout_rate": 0.05,
+      "head_switching": 0.0
+    },
+    "player": {
+      "tbc_enabled": 0.0,
+      "transport_jitter": 0.15,
+      "head_wear": 0.12,
+      "luma_bandwidth": 3.4,
+      "chroma_bandwidth": 0.68
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  }
+}

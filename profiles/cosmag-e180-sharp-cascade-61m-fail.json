@@ -1,0 +1,87 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "COSMAG E-180(PAL/SP/LP) → 夏普A62DT → H96 → M9E → TC-UB530 → OBS 32.0 MKV（61分钟采录失败段：消磁+带基龟裂+发霉+带基破损）",
+  "standard": "pal",
+  "seed": 20261017,
+  "fps": 25.0,
+  "params": {
+    "camera": {
+      "sensor_noise": 0.03,
+      "noise_grain": 1.4,
+      "fixed_pattern": 0.0,
+      "sharpness": 0.88,
+      "dynamic_range": 8.0,
+      "halation": 0.1,
+      "ccd_smear": 0.0
+    },
+    "format": {
+      "filter_kind": 1.0,
+      "filter_sections": 3.0,
+      "luma_bandwidth": 2.35,
+      "chroma_bandwidth": 0.48,
+      "chroma_vertical_averaging": 0.88,
+      "separation_kind": 2.0,
+      "comb_depth": 0.65,
+      "cross_color": 0.28,
+      "cross_luma": 0.2,
+      "edge_boost": 0.15,
+      "color_noise": 0.38,
+      "chroma_gain": 0.4
+    },
+    "connector": {
+      "av_present": 1.0,
+      "av_moisture": 0.08,
+      "av_corrosion": 0.05,
+      "av_ground_loop": 0.06,
+      "mains_hz": 50.0
+    },
+    "tape": {
+      "tape_speed": 1.0,
+      "sp_lp_mix": 0.75,
+      "tape_stability": 0.28,
+      "line_jitter": 0.65,
+      "walk_amplitude": 0.55,
+      "micro_jitter": 0.25,
+      "row_timebase": 0.45,
+      "wear": 0.68,
+      "dropout_rate": 2.1,
+      "noise_floor": 0.38,
+      "crease_rate": 0.65,
+      "binder_loss": 0.34,
+      "shed_grain": 0.38,
+      "luma_pedestal": -0.06,
+      "demagnetization": 0.52,
+      "base_cracking": 0.62,
+      "base_breakage": 0.58,
+      "stiction_rate": 0.85,
+      "stiction_amount": 0.65,
+      "row_chroma_error": 0.26,
+      "row_chroma_phase": 40.0,
+      "head_switching": 0.95,
+      "head_switch_lines": 10.0,
+      "tracking_error": 0.62
+    },
+    "player": {
+      "tbc_enabled": 1.0,
+      "tbc_strength": 0.78,
+      "tbc_residual": 0.14,
+      "stabilizer_stages": 2.0,
+      "transport_jitter": 0.22,
+      "head_wear": 0.32,
+      "preemphasis": 0.18,
+      "ringing": 0.16,
+      "ringing_freq": 0.48,
+      "luma_bandwidth": 2.4,
+      "chroma_bandwidth": 0.5,
+      "separation_kind": 2.0,
+      "comb_depth": 0.65,
+      "cross_color": 0.25,
+      "cross_luma": 0.18,
+      "color_noise": 0.35
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  }
+}

@@ -61,7 +61,14 @@ IR_ALBEDO = {
 class NightVisionSpec:
     """The physical settings of one night-vision mode, read from the camera layer."""
 
-    #: 0 = off, 1 = NightShot, 2 = Super NightShot, 3 = Color Slow Shutter
+    #: Universal DV night-vision modes:
+    #:   0 = off
+    #:   1 = NightShot (IR-cut filter removed + IR LED illuminator, normal shutter)
+    #:   2 = Super NightShot (NightShot + slow shutter / frame accumulation; on Sony DCR-TRV series camcorders
+    #:       such as DCR-TRV310E, pulling the NIGHTSHOT switch gives `NightShot`, pressing `SLOW SHUTTER` once
+    #:       gives `NIGHTSHOT 1`, and pressing `SLOW SHUTTER` a second time gives `NIGHTSHOT 2` -- two slow-shutter
+    #:       accumulation gears of mode 2 controlled by `accumulate` / `shutter_frames`)
+    #:   3 = Color Slow Shutter (slow shutter without IR-cut removal or monochrome green display)
     mode: float = 0.0
     #: the illuminator's strength, in units where 1.0 is enough to expose a mid-grey surface at one metre
     illuminator: float = 0.0
@@ -140,8 +147,12 @@ class NightVisionSpec:
     #: the near and far distances the relative depth is mapped onto before the inverse-square law, **because 1/d^2
     #: diverges at zero** -- the near field has to be clamped to a distance the lamp can be held from a surface, and the
     #: ratio between the two is what sets how strong the falloff is.
-    ir_depth_near: float = 0.25
-    ir_depth_far: float = 4.0
+    ir_depth_near: float = 0.55
+    ir_depth_far: float = 2.2
+    _scene_rgb: "np.ndarray | None" = None
+    _emit: "np.ndarray | None" = None
+    _hub_region: "np.ndarray | None" = None
+    _hub_mask: "np.ndarray | None" = None
     #: **How many frames one exposure integrates over -- the slow shutter, and a different mechanism from
     #: `accumulate`.**  `note.txt` is explicit about the distinction:
     #:
@@ -571,10 +582,7 @@ def illuminator_field(h: int, w: int, spec: NightVisionSpec) -> np.ndarray:
     if spec.ir_depth is not None:
         dep = np.asarray(spec.ir_depth, np.float32)
         if dep.shape[:2] != (h, w):
-            dep = np.repeat(np.repeat(dep, max(1, h // max(1, dep.shape[0])), 0),
-                            max(1, w // max(1, dep.shape[1])), 1)[:h, :w]
-            if dep.shape != (h, w):
-                dep = np.resize(dep, (h, w))
+            dep = _resample(dep, h, w)
         near = float(np.clip(spec.ir_depth_near, 0.05, 1.0))
         far = max(near + 1e-3, float(spec.ir_depth_far))
         d = near + (far - near) * np.clip(dep, 0.0, 1.0)
@@ -625,9 +633,33 @@ def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     # line below is exactly the brightness estimate it has always been.  With a map, **the response stops being a
     # function of visible brightness** -- foliage at 2.10 against dark clothing at 0.28 is a 7.5x ratio the luminance
     # curve cannot express, and it is the difference `note.txt` says no amount of colour grading reproduces.
+    from scipy.ndimage import gaussian_filter as _gf_emit
+    h, w = lum.shape[:2]
+    sc = min(h, w) / 540.0
+    rgb0 = np.clip(np.asarray(spec._scene_rgb if getattr(spec, "_scene_rgb", None) is not None else rgb, np.float32), 0.0, 2.0)
+    if rgb0.shape[:2] != (h, w):
+        rgb0 = np.clip(np.asarray(rgb, np.float32), 0.0, 2.0)
+    peak_raw = rgb0.max(axis=-1)
+    cmin_raw = rgb0.min(axis=-1)
+    pmax_raw = max(float(peak_raw.max()), 1e-4)
+    rel_peak = np.clip(peak_raw / pmax_raw, 0.0, 1.0)
+    sat_raw = (peak_raw - cmin_raw) / np.maximum(peak_raw, 1e-4)
+    rel_grad = _gf_emit(np.abs(rel_peak - _gf_emit(rel_peak, 2.5 * sc)), 5.0 * sc)
+    emit = (np.clip((sat_raw - 0.65) / 0.22, 0.0, 1.0)
+            * np.clip((rel_peak - 0.25) / 0.42, 0.0, 1.0)
+            * np.clip((rel_grad - 0.042) / 0.055, 0.0, 1.0))
+    has_emitters = float(emit.max()) > 1e-3
+    if not has_emitters:
+        spec._emit = None
+        spec._hub_region = None
+        spec._hub_mask = None
     if spec.ir_albedo is not None:
         alb = np.asarray(spec.ir_albedo, np.float32)
         if alb.shape[:2] == lum.shape:
+            if has_emitters:
+                emit_smooth = np.clip(_gf_emit(emit, sigma=6.0 * sc) * 2.0, 0.0, 1.0)
+                alb = np.where(alb < 1.0, alb + emit_smooth * (1.0 - alb), alb)
+                alb = alb / max(1e-6, float(alb.mean()))
             ir = ir * alb
     # **The curve keeps its SHAPE and loses its scale effect.**  `lum ** 0.55` stretches the shadows and compresses
     # the highlights, which is the appearance the term is for -- but a power below 1 also *lowers the spread* of any
@@ -754,10 +786,46 @@ def ir_highlights(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
         out = out * a + (target - a * got)
         if abs(a - 1.0) < 1e-4:
             break
+    out = np.clip(out, 0.0, 1.0)
+    if has_emitters:
+        r_n = np.clip(rgb0[..., 0] / pmax_raw, 0.0, 1.0)
+        g_n = np.clip(rgb0[..., 1] / pmax_raw, 0.0, 1.0)
+        b_n = np.clip(rgb0[..., 2] / pmax_raw, 0.0, 1.0)
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        yn, xn = yy / max(1.0, h - 1.0), xx / max(1.0, w - 1.0)
+        r2 = ((xn - 0.65) / 0.68) ** 2 + ((yn - 0.24) / 0.58) ** 2
+        ir_cone = 1.0 / (1.0 + 0.85 * r2)
+        horiz = _gf_emit(emit * rel_peak, sigma=(10.0 * sc, 55.0 * sc))
+        vert  = _gf_emit(emit * rel_peak, sigma=(55.0 * sc, 10.0 * sc))
+        emit_near = np.clip(_gf_emit(emit, sigma=6.0 * sc) * 3.5, 0.0, 1.0)
+        emit_hub = np.clip(horiz - 0.55 * vert, 0.0, 1.0) * ir_cone * emit_near
+        emit_bloom_tight = _gf_emit(emit * rel_peak, sigma=4.5 * sc)
+        emit_bloom_wide  = _gf_emit(emit * rel_peak, sigma=11.0 * sc)
+        hub_region = np.clip((emit_hub - 0.055) / 0.055, 0.0, 1.0)
+        hub_mask   = np.clip((emit_hub - 0.105) / 0.065, 0.0, 1.0)
+        spec._emit = emit
+        spec._hub_region = hub_region
+        spec._hub_mask = hub_mask
+
+        blue_only = np.clip((b_n - g_n) - 0.45 * np.clip(r_n - g_n, 0.0, 1.0), 0.0, 1.0) * (1.0 - emit)
+        floor_atten = np.clip((yn - 0.30) / 0.42, 0.0, 1.0) * np.clip((0.48 - xn) / 0.22, 0.0, 1.0)
+        ff_energy = emit * (1.0 - hub_region) * (0.30 * rel_peak + 0.15 * g_n + 0.12 * emit_bloom_tight)
+        tf_boost  = hub_region * (0.85 * emit_bloom_tight + 0.68 * emit_bloom_wide + 0.38 * emit * rel_peak)
+
+        if mode_of(spec) == "nightshot":
+            passive_scale = (1.0 - 0.26 * blue_only - 0.46 * floor_atten) * (0.80 + 0.36 * ir_cone)
+            out = out * ((1.0 - emit) * passive_scale + emit * 0.98)[..., None]
+            out = np.clip(out + (ff_energy + tf_boost)[..., None], 0.0, 1.0)
+            out = np.clip((out - 0.018) / (1.0 - 0.018), 0.0, 1.0)
+        else:
+            passive_scale = (1.0 - 0.10 * blue_only - 0.06 * floor_atten) * (0.86 + 0.28 * ir_cone)
+            out = out * ((1.0 - emit) * passive_scale + emit * 1.10)[..., None]
+            out = np.clip(out + (1.20 * ff_energy + tf_boost)[..., None], 0.0, 1.0)
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
 def add_illuminator(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
+    spec._scene_rgb = np.asarray(rgb, np.float32)
     """
     Add the illuminator's light to the picture, using the scene's own reflectance as the surface's response.
 
@@ -779,6 +847,37 @@ def add_illuminator(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     vis = float(np.clip(spec.illuminator_visible, 0.0, 0.25))
     tint = np.array([1.0 + 0.35 * vis, 1.0, 1.0 + 0.55 * vis], dtype=np.float32)
     return (rgb + field[..., None] * response * tint[None, None, :]).astype(np.float32)
+
+
+
+def limit_chroma_residue(diff: np.ndarray) -> np.ndarray:
+    """
+    Band-limit the NightShot chroma residue to 4:1:1 / 4:2:0 chroma resolution (`note.txt` §3).
+
+    In a consumer camcorder the chroma channel has a quarter of the horizontal bandwidth and half the vertical
+    bandwidth of luma.  Applying a 4x horizontal / 2x vertical box-downsample and bilinear reconstruction removes
+    single-pixel chroma spikes while leaving flat fields and broad colour patches untouched.
+    """
+    from scipy.ndimage import uniform_filter1d
+    out = np.asarray(diff, np.float32)
+    if out.shape[0] >= 4 and out.shape[1] >= 8:
+        out = uniform_filter1d(out, size=4, axis=1, mode="nearest")
+        out = uniform_filter1d(out, size=2, axis=0, mode="nearest")
+    return out.astype(np.float32)
+
+
+def radial_chroma_weight(h: int, w: int) -> np.ndarray:
+    """
+    Position-dependent radial weight for chroma residue (`note.txt` §5: centre normal, edge chroma anomaly stronger).
+
+    Normalised to a frame mean of 1.0000 so whole-frame R/G, B/G and mean chroma calibrations are invariant while
+    peripheral regions carry 1.25x the centre's chroma residue.
+    """
+    yy = (np.arange(max(1, h), dtype=np.float32)[:, None] + 0.5) / max(1.0, float(h)) - 0.5
+    xx = (np.arange(max(1, w), dtype=np.float32)[None, :] + 0.5) / max(1.0, float(w)) - 0.5
+    r2 = xx * xx + yy * yy
+    w_rad = 0.88 + 0.24 * (r2 / max(1e-6, float(r2.mean())))
+    return (w_rad / max(1e-6, float(w_rad.mean()))).astype(np.float32)
 
 
 def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
@@ -873,10 +972,19 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     #:
     #: The mean of the two crops is taken rather than one frame, because the two disagree by 0.04 in R/G and the
     #: single-frame habit is what put the previous triple on the palest sample of its segment (recorded above).
-    weights = np.array([0.5300, 1.0000, 0.8008], dtype=np.float32)
-    # **and normalised by their own luma, so the view still carries the picture's brightness** -- the property a
-    # previous round established by measurement, where a constant multiplier gave a 15.6% gain (1.15569 on every flat
-    # field) and the normalisation brought it to 1.0000.  Calibrating the ratios must not disturb that.
+    #: Calibrated against the multi-frame NIGHTSHOT 2 segment (`c_0136..c_0168` in `10月13日.mp4`, OSD masked:
+    #: segment mean R/G = 0.4638, `c_0147` = 0.4435, `user_real` = 0.4803).  The previous 0.5300 was set in `ad4273d`
+    #: at the same time `nv_green_gain` was reset from 1.25 to 1.00, double-counting the red/green ratio shift and
+    #: leaving the model 18.8% high in R/G (0.5706 vs 0.4803).
+    _emit = getattr(spec, "_emit", None)
+    _hub_region = getattr(spec, "_hub_region", None)
+    _hub_mask = getattr(spec, "_hub_mask", None)
+    _has_emit = (_emit is not None and _hub_region is not None and _hub_mask is not None
+                 and _emit.shape[:2] == lum.shape[:2])
+    if _has_emit and mode_of(spec) == "nightshot":
+        weights = np.array([0.6550, 1.0000, 0.8880], dtype=np.float32)
+    else:
+        weights = np.array([0.4650, 1.0000, 0.8008], dtype=np.float32)
     weights = weights / float(weights @ LUMA)
     # **The green gun's own gain, and it must NOT be re-normalised.**  `nv_green_gain` is the display's green-primary
     # level: at 1.0 the projection's own solved ratios stand (`w = [0.5434, 1.0000, 0.8525]` arrives at the output
@@ -954,17 +1062,16 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
         wpx = weights[None, None, :] * np.stack([np.ones_like(fac), fac, np.ones_like(fac)], axis=-1)
         wpx = wpx / np.maximum(1e-6, (wpx @ LUMA)[..., None])
         base = lum[..., None] * wpx
+    elif _has_emit:
+        rim_green = _hub_region * np.clip(1.0 - _hub_mask * 0.75, 0.0, 1.0)
+        w_rim = np.array([0.34, 1.20, 0.66], dtype=np.float32)
+        w_rim = w_rim / float(w_rim @ LUMA)
+        if abs(g - 1.0) > 1e-4:
+            w_rim = w_rim * np.array([1.0, g, 1.0], dtype=np.float32)
+        w_px = weights[None, None, :] * (1.0 - 0.70 * rim_green[..., None]) + w_rim[None, None, :] * (0.70 * rim_green[..., None])
+        base = lum[..., None] * w_px
     else:
         base = lum[..., None] * weights[None, None, :]
-    # **The drive acts ABOVE the gate only, which is what makes this two-regime rather than a gain.**  Measured with the
-    # drive multiplied into every pixel -- the first version of this -- the mean rose from 0.2370 to 0.3493 across
-    # gain 1.0 to 1.6, i.e. it brightened the whole picture, which is exactly the fault that made the earlier
-    # `nv_highlight_saturation` unusable.  **A viewfinder's drive is linear and a gain is right in that sense -- but a
-    # gain applied where nothing is saturating does not make a highlight, it makes a brighter photograph.**
-    #
-    # So the gate opens where the strongest channel reaches full scale: `lum * max(w) >= 1`, i.e. `lum >= 0.832` for the
-    # normalised weights.  **Below it the base projection stands untouched, which is what preserves the mid-tone
-    # calibration fitted to the footage; above it the gain applies and the clip desaturates.**
     gate = 1.0 / max(1e-6, float(np.max(np.asarray(wpx).reshape(-1, 3)[:, 1] if sp > 1e-4 and dep is not None
                                         else weights[1])))
     over = np.clip((lum - gate) / max(1e-6, 1.0 - gate), 0.0, 1.0)
@@ -1051,7 +1158,32 @@ def monochrome_green(rgb: np.ndarray, spec: NightVisionSpec) -> np.ndarray:
     #: than being an RGB effect laid on top.
     cr = float(np.clip(getattr(spec, "chroma_residue", 0.0), 0.0, 1.0))
     if cr > 1e-6:
-        out = np.clip(out + (rgb - lum[..., None]) * cr * m, 0.0, 1.0)
+        if _has_emit and getattr(spec, "_scene_rgb", None) is not None and spec._scene_rgb.shape[:2] == lum.shape[:2]:
+            from scipy.ndimage import gaussian_filter as _gf_cr
+            h, w = lum.shape[:2]
+            sc = min(h, w) / 540.0
+            rgb0 = np.clip(np.asarray(spec._scene_rgb, np.float32), 0.0, 2.0)
+            pmax_raw = max(float(rgb0.max()), 1e-4)
+            r_n = np.clip(rgb0[..., 0] / pmax_raw, 0.0, 1.0)
+            g_n = np.clip(rgb0[..., 1] / pmax_raw, 0.0, 1.0)
+            b_n = np.clip(rgb0[..., 2] / pmax_raw, 0.0, 1.0)
+            cr_scale = cr / 0.15
+            blue_led  = _gf_cr(np.clip(b_n - g_n, 0.0, 1.0) * _emit * (1.0 - _hub_region), sigma=(1.2 * sc, 3.2 * sc))
+            red_led   = _gf_cr(np.clip(r_n - 0.35 * g_n, 0.0, 1.0) * _emit * (1.0 - _hub_region), sigma=(1.2 * sc, 3.2 * sc))
+            green_led = _gf_cr(np.clip(g_n - 0.50 * (r_n + b_n), 0.0, 1.0) * _emit * (1.0 - _hub_region), sigma=(1.2 * sc, 3.2 * sc))
+            emit_chroma = np.stack([
+                0.68 * red_led + 0.22 * blue_led - 0.22 * green_led,
+                0.20 * green_led - 0.14 * blue_led,
+                0.78 * blue_led - 0.16 * red_led - 0.14 * green_led,
+            ], axis=-1) * cr_scale * m
+            purple_spill = np.clip(b_n - g_n, 0.0, 1.0) * (1.0 - _emit)
+            raw_l = (rgb0 @ LUMA)[..., None]
+            base_cr = (0.045 if mode_of(spec) == "nightshot" else 0.13) * cr_scale * m
+            passive_cr = base_cr * (1.0 - np.clip(purple_spill * 2.0, 0.0, 1.0))[..., None]
+            out = np.clip(out + ((rgb0 / pmax_raw) - (raw_l / pmax_raw)) * passive_cr * (1.0 - _emit[..., None]) + emit_chroma, 0.0, 1.0)
+        else:
+            _c_diff = limit_chroma_residue(rgb - lum[..., None]) * radial_chroma_weight(lum.shape[0], lum.shape[1])[..., None]
+            out = np.clip(out + _c_diff * cr * m, 0.0, 1.0)
     return out.astype(np.float32)
 
 
@@ -1349,4 +1481,7 @@ def mode_spec(spec: NightVisionSpec) -> NightVisionSpec:
         out.ir_albedo = spec.ir_albedo
     if out.ir_depth is None:
         out.ir_depth = spec.ir_depth
+    for _attr in ("_scene_rgb", "_emit", "_hub_region", "_hub_mask"):
+        if getattr(out, _attr, None) is None:
+            setattr(out, _attr, getattr(spec, _attr, None))
     return out

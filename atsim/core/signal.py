@@ -286,7 +286,7 @@ def subcarrier_phase(width: int, height: int, std: VideoStandard) -> np.ndarray:
     inc = std.subcarrier_rad_per_sample
     cols = np.arange(width, dtype=np.float64)[None, :]
     rows = np.arange(height, dtype=np.float64)[:, None]
-    return (inc * cols + std.line_hz * 0.0 * rows + inc * width * rows).astype(np.float32)
+    return (inc * cols + std.line_hz * 0.0 * rows + inc * std.samples_per_line * rows).astype(np.float32)
 
 
 def composite_encode(y: np.ndarray, i: np.ndarray, q: np.ndarray,
@@ -633,8 +633,9 @@ def demod_chroma(chroma: np.ndarray, std: VideoStandard,
     if phase_offset is not None:
         phase = phase + np.asarray(phase_offset, dtype=np.float32).reshape(-1, 1)
     w = chroma.shape[1]
-    i_lp = std.pixels_for_bandwidth(max(1e5, i_bw_hz), w)
-    q_lp = std.pixels_for_bandwidth(max(1e5, q_bw_hz), w)
+    eff_w = min(w, int(std.samples_per_line))
+    i_lp = std.pixels_for_bandwidth(max(1e5, i_bw_hz), eff_w)
+    q_lp = std.pixels_for_bandwidth(max(1e5, q_bw_hz), eff_w)
     # mixing with 2*cos already recovers I at unity gain: because the input is
     # band-limited around the carrier, the 2f product is absent and the low-pass
     # simply passes the baseband term (verified: a constant-I carrier returns I).

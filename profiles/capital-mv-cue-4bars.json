@@ -1,0 +1,56 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "1992 罗大佑《首都》MV · 全屏 5x 快进跨轨扫描线（4条双峰噪波条 · 19.5s 实测标定）",
+  "note": "螺旋扫描磁鼓 5x 倍速搜索（Cue/Review）跨越 |5-1|=4 条磁迹：垂直等距 (281 px) 向下滚动 (68 px/帧) 的 4 条灰白限幅器噪波条 (L=0.565) + 尾部 H-Sync 电压黑槽切口 (L=0.25) 与副峰回弹 + 629 kHz 欠载色度消隐",
+  "standard": "ntsc",
+  "seed": 20240101,
+  "fps": 30.0,
+  "params": {
+    "camera": {
+      "sensor_noise": 0.03,
+      "sharpness": 0.9,
+      "dynamic_range": 8.0
+    },
+    "format": {
+      "luma_bandwidth": 3.2,
+      "chroma_bandwidth": 0.65,
+      "chroma_vertical_averaging": 0.65,
+      "comb_depth": 0.7,
+      "color_noise": 0.14,
+      "edge_boost": 0.2,
+      "chroma_gain": 0.95
+    },
+    "codec": {
+      "dv_enabled": 0.0
+    },
+    "tape": {
+      "shuttle_speed": 5.0,
+      "shuttle_stale": 0.22,
+      "shuttle_span": 10.0,
+      "shuttle_wave": 16.0,
+      "shuttle_mode": 1.0,
+      "shuttle_guard_bars": 0.95,
+      "shuttle_bar_luma": 0.565,
+      "shuttle_PIP_bars": 0.0,
+      "tape_stability": 0.72,
+      "line_jitter": 0.16,
+      "walk_amplitude": 0.12,
+      "noise_floor": 0.12,
+      "dropout_rate": 0.08,
+      "head_switching": 0.45,
+      "head_switch_lines": 8.0,
+      "tracking_error": 0.2
+    },
+    "player": {
+      "tbc_enabled": 0.0,
+      "transport_jitter": 0.18,
+      "head_wear": 0.15,
+      "luma_bandwidth": 3.2,
+      "chroma_bandwidth": 0.65
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  }
+}

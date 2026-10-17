@@ -711,17 +711,30 @@ class App:
         }
 
     # ------------------------------------------------------------------
+    def resolve_scale(self, raw_scale: str | float, default: float = 1.0) -> float:
+        s_val = str(raw_scale).strip().lower()
+        if s_val in ("sd", "sd720", "720"):
+            info = self.current.source_info or {}
+            w = float(info.get("width") or 720.0)
+            return round(float(np.clip(720.0 / max(1.0, w), 0.1, 2.0)), 4)
+        try:
+            return round(float(np.clip(float(s_val), 0.1, 2.0)), 4)
+        except (TypeError, ValueError):
+            return default
+
     def start_render(self, scale: float = 1.0, crf: int = 16,
-                     keep_audio: bool = True) -> str:
+                     keep_audio: bool = True, preset: str = "medium") -> str:
         job_id = uuid.uuid4().hex[:10]
         self.jobs[job_id] = {"state": "queued", "progress": 0.0, "message": "排队中",
-                             "path": None, "started": time.time()}
-        th = threading.Thread(target=self._run_render, args=(job_id, scale, crf, keep_audio),
+                             "path": None, "started": time.time(),
+                             "scale": scale, "crf": crf, "preset": preset}
+        th = threading.Thread(target=self._run_render, args=(job_id, scale, crf, keep_audio, preset),
                               daemon=True)
         th.start()
         return job_id
 
-    def _run_render(self, job_id: str, scale: float, crf: int, keep_audio: bool) -> None:
+    def _run_render(self, job_id: str, scale: float, crf: int, keep_audio: bool,
+                    preset: str = "medium") -> None:
         job = self.jobs[job_id]
         try:
             project = Project.from_dict(self.current.to_dict())
@@ -737,6 +750,9 @@ class App:
             r = Renderer(src, width, height, project.fps, project.resolved_params(),
                          seed=project.seed, std_key=project.standard,
                          preview=(scale < 1.0), scale=1.0)
+            env, kf = project.environment_from(), project.keyframe_set()
+            if kf is not None or env is not None:
+                r.set_time_varying(kf, env)
             total = max(1, int(getattr(src, "frame_count", 1)))
             out_path = self.store.renders / f"{job_id}.mp4"
             audio_src = None
@@ -747,7 +763,7 @@ class App:
 
             job.update(state="running", message="渲染中", total=total)
             with VideoWriter(out_path, width, height, project.fps, crf=crf,
-                             preset="medium") as vw:
+                             preset=preset) as vw:
                 vw.open(audio_from=audio_src if audio_src else None)
                 for i, rgb in r.render_frames(list(range(total))):
                     vw.write(rgb)
@@ -834,7 +850,7 @@ def make_handler(app: App):
                     return self._json(app.timeline())
                 if path == "/api/frame":
                     t = float((q.get("t") or ["0"])[0])
-                    scale = float((q.get("scale") or ["0.5"])[0])
+                    scale = app.resolve_scale((q.get("scale") or ["0.5"])[0], default=0.5)
                     qual = int((q.get("q") or ["85"])[0])
                     clean = (q.get("mode") or [""])[0] == "original"
                     source_mode = (q.get("mode") or [""])[0] == "source"
@@ -846,7 +862,8 @@ def make_handler(app: App):
                     else:
                         data = (app.graph_frame(t, scale, qual, clean=clean) if use_graph
                                 else app.frame(t, scale, qual, clean=clean))
-                    return self._send(200, data, "image/jpeg", {
+                    ctype = "image/png" if qual >= 100 else "image/jpeg"
+                    return self._send(200, data, ctype, {
                         "X-Render-Ms": f"{(time.time() - t0) * 1000:.0f}"})
                 if path == "/api/still":
                     # Export one frame as a full-resolution still.  The still
@@ -857,7 +874,7 @@ def make_handler(app: App):
                     t = float((q.get("t") or ["0"])[0])
                     want = (q.get("mode") or ["sim"])[0]
                     fmt = (q.get("format") or ["png"])[0].lower()
-                    scale = float((q.get("scale") or ["1.0"])[0])
+                    scale = app.resolve_scale((q.get("scale") or ["1.0"])[0], default=1.0)
                     r, src = app.renderer(True, scale)
                     idx = int(round(t * app.current.fps))
                     idx = max(0, min(idx, max(0, getattr(src, "frame_count", 1) - 1)))
@@ -879,9 +896,13 @@ def make_handler(app: App):
                 if path == "/api/graph/perf":
                     return self._json(app.graph_perf())
                 if path == "/api/render":
-                    scale = float((q.get("scale") or ["1.0"])[0])
-                    crf = int((q.get("crf") or ["16"])[0])
-                    return self._json({"job": app.start_render(scale, crf)})
+                    scale = app.resolve_scale((q.get("scale") or ["1.0"])[0], default=1.0)
+                    crf = int(np.clip(int((q.get("crf") or ["16"])[0]), 0, 51))
+                    preset = str((q.get("preset") or ["medium"])[0]).strip().lower()
+                    if preset not in ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"):
+                        preset = "medium"
+                    keep_audio = (q.get("audio") or ["1"])[0] not in ("0", "false", "no")
+                    return self._json({"job": app.start_render(scale, crf, keep_audio=keep_audio, preset=preset)})
 
                 if path == "/api/faults":
                     from ..diagnostics import as_dicts, coverage, STAGE_LABELS

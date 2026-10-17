@@ -1,0 +1,93 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "小米盒子 720p60 → HDMI-AV → PAL-D VHF 6频道(171.25MHz) → 松下 NV-J27 → AV采集卡（16:9→4:3 二次压扁）",
+  "standard": "pal",
+  "seed": 20261016,
+  "fps": 25.0,
+  "params": {
+    "camera": {
+      "sensor_noise": 0.0,
+      "noise_grain": 1.0,
+      "fixed_pattern": 0.0,
+      "chroma_aberration": 0.0,
+      "motion_blur": 0.18,
+      "sharpness": 1.04,
+      "exposure": 0.0,
+      "white_balance_temp": 0.0,
+      "ccd_smear": 0.0,
+      "halation": 0.08,
+      "halation_source_colour": 0.7,
+      "dynamic_range": 9.5
+    },
+    "format": {
+      "filter_kind": 2.0,
+      "filter_sections": 2.0,
+      "luma_bandwidth": 3.4,
+      "chroma_bandwidth": 0.68,
+      "chroma_vertical_averaging": 0.78,
+      "separation_kind": 2.0,
+      "comb_depth": 0.68,
+      "cross_color": 0.32,
+      "cross_luma": 0.22,
+      "edge_boost": 0.3,
+      "color_noise": 0.14,
+      "chroma_gain": 1.04
+    },
+    "connector": {
+      "hdmi_present": 1.0,
+      "hdmi_moisture": 0.0,
+      "hdmi_corrosion": 0.0,
+      "aspect_squeeze": 1.0,
+      "av_present": 1.0,
+      "av_moisture": 0.04,
+      "av_corrosion": 0.02,
+      "av_ground_loop": 0.06,
+      "mains_hz": 50.0,
+      "rf_present": 1.0,
+      "rf_moisture": 0.04,
+      "rf_corrosion": 0.02,
+      "rf_shielding": 0.18
+    },
+    "rf": {
+      "channel_mhz": 8.0,
+      "carrier_offset_mhz": 1.25,
+      "signal_dbm": -54.0,
+      "noise_figure_db": 7.5,
+      "sync_loss_threshold_db": 28.0,
+      "sync_loss_amount": 0.4,
+      "adjacent_channel": 0.18,
+      "broadcast_noise": 0.04
+    },
+    "tape": {
+      "tape_speed": 0.0,
+      "tape_stability": 0.92,
+      "line_jitter": 0.05,
+      "walk_amplitude": 0.04,
+      "micro_jitter": 0.04,
+      "vertical_instability": 0.01,
+      "head_switching": 0.0,
+      "dropout_rate": 0.0,
+      "noise_floor": 0.04,
+      "wear": 0.0
+    },
+    "player": {
+      "tbc_enabled": 0.0,
+      "transport_jitter": 0.14,
+      "head_wear": 0.08,
+      "preemphasis": 0.28,
+      "ringing": 0.22,
+      "ringing_freq": 0.52,
+      "luma_bandwidth": 3.4,
+      "chroma_bandwidth": 0.68,
+      "separation_kind": 2.0,
+      "comb_depth": 0.68,
+      "cross_color": 0.32,
+      "cross_luma": 0.22,
+      "color_noise": 0.14
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  }
+}

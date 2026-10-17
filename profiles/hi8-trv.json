@@ -1,0 +1,65 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "Sony CCD-TRV (Hi8)",
+  "standard": "ntsc",
+  "seed": 20240101,
+  "params": {
+    "camera": {
+      "sensor_type": 0.0,
+      "sensor_noise": 0.09,
+      "ccd_gain": 0.68,
+      "sharpness": 0.8,
+      "chroma_aberration": 0.05,
+      "dynamic_range": 7.5,
+      "color_cast": 0.45,
+      "white_balance_temp": 0.0,
+      "ccd_smear": 0.28,
+      "halation": 0.28
+    },
+    "format": {
+      "luma_bandwidth": 4.2,
+      "chroma_bandwidth": 0.75,
+      "chroma_vertical_averaging": 0.55,
+      "comb_depth": 0.65,
+      "cross_color": 0.28,
+      "cross_luma": 0.18,
+      "color_noise": 0.22,
+      "edge_boost": 0.24,
+      "chroma_gain": 1.0
+    },
+    "codec": {
+      "dv_enabled": 0.0
+    },
+    "tape": {
+      "tape_speed": 0.0,
+      "tape_stability": 0.76,
+      "wear": 0.15,
+      "dropout_rate": 0.15,
+      "noise_floor": 0.14,
+      "line_jitter": 0.14,
+      "walk_amplitude": 0.1,
+      "micro_jitter": 0.08,
+      "head_switching": 0.35,
+      "head_switch_lines": 6.0,
+      "tracking_error": 0.15,
+      "shuttle_mode": 1.0
+    },
+    "player": {
+      "transport_jitter": 0.18,
+      "tbc_enabled": 0.0,
+      "head_wear": 0.18,
+      "frequency_response": 0.08,
+      "luma_bandwidth": 4.2,
+      "chroma_bandwidth": 0.75,
+      "comb_depth": 0.65,
+      "cross_color": 0.28,
+      "cross_luma": 0.18
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  },
+  "_factory_preset": "hi8_trv",
+  "_note": "同代 Sony 1/4 英寸 互补色 CFA CCD + 低照度 AGC 噪波 + Hi8 高带模拟 FM 亮度 (4.2 MHz) 与 743 kHz 欠载色度记录"
+}

@@ -36,56 +36,17 @@ class FormatStage(Stage):
 
     def __init__(self, ctx: RenderContext):
         super().__init__(ctx)
-        cfg = self.cfg_of("format")
-        self.luma_bw = float(cfg.get("luma_bandwidth", 3.0)) * 1e6
-        self.chroma_bw = float(cfg.get("chroma_bandwidth", 0.75)) * 1e6
-        # **Is a digital component codec selected?**  `chroma_bandwidth` is the *composite subcarrier*
-        # bandwidth -- the sidebands that fit around 3.58 MHz, a limit that exists because chroma has to
-        # share the luma's spectrum.  DV does not: MiniDV is 4:1:1 digital component at a fixed bitrate,
-        # so its chroma limit is a sampling one and not a sideband one.  Measured, applying the composite
-        # limit in DV mode left only 6.7% of a lateral chromatic displacement, which is why a blown
-        # highlight showed no coloured edge in MiniDV.
-        # **Read from `ctx.params`, not `cfg_of`.**  `self.cfg` is the project's parameters restricted to this
-        # stage's own `layers`, which is `("format",)` -- so `cfg_of("codec")` returns an empty dict and the guard
-        # never armed.  Measured: it read `False` for both DV settings and the fix did nothing at all.  The full
-        # nine-layer set is on the context, and a stage that needs to know about a different layer must use it.
-        self._digital_component = False
-        try:
-            all_params = self.ctx.params or {}
-            codec_cfg = all_params["codec"] if "codec" in all_params else {}
-            self._digital_component = float(codec_cfg.get("dv_enabled", 0.0)) > 0.5
-        except Exception:                                     # noqa: BLE001
-            # a stage must work when the codec layer is absent, which happens in the graph engine
-            self._digital_component = False
-        self.chroma_vavg = float(cfg.get("chroma_vertical_averaging", 0.85))
-        # Temporal chroma lag: the chroma channel's memory across frames.  See `_lag_chroma` for why it is recursive
-        # and why the history is kept here rather than read back from the source.
-        self.chroma_lag = float(np.clip(cfg.get("chroma_lag", 0.0), 0.0, 0.95))
-        self.chroma_lag_frames = int(round(np.clip(
-            cfg.get("chroma_lag_frames", 4.0), 1.0, 8.0)))
-        #: frame index -> (I, Q) as the chroma channel left them, i.e. its *output*.  A ring, because a lag that
-        #: reaches further back than a few frames has decayed below the noise (0.3**4 is under 1%).
+        self.std: VideoStandard = ctx.std
         self._chroma_hist: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-        #: how many frames this stage has had to serve without a predecessor.  Published in the timeline so a user
-        #: looking at a lagged render can tell "the history was cold here" from "the mechanism does nothing".
         self.lag_cold_frames = 0
         self.lag_applied_frames = 0
-        # ACC: overall chroma channel gain.  This is the physical source of
-        # "saturation" -- the receiver normalises chroma against the burst
-        # amplitude, so a bad reference drives the colour too strong or too weak.
-        self.chroma_gain = float(cfg.get("chroma_gain", 1.0))
-        self.edge_boost = float(cfg.get("edge_boost", 0.25))
-        self.color_noise = float(cfg.get("color_noise", 0.25))
-        self.std: VideoStandard = ctx.std
+        self._read_params()
         # line-to-line chroma phase error (fast) -- "velocity error"
         self._line_phase = OUProcess(
             rng_for(ctx.seed, "format", "line_phase"), sigma=0.35, corr_len=1.6)
         # field-to-field phase error (slow) -- burst / APC drift
         self._field_phase = OUProcess(
             rng_for(ctx.seed, "format", "field_phase"), sigma=0.6, corr_len=12.0)
-        # Chroma noise is not white per frame: it is a coarse spatial texture
-        # (head-to-tape contact) modulated by a slower temporal envelope, so it
-        # crawls and flickers instead of turning into "TV static" every frame.
         sc = max(1e-6, ctx.scale)
         self._noise_field = ValueNoise3D(
             seed=ctx.seed * 3 + 1, height=ctx.height, width=ctx.width,
@@ -95,29 +56,35 @@ class FormatStage(Stage):
             spatial_scale=40.0 / sc, time_scale=max(2.0, ctx.fps / 6.0))
         self._noise_shape = (ctx.height, ctx.width)
 
+    def _read_params(self) -> None:
+        cfg = self.cfg_of("format")
+        self.luma_bw = float(cfg.get("luma_bandwidth", 3.0)) * 1e6
+        self.chroma_bw = float(cfg.get("chroma_bandwidth", 0.75)) * 1e6
+        self._digital_component = False
+        try:
+            all_params = self.ctx.params or {}
+            codec_cfg = all_params["codec"] if "codec" in all_params else {}
+            self._digital_component = float(codec_cfg.get("dv_enabled", 0.0)) > 0.5
+        except Exception:                                     # noqa: BLE001
+            self._digital_component = False
+        self.chroma_vavg = float(cfg.get("chroma_vertical_averaging", 0.85))
+        self.chroma_lag = float(np.clip(cfg.get("chroma_lag", 0.0), 0.0, 0.95))
+        self.chroma_lag_frames = int(round(np.clip(
+            cfg.get("chroma_lag_frames", 4.0), 1.0, 8.0)))
+        self.chroma_gain = float(cfg.get("chroma_gain", 1.0))
+        self.edge_boost = float(cfg.get("edge_boost", 0.25))
+        self.color_noise = float(cfg.get("color_noise", 0.25))
+
+    def on_params_changed(self) -> None:
+        self._read_params()
+
     # ------------------------------------------------------------------
     def prepare(self) -> None:
-        """
-        Reset the temporal chroma memory for a fresh clip.
-
-        Called once per clip by `Chain.prepare` and again whenever `Renderer._build_chain` rebuilds the chain, which
-        is exactly when the history is no longer about this signal: the parameters have changed, so the frame the
-        ring holds was produced by a channel that no longer exists.  Starting empty is the honest state, and
-        `_lag_chroma` reports the frames it had to serve without a predecessor rather than inventing one.
-        """
         self._chroma_hist = {}
         self.lag_cold_frames = 0
         self.lag_applied_frames = 0
 
     def timeline(self) -> dict:
-        """
-        How much of this clip the chroma memory actually reached.
-
-        Published for the same reason the medium's defect timeline is: a temporal mechanism that silently did
-        nothing is indistinguishable, from the picture alone, from one that is switched off -- and this project has
-        spent four rounds on that confusion.  `cold` counts the frames served with no predecessor (the first frame,
-        and the first frame after every parameter change); `lagged` counts the frames the blend actually touched.
-        """
         if self.chroma_lag <= 1e-4:
             return {}
         return {"chroma_lag": {
@@ -129,21 +96,6 @@ class FormatStage(Stage):
 
     # ------------------------------------------------------------------
     def _resize_noise(self, shape: tuple[int, int]) -> None:
-        """
-        Rebuild the noise fields for the shape actually being rendered.
-
-        The fields are built in `prepare()` from the context's dimensions, but the
-        frame that arrives in `apply()` can be a different size -- preview scaling
-        rounds the height to an even number, so a 480-row source previewed at scale
-        0.37 arrives as 178 rows while the noise was built for 480.  Subtracting the
-        two raised
-
-            ValueError: operands could not be broadcast together with shapes (178,236) (480,1)
-
-        which names two shapes and says nothing about the cause.  Resampling per shape
-        keeps the noise aligned with the picture, and a stage that is handed a
-        different frame size mid-run is a normal thing in this application.
-        """
         h, w = int(shape[0]), int(shape[1])
         if getattr(self, "_noise_shape", None) == (h, w):
             return
@@ -167,15 +119,6 @@ class FormatStage(Stage):
 
     # ------------------------------------------------------------------
     def _choice(self) -> FilterChoice:
-        """
-        The filter family this format uses.
-
-        Kept on the stage rather than threaded through every call: the family is
-        a property of the *apparatus* -- a consumer VCR's output amplifier is a
-        constant-k cascade, a lab instrument is not -- so one choice covers luma
-        and chroma together, which is also physically right because both pass
-        through that same output stage.
-        """
         cfg = self.cfg_of("format")
         kind = int(round(float(cfg.get("filter_kind", 1.0))))
         sections = int(round(float(cfg.get("filter_sections", 3.0))))
@@ -184,53 +127,33 @@ class FormatStage(Stage):
             sections=max(1, sections))
 
     def _limit_luma(self, y: np.ndarray) -> np.ndarray:
-        return lowpass_hz(y, self.luma_bw, self.std.pixel_rate_hz, self._choice())
+        w = y.shape[1]
+        rate = self.std.pixel_rate_hz * (w / float(self.std.samples_per_line)) if w > 760 else self.std.pixel_rate_hz
+        return lowpass_hz(y, self.luma_bw, rate, self._choice())
 
     def _boost_edges(self, y: np.ndarray) -> np.ndarray:
         if self.edge_boost < 1e-4:
             return y
-        px_per_cycle = 2.0 * np.pi / self.std.subcarrier_rad_per_sample
+        w = y.shape[1]
+        scale_w = (w / float(self.std.samples_per_line)) if w > 760 else 1.0
+        px_per_cycle = (2.0 * np.pi / self.std.subcarrier_rad_per_sample) * scale_w
         hp = highpass(y, max(1.0, px_per_cycle / 3.2), axis=1)
         return y + (0.45 * self.edge_boost) * hp
 
     def _limit_chroma(self, i: np.ndarray, q: np.ndarray,
                       index: int | None = None):
         choice = self._choice()
-        rate = self.std.pixel_rate_hz
-        # **A digital component path has no composite chroma limit.**  Skipping the lowpass and the vertical
-        # averaging when DV is selected is not a relaxation of the model: neither filter is in a 4:1:1 component
-        # signal path, so applying them was modelling the wrong format.
+        h, w = i.shape[:2]
+        rate = self.std.pixel_rate_hz * (w / float(self.std.samples_per_line)) if w > 760 else self.std.pixel_rate_hz
         if not self._digital_component:
             i = lowpass_hz(i, self.chroma_bw, rate, choice)
             q = lowpass_hz(q, self.chroma_bw, rate, choice)
-        if self.chroma_vavg > 1e-4:
-            # colour-under recording: the chroma signal is only ~40 lines tall,
-            # so the receiver averages neighbouring lines (a 1H/2H delay line)
-            k = float(np.clip(self.chroma_vavg, 0.0, 1.0))
-            i = (1.0 - k) * i + k * lowpass(i, 1.35, axis=0)
-            q = (1.0 - k) * q + k * lowpass(q, 1.35, axis=0)
-        # ... and then the same channel's memory across *frames*, which is the one mechanism in this model that is
-        # about the passage of time rather than about one picture.
+            if self.chroma_vavg > 1e-4:
+                k = float(np.clip(self.chroma_vavg, 0.0, 1.0))
+                v_sig = 1.35 * (h / 540.0) if h > 580 else 1.35
+                i = (1.0 - k) * i + k * lowpass(i, v_sig, axis=0)
+                q = (1.0 - k) * q + k * lowpass(q, v_sig, axis=0)
         i, q = self._lag_chroma(i, q, index)
-        # ACC: the gain the receiver applies to bring chroma back to nominal
-        # level, using the burst amplitude as its reference.  When that reference
-        # is itself wrong -- a failing chroma card, a damaged burst, a
-        # multi-generation copy -- the correction goes the wrong way and the
-        # colour ends up systematically too strong or too weak.  That is the
-        # mechanism behind a heavily over-saturated look, and it is why this is a
-        # gain on the chroma channel rather than a saturation control on the
-        # output.
-        #
-        # Gain above unity also moves the blanking level, because the chroma
-        # amplitude adds around the luma pedestal: scaling chroma alone pushes
-        # peaks into clipping and measurably *lowers* the picture's mean level
-        # (measured 0.692 -> 0.638 going from gain 1.0 to 3.0), which is the
-        # opposite of the reference, where over-saturation comes with a raised
-        # level.  So luma is lifted alongside, keeping the ratio the clip shows.
-        #
-        # **The lag goes in ahead of the gain on purpose.**  ACC is the receiver measuring the burst and
-        # correcting the channel it receives, so the signal it corrects is the one the channel has already
-        # delayed.  A gain applied on the far side of a delay line would be a different circuit.
         if abs(self.chroma_gain - 1.0) > 1e-4:
             i = i * self.chroma_gain
             q = q * self.chroma_gain
@@ -238,43 +161,10 @@ class FormatStage(Stage):
 
     def _lag_chroma(self, i: np.ndarray, q: np.ndarray,
                     index: int | None):
-        """
-        The chroma channel's temporal memory: blend the previous frame's chroma back in.
-
-        `note.txt` §2 asks for `Y(t) + 0.7*C(t) + 0.3*C(t-1)` and says "this will be very close to a real device".
-        It is a real mechanism rather than an overlay: a chroma channel's bandwidth is a fraction of luma's
-        (VHS's colour-under record is about 0.6-1.0 MHz), and **a narrowband channel's impulse response is not one
-        frame long** -- which is why colour arrives late and stays behind a moving object while the luma has already
-        left.  That is the Digital8 NightShot motion trail and the VHS colour tail.
-
-        Three decisions, each of which is the difference between a mechanism and a special effect:
-
-        **Recursive, not a two-tap blend.**  Each frame mixes in the previous frame's *output*, so the tail is
-        `lag**k` and decays over about three frames instead of ending abruptly after one -- a first-order IIR, which
-        is what a channel with memory is.  A two-tap blend (`0.7*C(t) + 0.3*C(t-1)`) gives a *double* image, not a
-        trail; the note's own formula is the first step of the recursion, not the whole of it.  **Measured** (see
-        `tools/chroma_lag.py`): with a two-tap blend the chroma's memory of the moving object is gone by the second
-        frame, while the recursive form still carries 0.3**2 = 9% of it in the third.
-
-        **The history is this stage's own, not a re-read of the source frames.**  Reading `source.frame(t-1)` would
-        be order-independent and would cost a second source decode per lagged frame; the ring costs one small array
-        pair per frame.  The price is that the mechanism needs the sequence pumped in order, which the renderer
-        guarantees (see `Renderer.render_frames`: it always pumps a contiguous prefix).  **When the history is cold
-        the blend is skipped exactly**, rather than being approximated -- so the first frame of a render, and the
-        first frame after any parameter change, are identical to `chroma_lag = 0`.  `lag_cold_frames` counts them,
-        so "the mechanism did nothing" is distinguishable from "the history was empty", which is the failure this
-        project has recorded thirteen times.
-
-        **Skipped, not approximated, at zero.**  With `chroma_lag = 0` the function is two comparisons and returns
-        the arrays it was given, so every existing measurement in this repository is untouched by its arrival.
-        """
         if self.chroma_lag <= 1e-4 or index is None:
             return i, q
         prev = self._chroma_hist.get(int(index) - 1)
         if prev is None:
-            # A cold history is not an error and must not invent a predecessor: extending the current frame's own
-            # chroma backwards would be a spatial blur wearing a temporal label, and the check in `tools/verify.py`
-            # is written to fail on exactly that substitution.
             self.lag_cold_frames += 1
             return i, q
         pi, pq = prev
@@ -288,13 +178,6 @@ class FormatStage(Stage):
         return i, q
 
     def _remember_chroma(self, index: int | None, i: np.ndarray, q: np.ndarray) -> None:
-        """
-        Store this frame's chroma as the channel's output, and forget anything older than the memory depth.
-
-        Deliberately called with the **post-gain** planes, in `apply`, rather than from inside `_lag_chroma`.  What
-        the next frame's channel remembers is the signal that left this frame's channel, which is after ACC -- the
-        same reason the vertical feedback inside a frame uses the previous line's *output*.
-        """
         if index is None:
             return
         n = int(index)
@@ -313,21 +196,10 @@ class FormatStage(Stage):
         y = self._limit_luma(y)
         y = self._boost_edges(y)
         i, q = self._limit_chroma(i, q, buf.index)
-        # A luma lift was tried here to mimic the raised pedestal that accompanies
-        # over-saturation in the reference.  It is the wrong correction: lifting
-        # luma *reduces* measured saturation (gain 3.0 fell from 0.47 to 0.40)
-        # while pushing the mean level to 0.80 against a reference of 0.66, so it
-        # made the picture both paler and brighter.  The clipping ceiling on
-        # chroma is a real limitation of adding gain in I/Q; leaving it honest is
-        # better than trading saturation for brightness.
 
-        # chroma channel noise: the colour-under path has a much worse SNR than
-        # luma, and this is what makes VHS colour sparkle rather than merely blur
         out_phase = 0.0
         if self.color_noise > 1e-4:
             field = int(buf.meta.get("field", 0))
-            # phase error per line: a fast component (velocity error) plus a
-            # slow component resolved for this frame/field
             ph = self._line_phase.advance(i.shape[0]) * 0.9
             fp = self._field_phase.prefix(buf.index + field + 1)[-1] * 0.5
             ph = ph + fp
@@ -336,22 +208,11 @@ class FormatStage(Stage):
             amp = self.color_noise * 0.018
             n = self._noise_for(i.shape, buf.index)
             env = 0.55 + 0.75 * np.abs(self._noise_env_for(i.shape, buf.index))
-            # injected in the I/Q plane with a rotating phase, which is why VHS
-            # colour noise reads as coloured crawling speckle, not grey grain
             i = i + amp * (n * env) * cos_p
             q = q + amp * (n * env) * sin_p
             out_phase = float(ph.mean())
 
-        # The subcarrier is encoded at 0.63 of full scale (SMPTE 170M).  This
-        # matters beyond bookkeeping: cross-colour, dot crawl and chroma noise
-        # are all proportional to the carrier amplitude, so getting this right
-        # is what keeps those artefacts at a believable level.
         comp = composite_encode(y, i, q, self.std, chroma_gain=0.63)
-
-        # **What the channel leaves behind for the next frame is recorded here, after the noise and the gain**,
-        # because the next frame's lag mixes in what this frame's chroma channel *emitted*.  Recording the
-        # pre-noise planes instead would make the tail noiseless, which is the one thing a narrowband channel's
-        # memory cannot be.
         self._remember_chroma(buf.index, i, q)
 
         frame = SignalFrame(y.astype(np.float32), i.astype(np.float32), q.astype(np.float32))

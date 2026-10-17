@@ -159,6 +159,19 @@ class TapeStage(Stage):
 
     def __init__(self, ctx: RenderContext):
         super().__init__(ctx)
+        self._drum_phase = 0.0
+        self._shuttle_carry: np.ndarray | None = None
+        self._shuttle_last_fraction = 0.0
+        self._binder_last = 0.0
+        self._grain: ValueNoise3D | None = None
+        self._drift: ValueNoise3D | None = None
+        self._binder: ValueNoise3D | None = None
+        self._static_grain: np.ndarray | None = None
+        self.unit_px = 0.045 * (self.ctx.width / 720.0)
+        self._read_params()
+        self._reset()
+
+    def _read_params(self) -> None:
         cfg = self.cfg_of("tape")
         # Whether this is a digital format decides the *granularity* of the
         # shuttle model (macroblocks versus scanlines), so it must be known before
@@ -226,6 +239,9 @@ class TapeStage(Stage):
         self.shuttle_carry = float(cfg.get("shuttle_carry", 0.45))
         self.shuttle_reverse = bool(cfg.get("shuttle_reverse", 0.0) > 0.5)
         self.shuttle_block = int(round(cfg.get("shuttle_block", 16.0)))
+        self.shuttle_guard_bars = float(cfg.get("shuttle_guard_bars", 0.0))
+        self.shuttle_bar_luma = float(cfg.get("shuttle_bar_luma", 0.565))
+        self.shuttle_pip_bars = bool(cfg.get("shuttle_PIP_bars", 0.0) > 0.5)
         # mean run length in scanlines, for the analogue (line-based) family
         self.shuttle_span = float(cfg.get("shuttle_span", 8.0))
         # peak horizontal displacement of the failed lines, for stepped edges
@@ -270,15 +286,34 @@ class TapeStage(Stage):
         # removes a *fraction of the picture* and kills chroma before luma.
         self.binder_loss = float(cfg.get("binder_loss", 0.0))
         self._binder_last = 0.0
+        # COSMAG E-180 PAL/SP/LP mixed archival tape failure mechanisms:
+        # 1) `demagnetization` (消磁): loss of remanent magnetization M_r, causing FM luma carrier drop into
+        #    limiter snow, high-frequency rolloff, and 629 kHz colour-under killer/desaturation;
+        # 2) `base_cracking` (带基龟裂): PET substrate brittle micro-fissures across helical tracks, producing
+        #    diagonal/slanted spacing-loss fracture bands with FM limiter white/black impulse spikes & phase steps;
+        # 3) `base_breakage` (带基破损): physical edge notch, fold or splice tear causing a localized vertical band
+        #    of control-track CTL loss, horizontal sync shear, and full-width RF dropout.
+        self.demagnetization = float(cfg.get("demagnetization", 0.0))
+        self.base_cracking = float(cfg.get("base_cracking", 0.0))
+        self.base_breakage = float(cfg.get("base_breakage", 0.0))
+        self.sp_lp_mix = float(cfg.get("sp_lp_mix", 0.0))
 
-        self._grain: ValueNoise3D | None = None
-        self._drift: ValueNoise3D | None = None
-        self._binder: ValueNoise3D | None = None
-        self._static_grain: np.ndarray | None = None
-        self.unit_px = 0.045 * (self.ctx.width / 720.0)
-        # MiniDV tape damage does not look like RF damage: there is no carrier to
-        # lose, so a read error becomes failed error-correction and the decoder
-        self._reset()
+    def on_params_changed(self) -> None:
+        old_clog = (getattr(self, "head_clog", 0.0), getattr(self, "clog_bands", 3.0),
+                    getattr(self, "surface_damage", 0.0))
+        old_crease = (getattr(self, "crease_rate", 0.2), getattr(self, "wear", 0.25))
+        old_stic = (getattr(self, "stiction_rate", 0.0), getattr(self, "stiction_amount", 0.6),
+                    getattr(self, "stiction_stretch", 0.0))
+        self._read_params()
+        if getattr(self, "plan", None) is not None:
+            if (self.head_clog, self.clog_bands, self.surface_damage) != old_clog:
+                self._build_contamination()
+            if (self.crease_rate, self.wear) != old_crease:
+                self._crease_rng = rng_for(self.ctx.seed, "tape", "creases")
+                self.plan.creases = []
+                self._build_creases()
+            if (self.stiction_rate, self.stiction_amount, self.stiction_stretch) != old_stic:
+                self._plan_stiction(int(self.ctx.frame_count) if self.ctx.frame_count else 300)
 
     # ------------------------------------------------------------------
     def _reset(self) -> None:
@@ -799,9 +834,11 @@ class TapeStage(Stage):
             luma_bw = float(self.ctx.layer("format").get("luma_bandwidth", 3.0)) * 1e6
         except Exception:
             luma_bw = 3.0e6
-        sigma = self.ctx.std.pixels_for_bandwidth(max(1.0e6, luma_bw * 0.85), shape[1])
-        if sigma <= 0.35:
-            return noise
+        # fft_bandpass in split_composite operates at std.pixel_rate_hz regardless of shape[1],
+        # so the luma noise cutoff must stay below the 3.58 MHz chroma window (~1.85 px sigma)
+        # to prevent luma grain from being demodulated as false rainbow chroma.
+        eff_w = min(int(shape[1]), int(self.ctx.std.samples_per_line))
+        sigma = max(1.85, self.ctx.std.pixels_for_bandwidth(min(1.5e6, max(0.8e6, luma_bw * 0.55)), eff_w))
         return lowpass(noise, sigma, axis=1)
 
     # ------------------------------------------------------------------
@@ -1114,40 +1151,110 @@ class TapeStage(Stage):
         w = (amp * depth * in_band).astype(np.float32)[:, None]
 
         noise = self._luma_band_noise(rng, y.shape)
-        # The strip is a lost track, which is a *level* and a *displacement*, not grain.
-        #
-        # Measured on real VHS content frames, the noise inside the band is only 1.1 to
-        # 1.4 times the picture's own noise -- it is not a noisy strip at all. The
-        # previous form, `0.045 + 0.055*|noise|`, gave the band a per-pixel standard
-        # deviation of about 0.006 against a picture noise of 0.00096, i.e. six times the
-        # surrounding grain, and 4.8 times by the time it reached the output. That is why
-        # the band read as a fuzzy grey smear rather than as a clean line with a hard edge:
-        # the horizontal discontinuity, which is the actual defining feature, was buried
-        # under noise the real medium does not have.
-        #
-        # So the level is now flat and the grain is a small ripple on it. The edge stays
-        # hard because the band's *depth* ramp still starts abruptly at the picture
-        # boundary; what changed is what the inside of the band is made of.
-        level = 0.030 + 0.014 * np.abs(noise)
-        y_out = y * (1.0 - w) + level * w
-        kill = np.clip(w * 1.4, 0.0, 1.0)
-        i_out = i * (1.0 - kill)
-        q_out = q * (1.0 - kill)
+        W = y.shape[1]
+        scale_w = W / 600.0
+        cols = np.arange(W, dtype=np.float32)[None, :]
 
-        # --- tracking drift: the whole band displaced sideways -------------
-        # controlled by the tracking error, which is what a user adjusts on the
-        # front panel when the strip appears
+        # --- 1. Physical Helical-Scan Head-Switch Track Handover (calibrated on 1986 NV-180 VHS) ---
+        # A 2-head rotary drum swaps from Head A to Head B at ~6.5 H before V-sync (e.g. row 473 of 480).
+        # The picture is NOT erased to a dark grey bar across those lines: the outgoing/incoming
+        # head still reads the video track, but because of the diurnal head-gap phase step (tau_hs),
+        # the horizontal sync pulse after the switch arrives shifted by ~21..37 px, causing the TBC /
+        # H-AFC to sample the active line shifted leftward and exposing the black HBI blanking zone
+        # on the right edge (with an exponential PLL recovery ramp toward row H-2).
         drift = float(self.tracking_error)
-        if drift > 1e-4:
-            # the drift builds up through the band and then snaps back
-            tear = (drift * 30.0 * depth * in_band).astype(np.float32)
-            # a slow per-field wobble so successive fields differ slightly, as
-            # they do when the capstan servo hunts
-            tear = tear + (drift * 6.0 * in_band *
-                           np.sin(frame_index * 0.7 + rows * 0.05)).astype(np.float32)
-            y_out = horizontal_shift(y_out, tear)
-            i_out = horizontal_shift(i_out, tear)
-            q_out = horizontal_shift(q_out, tear)
+        step_eff = float(np.clip(0.55 * amp + 0.85 * drift, 0.0, 1.8))
+
+        # Distance in woven frame rows from the top of the head-switch band:
+        # At band=4 (7 bottom rows: H-7..H-1, i.e. 473..479 of 480):
+        #   r_from_band_top = 0 at row H-7 (473: the exact mid-line head-switch row),
+        #   1 at H-6 (474), 2 at H-5 (475), 3 at H-4 (476), 4 at H-3 (477), 5 at H-2 (478), 6 at H-1 (479).
+        band_start_row = max(0, H - (2 * band - 1))
+        in_band = rows >= band_start_row
+        r_rel = np.maximum(0, rows - band_start_row).astype(np.float32)
+        span_rows = max(1.0, float(H - 1 - band_start_row))
+        s_norm = np.clip(r_rel / span_rows, 0.0, 1.0).astype(np.float32)
+
+        # PLL phase-step envelope:
+        #   r_rel == 0 (row 473): head switch happens near the right end of this line, so the line itself is unshifted (0.0);
+        #   r_rel == 1 (row 474): first H-sync after switch is delayed, shifting line by ~0.58 of peak (-21 px);
+        #   r_rel == 2 (row 475): full PLL excursion (~1.05 -> -37 px);
+        #   r_rel >= 3 (rows 476..478): H-PLL pulls back exponentially from 0.96 toward 0.78 (-34 -> -30 px).
+        pll_env = np.where(
+            r_rel < 0.5,
+            0.0,
+            np.where(
+                r_rel < 1.5,
+                0.58,
+                np.clip(1.16 - 0.42 * s_norm, 0.76, 1.06),
+            ),
+        ).astype(np.float32)
+
+        # Field-to-field capstan servo hunting wobble
+        wobble = (2.5 * step_eff * np.sin(frame_index * 0.73 + rows * 0.11) * (r_rel >= 1.0)).astype(np.float32)
+        shift_px = (-(36.0 * scale_w * step_eff * pll_env + wobble) * in_band).astype(np.float32)
+
+        y_out = horizontal_shift(y, shift_px)
+        i_out = horizontal_shift(i, shift_px)
+        q_out = horizontal_shift(q, shift_px)
+
+        # --- 2. Mid-line RF head-switch transient & right-hand HBI blanking cut ---
+        # On the switching scanline (`r_rel == 0`, row 473), the head switch occurs near x ~ 91.8% of the line
+        # width (49 px from the right edge at W=600), creating a brief RF envelope transient spike followed by
+        # pedestal black for the remainder of the line.
+        # On subsequent lines (`r_rel >= 1`, rows 474..478), the leftward H-PLL shift exposes `49 -> 31` px of right HBI.
+        step_norm = float(np.clip(step_eff / 0.85, 0.35, 1.15))
+        r_black_px = np.where(
+            r_rel < 0.5,
+            49.0 * scale_w * step_norm,
+            np.where(
+                r_rel < 1.5,
+                49.0 * scale_w * step_norm,
+                np.where(
+                    r_rel < 2.5,
+                    48.0 * scale_w * step_norm,
+                    np.where(
+                        r_rel < 3.5,
+                        42.0 * scale_w * step_norm,
+                        32.0 * scale_w * step_norm,
+                    ),
+                ),
+            ),
+        ).astype(np.float32)
+
+        # ONLY on the very last scanline of the odd field (`rows == H - 1`, row 479) does the signal enter
+        # the vertical blanking equalizing-pulse interval part-way across the line (`x ~ 42%..86%`).
+        vbi_cut_x = float(W) * (0.64 + 0.22 * float(np.sin(frame_index * 0.61 + 0.4)))
+        active_end = np.where(
+            (rows == H - 1) & in_band,
+            np.minimum(W - r_black_px, vbi_cut_x),
+            W - r_black_px,
+        )[:, None].astype(np.float32)
+
+        # Soft 1.8-pixel transition into the right-hand black HBI zone, plus a subtle RF switch spike at the edge
+        hbi_gate = np.clip((active_end - cols) / max(0.8, 1.8 * scale_w), 0.0, 1.0).astype(np.float32)
+        sw_spike = (np.exp(-0.5 * ((cols - (active_end - 3.2 * scale_w)) / max(0.8, 1.5 * scale_w)) ** 2)
+                    * in_band[:, None].astype(np.float32) * float(np.clip(amp * 0.20, 0.0, 0.28)))
+
+        # Inside the active part of the head-switch band, luma is preserved with only a slight RF envelope dip
+        # on the first post-switch row, while in the right-hand HBI zone it drops to pedestal black (~0.018).
+        row_dip = (1.0 - 0.06 * amp * (r_rel == 1.0).astype(np.float32))[:, None]
+        hbi_floor = (0.015 + 0.010 * np.abs(noise)).astype(np.float32)
+        in_b_2d = in_band[:, None].astype(np.float32)
+        y_band_settled = np.clip(y_out * row_dip + sw_spike, 0.0, 1.1) * hbi_gate + hbi_floor * (1.0 - hbi_gate)
+        y_out = y * (1.0 - in_b_2d) + y_band_settled * in_b_2d
+
+        # Store `hs_active_end` in plan or stage state so PlayerStage can preserve the sharp HBI blanking step
+        self._last_hs_in_band = in_band
+        self._last_hs_active_end = active_end[:, 0]
+
+        # --- 3. 1H/2H Delay-Line Comb Chroma Wash-Out across the Head Switch ---
+        # Because the colour-under burst phase jumps across the head switch, the 1H/2H delay-line comb filter
+        # sums out-of-phase adjacent lines, progressively washing out chroma toward the bottom of the band
+        # (`s_norm` 0 -> 1) and zeroing chroma inside the HBI blanking zone.
+        c_keep = (1.0 - np.clip(amp * (0.15 + 0.75 * (s_norm ** 1.3)), 0.0, 0.96))[:, None] * hbi_gate
+        i_out = i * (1.0 - in_b_2d) + (i_out * c_keep) * in_b_2d
+        q_out = q * (1.0 - in_b_2d) + (q_out * c_keep) * in_b_2d
 
         # --- chroma phase step at the head switch --------------------------
         # In SP the two heads hand the subcarrier over with phase continuity
@@ -1164,6 +1271,17 @@ class TapeStage(Stage):
             # a distinct step per field, alternating sign, so bands alternate hue
             sign = 1.0 if (frame_index % 2 == 0) else -1.0
             ph = (sign * step_amt * np.pi) * in_band.astype(np.float32)
+            if float(self.tracking_error) > 1e-4:
+                # Field-rate horizontal chroma banding across the frame in LP/EP mistracking
+                # (11-20 rows tall, 42-60 row spacing, chroma phase & gain modulated while luma holds)
+                spacing = max(24.0, 52.0 * (H / 576.0))
+                wave = np.sin(2.0 * np.pi * (rows.astype(np.float32) / spacing + frame_index * 0.17)) ** 3
+                env = np.clip(wave, 0.0, 1.0).astype(np.float32)
+                strength = (1.0 - self.speed.ratio) * float(np.clip(self.tracking_error, 0.0, 1.5))
+                ph = ph + (0.65 * strength * env * np.pi)
+                gain_band = (1.0 - 0.42 * strength * env)[:, None]
+                i_out = i_out * gain_band
+                q_out = q_out * gain_band
             if np.any(np.abs(ph) > 1e-4):
                 c, sn = np.cos(ph)[:, None], np.sin(ph)[:, None]
                 i_out, q_out = i_out * c - q_out * sn, i_out * sn + q_out * c
@@ -1507,9 +1625,10 @@ class TapeStage(Stage):
             return y, i, q
         noise = self._luma_band_noise(rng, y.shape)
         y_out = y + (0.02 + 0.85 * amt) * noise
-        # a little reaches chroma -- as further desaturation, not as colour
-        i_out = i * (1.0 - 0.30 * amt)
-        q_out = q * (1.0 - 0.30 * amt)
+        # a shed coating destroys the weak colour-under carrier
+        kill = float(np.clip(0.85 * amt, 0.0, 0.96))
+        i_out = i * (1.0 - kill)
+        q_out = q * (1.0 - kill)
         return (y_out.astype(np.float32), i_out.astype(np.float32),
                 q_out.astype(np.float32))
 
@@ -1622,7 +1741,7 @@ class TapeStage(Stage):
         # The donor is a genuinely different frame -- that is the whole point.  It
         # is read from the source rather than held in memory, so a long shuttle
         # does not accumulate a frame cache.
-        donor = self._shuttle_donor(frame_index)
+        donor = self._shuttle_donor(frame_index, current_sig=sig)
         if donor is None:
             return sig
         dy = donor.y[:H, :W]
@@ -1642,6 +1761,13 @@ class TapeStage(Stage):
             y = apply_stale_macroblocks(sig.y, mask, dy)
             i = apply_stale_macroblocks(sig.i, mask, di)
             q = apply_stale_macroblocks(sig.q, mask, dq)
+        elif self.shuttle_guard_bars > 1e-4:
+            # When `shuttle_guard_bars` is active, track-crossing bars are handled strictly inside
+            # the active region (`active_h = 0.562*H` for PIP split-screen or `H` for full-screen),
+            # leaving the lower split-screen half (if PIP) completely untouched!
+            self._shuttle_last_fraction = float(self.shuttle_fraction)
+            y, i, q = self._apply_cue_review_guard_bars(
+                sig.y.copy(), sig.i.copy(), sig.q.copy(), dy, di, dq, frame_index, rng)
         else:
             # mean run length scales with how badly the transport is mistracking
             span = max(1.0, self.shuttle_span)
@@ -1650,12 +1776,178 @@ class TapeStage(Stage):
                                  carry_rate=self.shuttle_carry)
             self._shuttle_carry = mask
             self._shuttle_last_fraction = float(mask.mean())
-            disp = line_run_displacement(rng, mask, self.shuttle_wave)
+            scale_w = (W / 720.0) if W > 760 else 1.0
+            disp = line_run_displacement(rng, mask, self.shuttle_wave * scale_w)
             y = apply_stale_lines(sig.y, mask, dy, disp)
             i = apply_stale_lines(sig.i, mask, di, disp)
             q = apply_stale_lines(sig.q, mask, dq, disp)
+            if mask.any():
+                # Physical helical-scan azimuth-crossing & colour-under unlock in analogue shuttle:
+                # 1. At track-crossing transitions (`edge`), the RF envelope drops below the FM
+                #    limiter threshold, producing horizontal impulse snow streaks;
+                # 2. Within the mistracked band (`mask`), the 743 kHz colour-under carrier loses
+                #    burst lock and ACC/colour-killer attenuates chroma while rotating boundary phase.
+                edge = mask & (~np.roll(mask, 1) | ~np.roll(mask, -1))
+                snow_raw = rng.standard_normal((H, W)).astype(np.float32)
+                snow = lowpass(snow_raw, 2.4 * scale_w, axis=1)
+                snow_env = (0.14 * edge[:, None].astype(np.float32)
+                            + 0.045 * mask[:, None].astype(np.float32))
+                y = np.clip(y * (1.0 - 0.18 * edge[:, None].astype(np.float32))
+                            + snow * snow_env + 0.025 * edge[:, None].astype(np.float32), 0.0, 1.2)
+                # Attenuate chroma in azimuth-crossed lines and slip burst phase on boundary rows
+                c_atten = np.where(mask[:, None], 0.28, 1.0).astype(np.float32)
+                theta = (rng.uniform(-1.2, 1.2, size=(H, 1)).astype(np.float32)
+                         * edge[:, None].astype(np.float32))
+                cs, sn = np.cos(theta), np.sin(theta)
+                i_rot = i * cs - q * sn
+                q_rot = i * sn + q * cs
+                i = i_rot * c_atten
+                q = q_rot * c_atten
+
         return SignalFrame(y.astype(np.float32), i.astype(np.float32),
                            q.astype(np.float32))
+
+    def _apply_cue_review_guard_bars(
+        self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
+        dy: np.ndarray, di: np.ndarray, dq: np.ndarray,
+        frame_index: int, rng: np.random.Generator
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Physical helical-scan Cue/Review (multispeed shuttle search) guard-band &
+        azimuth-null noise bars, calibrated against Lo Ta-yu's 1992 *Capital* (《首都》) MV:
+
+        1. **Helical Track-Crossing Envelope Collapse**:
+           At transport speed ratio N, the rotary video head crosses |N - 1| recorded
+           slant tracks per field scan.  Whenever the head straddles the guard band or
+           the adjacent opposite-azimuth track, the RF playback envelope E_RF(y) falls
+           below the FM limiter threshold (~20 dB SNR).
+        2. **Double-Peak FM Limiter Bar + H-Sync Clamp Trench**:
+           Inside each track-crossing zone, the FM demodulator clips to a flat grey-white
+           self-oscillation plateau (`shuttle_bar_luma`, measured L=0.562 in the 5x full-screen
+           shot at t=19.5s and L=0.750 in the 9x PIP shot at t=6.0s), followed by a sharp
+           horizontal-sync voltage undershoot trench (`L ~ 0.25`) with intermittent black
+           sync dashes and a secondary azimuth rebound bar.
+        3. **Donor-Track Splicing & H-AFC Shear**:
+           Adjacent track segments between bars come from successive tape frames (`dy, di, dq`),
+           and loss of horizontal sync pulses across the bar drives a progressive rightward
+           sampling-phase shear (+12..+48 px scaled to raster width) on the exiting lines.
+        """
+        amt = float(np.clip(self.shuttle_guard_bars, 0.0, 1.0))
+        H, W = y.shape[:2]
+        scale_w = W / 1440.0
+        scale_h = H / 1080.0
+
+        # Active vertical region: full screen (H) or upper DVE split-screen window (0.562 * H)
+        active_h = int(round(0.562 * H)) if self.shuttle_pip_bars else H
+        if active_h < 16:
+            return y, i, q
+
+        # Number of primary track-crossing bars:
+        #   - Full-screen 5x Cue search (t=19.5s): |5 - 1| = 4 primary bars, period = 281.0 px (at 1080p),
+        #     scrolling downward at 68.0 px/frame (4-frame cyclic period).
+        #   - Upper PIP 9x Cue search (t=6.0s): 4.68 primary bars (period = 129.3 px at 1080p) + azimuth
+        #     mid-cycle sub-bars = 8..9 visible horizontal bars in the upper 605 px window, scrolling
+        #     downward at 21.0 px/frame (6-frame cyclic period).
+        if self.shuttle_pip_bars:
+            period_px = max(24.0, 129.0 * scale_h)
+            scroll_px = 21.0 * scale_h
+            phase0 = 96.0 * scale_h
+        else:
+            n_bars = max(1.0, abs(float(self.shuttle_speed) - 1.0))
+            period_px = max(36.0, (281.0 * (4.0 / n_bars)) * scale_h)
+            scroll_px = 68.0 * scale_h
+            phase0 = 74.0 * scale_h
+
+        direction = -1.0 if self.shuttle_reverse else 1.0
+        rows = np.arange(active_h, dtype=np.float32)
+        cols = np.arange(W, dtype=np.float32)[None, :]
+
+        # Normalized phase u in [-0.5, 0.5) relative to the nearest primary bar center
+        u = ((rows - phase0 - direction * frame_index * scroll_px) / period_px) % 1.0
+        u_signed = np.where(u >= 0.5, u - 1.0, u)
+
+        # Alternate track segments (where u > 0) blend in the donor track so adjacent inter-bar
+        # zones carry genuinely different frames from the tape pass
+        alt_track = np.clip((u - 0.16) / 0.04, 0.0, 1.0) * np.clip((0.84 - u) / 0.04, 0.0, 1.0)
+        alt_w = (alt_track * 0.65 * amt)[:, None].astype(np.float32)
+        y_act = y[:active_h] * (1.0 - alt_w) + dy[:active_h] * alt_w
+        i_act = i[:active_h] * (1.0 - alt_w) + di[:active_h] * alt_w
+        q_act = q[:active_h] * (1.0 - alt_w) + dq[:active_h] * alt_w
+
+        # H-AFC horizontal shear: ramps up across the bar and decays in the recovery zone below it
+        if self.shuttle_pip_bars:
+            shear_profile = (np.exp(-0.5 * ((u_signed - 0.08) / 0.09) ** 2) * 44.0
+                             + np.exp(-0.5 * ((u_signed + 0.02) / 0.06) ** 2) * 14.0) * scale_w * amt
+        else:
+            shear_profile = (np.exp(-0.5 * ((u_signed - 0.09) / 0.07) ** 2) * 26.0
+                             + np.exp(-0.5 * ((u_signed + 0.02) / 0.05) ** 2) * 10.0) * scale_w * amt
+        shear_jitter = rng.standard_normal(active_h).astype(np.float32) * (1.8 * scale_w * amt)
+        tot_shear = (shear_profile + shear_jitter).astype(np.float32)
+        y_act = horizontal_shift(y_act, tot_shear)
+        i_act = horizontal_shift(i_act, tot_shear)
+        q_act = horizontal_shift(q_act, tot_shear)
+
+        # Primary FM-limiter plateau envelope, H-sync clamp trench, and secondary rebound bar
+        if self.shuttle_pip_bars:
+            # Calibrated to seg3_f180_6p0s (period=129.3px):
+            #   main bright plateau around u_signed=0.0 (half-width ~0.075),
+            #   secondary trailing plateau around u_signed=+0.15,
+            #   plus opposite-azimuth mid-track sub-bar around |u_signed| ~ 0.42
+            main_plat = np.exp(-0.5 * (u_signed / 0.065) ** 4)
+            sec_plat = 0.42 * np.exp(-0.5 * ((u_signed - 0.155) / 0.055) ** 2)
+            mid_sub = 0.36 * np.exp(-0.5 * ((np.abs(u_signed) - 0.36) / 0.040) ** 2)
+            trench_y = np.exp(-0.5 * ((u_signed - 0.088) / 0.018) ** 2)
+        else:
+            # Calibrated to seg6_f585_19p5s (period=281.0px):
+            #   main flat plateau in u_signed in [-0.075, +0.055] (~38px thick),
+            #   sharp H-sync undershoot trench at u_signed = +0.073 (~8px thick),
+            #   secondary rebound bar at u_signed = +0.102 (~14px thick),
+            #   plus thin pre-bar azimuth-entry line at u_signed = -0.225
+            main_plat = np.clip((0.068 - np.abs(u_signed + 0.008)) / 0.022, 0.0, 1.0)
+            sec_plat = 0.92 * np.exp(-0.5 * ((u_signed - 0.102) / 0.020) ** 2)
+            mid_sub = 0.48 * np.exp(-0.5 * ((u_signed + 0.225) / 0.010) ** 2)
+            trench_y = np.exp(-0.5 * ((u_signed - 0.073) / 0.011) ** 2)
+
+        bar_env = np.clip(main_plat + sec_plat + mid_sub, 0.0, 1.0)[:, None].astype(np.float32) * amt
+
+        # Correlated FM limiter snow inside the bar
+        snow_raw = rng.standard_normal((active_h, W)).astype(np.float32)
+        snow_lp = lowpass(snow_raw, max(0.8, 3.2 * scale_w), axis=1)
+        bar_level = float(np.clip(self.shuttle_bar_luma, 0.20, 0.95))
+        bar_luma_field = np.clip(bar_level + 0.022 * snow_lp, 0.0, 1.0)
+
+        # Blend active picture into the FM limiter grey-white plateau
+        y_act = y_act * (1.0 - bar_env) + bar_luma_field * bar_env
+
+        # Horizontal sync-pulse dark-dash notch inside the trench (u_signed ~ +0.073..0.088):
+        # During the guard-band transition, stripped H-sync pulses pull the black-level clamp
+        # down to L ~ 0.25 across long horizontal dash spans (x in [0.18W, 0.92W] with gaps)
+        xn = cols / max(1.0, W - 1.0)
+        dash_gate = (
+            np.clip((xn - 0.14) / 0.02, 0.0, 1.0) * np.clip((0.92 - xn) / 0.02, 0.0, 1.0)
+            * np.where(np.cos(2.0 * np.pi * (xn * 3.5 + frame_index * 0.17)) > -0.55, 1.0, 0.15)
+        ).astype(np.float32)
+        trench_mask = (trench_y[:, None] * dash_gate * amt).astype(np.float32)
+        trench_luma = 0.245 + 0.035 * snow_lp
+        y_act = y_act * (1.0 - 0.85 * trench_mask) + trench_luma * (0.85 * trench_mask)
+
+        # Right-hand HBI blanking border (x > 0.978W) observed in the MV capture
+        hbi_mask = np.clip((xn - 0.978) / 0.008, 0.0, 1.0).astype(np.float32) * amt
+        y_act = y_act * (1.0 - 0.88 * hbi_mask)
+
+        # ACC colour-killer: within the guard-band bar & trench, 629/743 kHz colour-under
+        # burst lock is lost, so chroma is strongly muted (leaving a neutral/cool grey-white bar)
+        c_kill = np.clip((bar_env + 0.8 * trench_mask) * 1.15, 0.0, 0.96)
+        i_act = i_act * (1.0 - c_kill) - (0.012 * bar_env if self.shuttle_pip_bars else 0.0)
+        q_act = q_act * (1.0 - c_kill) + (0.008 * bar_env if self.shuttle_pip_bars else 0.0)
+
+        y_out = y.copy()
+        i_out = i.copy()
+        q_out = q.copy()
+        y_out[:active_h] = np.clip(y_act, 0.0, 1.0)
+        i_out[:active_h] = i_act
+        q_out[:active_h] = q_act
+        return y_out, i_out, q_out
 
     def _remember_frame(self, frame_index: int, y: np.ndarray,
                         i: np.ndarray, q: np.ndarray) -> None:
@@ -1672,7 +1964,8 @@ class TapeStage(Stage):
         while len(self._frame_ring) > self._ring_limit:
             self._frame_ring.popitem(last=False)
 
-    def _shuttle_donor(self, frame_index: int) -> SignalFrame | None:
+    def _shuttle_donor(self, frame_index: int,
+                       current_sig: SignalFrame | None = None) -> SignalFrame | None:
         """
         A frame the transport passed earlier (fast-forward) or later (rewind).
 
@@ -1706,9 +1999,17 @@ class TapeStage(Stage):
         want = int(frame_index) - direction * span
         last = max(0, int(getattr(src, "frame_count", 1)) - 1)
         want = int(np.clip(want, 0, last))
+        if want == int(frame_index) and current_sig is not None:
+            return SignalFrame(current_sig.y.copy(), current_sig.i.copy(), current_sig.q.copy())
         try:
             rgb = np.clip(src.frame(want), 0.0, 1.0).astype(np.float32)
+            from .camera import CameraStage
+            cam_buf = FrameBuffer(rgb, None, want, want / max(1e-6, self.ctx.fps),
+                                  self.ctx.std, {"field": want % 2})
+            rgb = CameraStage(self.ctx).apply(cam_buf).rgb
         except Exception:
+            if current_sig is not None:
+                return SignalFrame(current_sig.y.copy(), current_sig.i.copy(), current_sig.q.copy())
             return None
         # Even the fallback should not be pristine: the encoder's bandwidth limit
         # applies to anything this deck can produce.
@@ -1776,6 +2077,141 @@ class TapeStage(Stage):
         out.meta["line_phase"] = phase
         return out
 
+    def _apply_cosmag_substrate_failures(
+        self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
+        frame_index: int, rng: np.random.Generator
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Physical model of archival VHS substrate & magnetic-layer failure modes
+        (calibrated for COSMAG E-180 PAL/SP/LP 180/360-min tape, 258 min recovered / 61 min failed):
+
+        1. `sp_lp_mix` (SP/LP 混合录放磁头方位角与窄轨切换):
+           4-head drum (Sharp VC-A62DT: 2x SP 58 um + 2x LP 29 um heads) transitioning between SP and LP
+           segments or reading LP tracks with narrower guard bands: dynamic 4-head envelope modulation,
+           -6 dB LP replay SNR loss, and periodic azimuth/burst phase flutter.
+        2. `demagnetization` (消磁):
+           Decay of remanent magnetization M_r across the tape width/length. By Wallace's spacing/remanence
+           law, high frequencies (FM luma carrier at 3.8..4.8 MHz) and the weak 629 kHz colour-under carrier
+           fall below the FM limiter and ACC colour-killer thresholds first, producing soft low-contrast luma,
+           dense FM limiter snow, and severe desaturation.
+        3. `base_cracking` (带基龟裂):
+           Brittle PET substrate micro-fissures (`crackle` network) oriented along the ~5.9 deg helical scan
+           angle. When the 4 rotary video heads sweep across a fissure, head-to-tape spacing `d` jumps by
+           several microns (`54.6 * d / lambda` dB loss), causing sharp diagonal/transverse crack lines with
+           bipolar FM unlock spikes (black-to-white-to-black) and local horizontal line-clock phase slips.
+        4. `base_breakage` (带基破损):
+           Physical tear, edge curl, or splice damage on the 1/2-inch tape edge (where the 1x linear audio
+           head and 1x 25 Hz control-track CTL head sit on the Sharp VC-A62DT). Loss of the CTL pulse
+           destabilizes the capstan servo across a multi-line vertical tear zone, producing severe horizontal
+           sync shear, vertical framing jump, and a wide raw FM carrier snow band.
+        """
+        H, W = y.shape[:2]
+        scale_w = W / 720.0
+        scale_h = H / 576.0
+        rows = np.arange(H, dtype=np.float32)[:, None]
+        cols = np.arange(W, dtype=np.float32)[None, :]
+        yn = rows / max(1.0, H - 1.0)
+        xn = cols / max(1.0, W - 1.0)
+
+        # --- A. PAL SP/LP Mixed-Mode 4-Head Envelope & Azimuth Flutter (`sp_lp_mix`) ---
+        mix_amt = float(np.clip(self.sp_lp_mix, 0.0, 1.0))
+        if mix_amt > 1e-4:
+            # 4-head drum switching between SP (49 um track) and LP (24.5 um track) or boundary zone
+            lp_env = 0.5 + 0.5 * np.sin(2.0 * np.pi * (yn * 1.5 - frame_index * 0.09))
+            eff_lp = mix_amt * (0.45 + 0.55 * lp_env)
+            # LP narrows luma & chroma bandwidth slightly and raises FM carrier noise by ~4-6 dB
+            y_soft = lowpass(y, max(0.6, 1.35 * scale_w), axis=1)
+            y = y * (1.0 - 0.32 * eff_lp) + y_soft * (0.32 * eff_lp)
+            fm_n = self._luma_band_noise(rng, (H, W))
+            y = y + (0.028 * mix_amt) * eff_lp * fm_n
+            # Alternating 629 kHz colour-under phase flutter across LP tracks
+            ph_flut = (0.28 * mix_amt * np.sin(2.0 * np.pi * (rows[:, 0] / max(4.0, 18.0 * scale_h) + frame_index * 0.23))).astype(np.float32)[:, None]
+            cs, sn = np.cos(ph_flut), np.sin(ph_flut)
+            i, q = i * cs - q * sn, i * sn + q * cs
+
+        # --- B. Demagnetization (`demagnetization`: 消磁) ---
+        demag = float(np.clip(self.demagnetization, 0.0, 1.0))
+        if demag > 1e-4:
+            # Spatially varying remanence decay wave across the frame (worse in bands where coercivity faded)
+            rem_wave = (0.55 + 0.45 * np.sin(2.0 * np.pi * (yn * 1.2 + frame_index * 0.05))
+                        * np.cos(2.0 * np.pi * (xn * 0.8 - 0.15)))
+            d_mask = np.clip(demag * (0.65 + 0.55 * rem_wave), 0.0, 1.0).astype(np.float32)
+            # High-frequency Wallace loss: luma loses sharp transitions and compresses toward mid-grey
+            y_lp = lowpass(y, max(0.9, (1.8 + 2.8 * demag) * scale_w), axis=1)
+            y = y * (1.0 - 0.65 * d_mask) + (y_lp * (1.0 - 0.35 * demag) + 0.12 * demag) * (0.65 * d_mask)
+            # FM limiter threshold snow when carrier envelope drops below knee
+            lim_snow = self._luma_band_noise(rng, (H, W))
+            y = y + (0.04 + 0.22 * demag) * (d_mask ** 1.3) * lim_snow
+            # 629 kHz colour-under carrier is 12-16 dB below FM luma, so ACC colour killer attenuates chroma first
+            c_kill = np.clip(d_mask * (1.25 + 0.35 * demag), 0.0, 0.98)
+            i = i * (1.0 - c_kill)
+            q = q * (1.0 - c_kill)
+
+        # --- C. PET Substrate Brittle Cracking (`base_cracking`: 带基龟裂) ---
+        crack = float(np.clip(self.base_cracking, 0.0, 1.0))
+        if crack > 1e-4:
+            # Helical scan tracks cross brittle PET substrate fissures at shallow angles (~3..7 deg),
+            # creating a branching network of diagonal/horizontal crackle lines with spacing-loss FM spikes
+            n_cracks = int(round(2 + 6 * crack))
+            crack_rng = np.random.default_rng(derive_seed(self.ctx.seed, "tape", "base_cracking", frame_index // 2))
+            crack_field = np.zeros((H, W), dtype=np.float32)
+            crack_disp = np.zeros(H, dtype=np.float32)
+            for c_idx in range(n_cracks):
+                y0_c = float(crack_rng.uniform(0.08, 0.92)) * H
+                slope = float(crack_rng.uniform(-0.14, 0.14)) * (H / max(1.0, W))
+                bend = float(crack_rng.uniform(-0.00018, 0.00018)) / max(0.25, scale_w)
+                x_center = float(crack_rng.uniform(0.2, 0.8)) * W
+                # Branching crack trajectory y_crack(x)
+                y_traj = y0_c + slope * (cols - x_center) + bend * ((cols - x_center) ** 2)
+                dist_y = rows - y_traj
+                width_c = max(0.9, float(crack_rng.uniform(1.1, 2.6)) * scale_h)
+                # Bipolar FM unlock profile: dark spacing-loss trough + bright limiter-unlock white spike
+                core_c = np.exp(-0.5 * (dist_y / width_c) ** 2)
+                edge_c = -np.exp(-0.5 * ((dist_y - 1.4 * width_c) / width_c) ** 2) * 0.55
+                # Intermittent lateral modulation along the crack fissure
+                x_mod = np.clip(0.65 + 0.55 * np.sin(cols / max(4.0, 19.0 * scale_w) + c_idx * 1.7), 0.0, 1.0)
+                crack_field += (core_c + edge_c) * x_mod
+                # Per-line H-sync phase slip where the crack crosses the scanline
+                row_hit = np.exp(-0.5 * ((rows[:, 0] - y0_c) / max(1.5, 4.0 * scale_h)) ** 2)
+                crack_disp += row_hit * float(crack_rng.choice([-1.0, 1.0])) * (4.0 + 14.0 * crack) * scale_w
+
+            if np.any(np.abs(crack_disp) > 1e-3):
+                y = horizontal_shift(y, crack_disp)
+                i = horizontal_shift(i, crack_disp)
+                q = horizontal_shift(q, crack_disp)
+            crack_w = np.clip(np.abs(crack_field) * crack * 1.15, 0.0, 1.0)
+            fm_spike = (0.78 + 0.25 * self._luma_band_noise(rng, (H, W))) * np.clip(crack_field, 0.0, 1.0)
+            fm_trough = 0.04 * np.clip(-crack_field, 0.0, 1.0)
+            y = y * (1.0 - crack_w) + (fm_spike + fm_trough) * crack * 1.10
+            i = i * (1.0 - np.clip(crack_w * 1.35, 0.0, 1.0))
+            q = q * (1.0 - np.clip(crack_w * 1.35, 0.0, 1.0))
+
+        # --- D. Tape Edge / Splice Physical Breakage & CTL Loss (`base_breakage`: 带基破损) ---
+        brk = float(np.clip(self.base_breakage, 0.0, 1.0))
+        if brk > 1e-4:
+            # A physical tear or edge fold spans a horizontal band of scanlines (where the helical scan sweeps
+            # across the damaged tape section) and knocks out the 1x linear CTL control track pulse.
+            brk_rng = np.random.default_rng(derive_seed(self.ctx.seed, "tape", "base_breakage", frame_index))
+            band_center = (0.32 + 0.18 * np.sin(frame_index * 0.31)) * H
+            band_half = max(4.0, (10.0 + 28.0 * brk) * scale_h)
+            dy_b = rows[:, 0] - band_center
+            brk_env = np.exp(-0.5 * (dy_b / band_half) ** 2).astype(np.float32)
+            # Severe horizontal shear (H-AFC unlock across the torn edge)
+            shear_px = (brk_env * (12.0 + 42.0 * brk) * scale_w
+                        * np.sin(rows[:, 0] / max(1.5, 3.2 * scale_h) + frame_index * 1.1)
+                        + brk_env * brk_rng.standard_normal(H).astype(np.float32) * (6.0 * brk * scale_w))
+            y = horizontal_shift(y, shear_px)
+            i = horizontal_shift(i, shear_px)
+            q = horizontal_shift(q, shear_px)
+            # Inside the torn core, head-to-tape contact is lost completely -> raw FM snow + black tear border
+            tear_core = np.clip((band_half * 0.65 - np.abs(dy_b)) / max(1.0, 2.5 * scale_h), 0.0, 1.0)[:, None] * brk
+            raw_snow = 0.18 + 0.62 * np.abs(self._luma_band_noise(rng, (H, W)))
+            y = y * (1.0 - 0.88 * tear_core) + raw_snow * (0.88 * tear_core)
+            i = i * (1.0 - np.clip(tear_core * 1.5, 0.0, 1.0))
+            q = q * (1.0 - np.clip(tear_core * 1.5, 0.0, 1.0))
+
+        return y.astype(np.float32), i.astype(np.float32), q.astype(np.float32)
+
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
         if self.digital:
             frame_index = int(buf.index)
@@ -1793,7 +2229,14 @@ class TapeStage(Stage):
         # The whole medium model runs in baseband: take the carrier apart once,
         # damage luma and chroma the way the physical mechanism does, and rebuild
         # the carrier once at the end.  See `_decompose` for why.
-        y, i, q = self._decompose(comp)
+        _fmt_l = self.ctx.layer("format")
+        fmt_comb = float(_fmt_l["comb_depth"]) if "comb_depth" in _fmt_l else 0.45
+        sig_in = buf.meta.get("signal")
+        _rf_dir = bool(getattr(sig_in, "_rf_direct", False))
+        if (fmt_comb >= 0.90 or _rf_dir) and sig_in is not None:
+            y, i, q = sig_in.y.copy(), sig_in.i.copy(), sig_in.q.copy()
+        else:
+            y, i, q = self._decompose(comp)
 
         # 0. shuttle: rewind / fast-forward residue, in this format's granularity.
         #    It belongs *before* everything else because it is a property of how
@@ -1862,6 +2305,7 @@ class TapeStage(Stage):
         #         than with the discrete events because it removes a fraction of
         #         the picture continuously, and it kills chroma before luma.
         y, i, q = self._apply_binder_loss(y, i, q, frame_index, rng)
+        y, i, q = self._apply_cosmag_substrate_failures(y, i, q, frame_index, rng)
 
         # 4c. random whole lines lose colour (weak colour-under carrier)
         i, q = self._apply_chroma_loss(i, q, frame_index)
@@ -1890,7 +2334,14 @@ class TapeStage(Stage):
 
         comp_out = self._recompose(y, i, q)
         out = FrameBuffer(buf.rgb, comp_out, buf.index, buf.time, buf.std, dict(buf.meta))
+        if fmt_comb >= 0.90 or _rf_dir:
+            _s_out = SignalFrame(y.astype(np.float32), i.astype(np.float32), q.astype(np.float32))
+            _s_out._rf_direct = _rf_dir
+            out.meta["signal"] = _s_out
         out.meta["dropout_mask"] = dropout_mask
         out.meta["crease_mask"] = crease_mask
         out.meta["line_phase"] = self._line_phase_for(frame_index)
+        if getattr(self, "_last_hs_in_band", None) is not None:
+            out.meta["hs_in_band"] = self._last_hs_in_band
+            out.meta["hs_active_end"] = self._last_hs_active_end
         return out

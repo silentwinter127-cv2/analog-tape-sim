@@ -394,9 +394,10 @@ def apply_stale_lines(y: np.ndarray, mask: np.ndarray, donor: np.ndarray,
         return out
     if disp is not None and np.any(np.abs(disp[idx]) > 1e-3):
         from ..core.signal import horizontal_shift
-        shifted = horizontal_shift(y, disp)
+        shifted = horizontal_shift(donor, disp)
         out[idx] = shifted[idx]
-    out[idx] = donor[idx]
+    else:
+        out[idx] = donor[idx]
     return out
 
 

@@ -393,3 +393,44 @@ body.wsDragging img{pointer-events:none}
 /* a panel hidden by the workspace: the track collapses and the panel goes away entirely */
 .wsHidden{display:none !important}
 /* an overlay has no track to collapse: hiding it is enough */
+
+/* ---- preview & export quality selectors ---- */
+select.qsel {
+  background: var(--panel2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+select.qsel:hover { border-color: #4c4238; background: #2a2520; }
+select.qsel:focus { outline: 1px solid var(--accent); }
+
+/* ---- per-parameter keyframe diamond & step buttons ---- */
+.pright { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.prow-kf { border-left: 2px solid #5fd0a8; padding-left: 6px; margin-left: -8px; }
+button.kfBtn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #55606e;
+  font-size: 11px;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+button.kfBtn:hover { color: #d8dee9; border-color: #3b4454; background: #1f2530; }
+button.kfBtn.on { color: #5fd0a8; border-color: rgba(95, 208, 168, 0.35); background: rgba(95, 208, 168, 0.08); }
+button.kfBtn.on.at { color: #ffd166; border-color: rgba(255, 209, 102, 0.55); background: rgba(255, 209, 102, 0.16); }
+button.kfNav {
+  background: transparent;
+  border: 1px solid #2b3340;
+  color: #8b98a8;
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+button.kfNav:hover { color: #ffd166; border-color: #ffd166; }

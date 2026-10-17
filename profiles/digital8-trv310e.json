@@ -1,0 +1,54 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "Sony DCR-TRV310E (Digital8 AWB)",
+  "standard": "ntsc",
+  "seed": 20240101,
+  "params": {
+    "camera": {
+      "sensor_type": 0.0,
+      "sensor_noise": 0.08,
+      "ccd_gain": 0.65,
+      "sharpness": 0.82,
+      "chroma_aberration": 0.04,
+      "dynamic_range": 7.5,
+      "color_cast": 0.45,
+      "white_balance_temp": 0.0,
+      "ccd_smear": 0.25,
+      "halation": 0.25
+    },
+    "format": {
+      "luma_bandwidth": 5.0,
+      "chroma_bandwidth": 2.0,
+      "chroma_vertical_averaging": 0.0,
+      "color_noise": 0.04,
+      "edge_boost": 0.18
+    },
+    "codec": {
+      "dv_enabled": 1.0,
+      "dv_quality": 0.9,
+      "dv_base_step": 0.015
+    },
+    "tape": {
+      "dropout_rate": 0.0,
+      "noise_floor": 0.03,
+      "line_jitter": 0.03,
+      "walk_amplitude": 0.02,
+      "micro_jitter": 0.03,
+      "head_switching": 0.0,
+      "shuttle_mode": 2.0
+    },
+    "player": {
+      "tbc_enabled": 1.0,
+      "head_wear": 0.05,
+      "transport_jitter": 0.05,
+      "luma_bandwidth": 5.0,
+      "chroma_bandwidth": 2.0
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  },
+  "_factory_preset": "digital8_trv310e",
+  "_note": "1/4 英寸 互补色 CFA CCD + 低照度 AGC 三分量噪波（CDS 横向散粒噪 + CFA 差分色斑 + 光学黑行钳位）+ 自然冷灰青 AWB（对照 10月15日.mp4 标定；调低白平衡色温可切至深蓝）"
+}

@@ -372,6 +372,20 @@ def check_head_switch() -> None:
                "no measurable band", False,
                "check that display overscan is 0; realistic overscan hides it")
 
+    # Verify the physical 2-head rotary drum handover calibrated on 1986 Panasonic NV-180 VHS (`10月16日.mp4`):
+    #   1) Active image luma inside the switching band (left/middle of line) is preserved (not erased to a dark bar);
+    #   2) The post-switch lines shift leftward and expose a crisp right-hand HBI blanking step (`right_black >= 24 px`).
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    p_nv180 = SCHEMA.resolve_all(FACTORY_PRESETS["panasonic_1986_ccd_nv180"]["layers"])
+    out_nv = render(scene, p_nv180)
+    lum_nv = out_nv @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    active_mid_ratio = float(lum_nv[-5:-1, 40:160].mean() / max(1e-6, lum_nv[-16:-10, 40:160].mean()))
+    right_hbi_luma = float(lum_nv[-5:-1, -18:].mean())
+    record("head-switch preserves active luma and exposes right HBI step",
+           "calibrated on 1986 Panasonic NV-180 (`10月16日.mp4`): active picture shifts left while right HBI drops to pedestal black",
+           f"active_luma_ratio={active_mid_ratio:.3f} (want >0.75), right_HBI_luma={right_hbi_luma:.3f} (want <0.06)",
+           active_mid_ratio > 0.75 and right_hbi_luma < 0.06)
+
 
 
 def check_consistency() -> None:
@@ -1585,6 +1599,17 @@ def check_connectors() -> None:
            all(d > 0.001 for _l, d in results),
            "HDMI and S-Video measured exactly zero until the representations were "
            "reconciled")
+
+    # --- 16:9 STB -> HDMI-AV -> 4:3 VCR double aspect-ratio squeeze (Panasonic NV-J27 VHF Ch 6)
+    from atsim.stages.connector import ConnectorStage
+    test_f = np.ones((120, 160, 3), dtype=np.float32) * 0.8
+    sq_out, sq_meta = ConnectorStage._apply_aspect_squeeze(test_f, 1.0)
+    act_cols = np.nonzero(sq_out.mean(axis=(0, 2)) > 0.10)[0]
+    w_rat = float(act_cols[-1] - act_cols[0] + 1) / 160.0 if act_cols.size else 0.0
+    record("16:9 STB to 4:3 VCR aspect squeeze",
+           "squeezes horizontal width by 3/4 (0.75) with 12.5% pillarbox blanking on each side",
+           f"width_ratio={w_rat:.4f} (want ~0.75), pillarbox_px={sq_meta.get('pillarbox_px')}",
+           abs(w_rat - 0.75) < 0.025 and sq_meta.get("pillarbox_px") == 20)
 
     # --- and the digital one must be able to fail the link outright
     from atsim.codecs.connectors import degrade_digital

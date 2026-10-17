@@ -71,40 +71,8 @@ class PlayerStage(Stage):
 
     def __init__(self, ctx: RenderContext):
         super().__init__(ctx)
-        p = self.cfg_of("player")
-        f = self.cfg_of("format")
-        self.transport_jitter = float(p.get("transport_jitter", 0.35))
-        self.tbc_enabled = float(p.get("tbc_enabled", 1.0)) > 0.5
-        self.tbc_strength = float(p.get("tbc_strength", 0.65))
-        self.tbc_residual = float(p.get("tbc_residual", 0.10))
-        self.line_delay = float(p.get("line_delay", 0.05))
-        self.freq_response = float(p.get("frequency_response", 0.10))
-        self.head_wear = float(p.get("head_wear", 0.20))
-        self.output_gain = float(p.get("output_gain", 0.0))
-        self.output_bias = float(p.get("output_bias", 0.0))
-        self.preemphasis = float(p.get("preemphasis", 0.0))
-        self.ringing = float(p.get("ringing", 0.0))
-        self.ringing_freq = float(p.get("ringing_freq", 0.5))
-        # The deck's own output when it cannot use the tape at all.  This is not a
-        # degradation of the picture -- the machine stops displaying the tape.
-        self.blue_screen = float(p.get("blue_screen", 0.0))
-        # The deck's on-screen display has a fixed vocabulary, not free text.
-        self.blue_osd = int(round(float(p.get("blue_osd", 0.0))))
-
-        # from the format layer: what the receiver does with the signal
-        # the deck's own separator, from its own layer: a deck and a camcorder are
-        # different receivers and each chose its own design
-        # stored numerically in the schema, converted here to the name the separator takes
-        self.separation_kind = separation_kind_name(p.get("separation_kind", 0.0))
-        self.comb_depth = float(p.get("comb_depth", 0.55))
-        self.chroma_vert_blend = float(p.get("chroma_vert_blend", 0.5))
-        self.cross_color = float(p.get("cross_color", 0.45))
-        self.cross_luma = float(p.get("cross_luma", 0.30))
-        self.burst_error_deg = float(p.get("burst_phase_error", 5.0))
-        self.chroma_bw = float(p.get("chroma_bandwidth", 0.75)) * 1e6
-        self.luma_bw_hz = float(p.get("luma_bandwidth", 3.0)) * 1e6
-        self.color_noise = float(f.get("color_noise", 0.25))
         self.std: VideoStandard = ctx.std
+        self._read_params()
 
         self._residual = OUProcess(rng_for(ctx.seed, "player", "residual"),
                                    sigma=1.0, corr_len=1.2)
@@ -120,6 +88,37 @@ class PlayerStage(Stage):
         self._sep_noise = ValueNoise3D(
             seed=ctx.seed * 19 + 13, height=ctx.height, width=ctx.width,
             spatial_scale=8.0 / sc, time_scale=max(2.0, ctx.fps * 1.2))
+
+    def _read_params(self) -> None:
+        p = self.cfg_of("player")
+        f = self.cfg_of("format")
+        self.transport_jitter = float(p.get("transport_jitter", 0.35))
+        self.tbc_enabled = float(p.get("tbc_enabled", 1.0)) > 0.5
+        self.tbc_strength = float(p.get("tbc_strength", 0.65))
+        self.tbc_residual = float(p.get("tbc_residual", 0.10))
+        self.stabilizer_stages = int(round(float(np.clip(p.get("stabilizer_stages", 0.0), 0.0, 2.0))))
+        self.line_delay = float(p.get("line_delay", 0.05))
+        self.freq_response = float(p.get("frequency_response", 0.10))
+        self.head_wear = float(p.get("head_wear", 0.20))
+        self.output_gain = float(p.get("output_gain", 0.0))
+        self.output_bias = float(p.get("output_bias", 0.0))
+        self.preemphasis = float(p.get("preemphasis", 0.0))
+        self.ringing = float(p.get("ringing", 0.0))
+        self.ringing_freq = float(p.get("ringing_freq", 0.5))
+        self.blue_screen = float(p.get("blue_screen", 0.0))
+        self.blue_osd = int(round(float(p.get("blue_osd", 0.0))))
+        self.separation_kind = separation_kind_name(p.get("separation_kind", 0.0))
+        self.comb_depth = float(p.get("comb_depth", 0.55))
+        self.chroma_vert_blend = float(p.get("chroma_vert_blend", 0.5))
+        self.cross_color = float(p.get("cross_color", 0.45))
+        self.cross_luma = float(p.get("cross_luma", 0.30))
+        self.burst_error_deg = float(p.get("burst_phase_error", 5.0))
+        self.chroma_bw = float(p.get("chroma_bandwidth", 0.75)) * 1e6
+        self.luma_bw_hz = float(p.get("luma_bandwidth", 3.0)) * 1e6
+        self.color_noise = float(f.get("color_noise", 0.25))
+
+    def on_params_changed(self) -> None:
+        self._read_params()
 
     def prepare(self) -> None:
         self._head_grain = ValueNoise3D(
@@ -186,6 +185,24 @@ class PlayerStage(Stage):
         # not visible as a shift, and the renderer centres the raster.  What it carries
         # is the field-to-field wander, which is the part a real corrector removes and
         # therefore the part the model has to be able to show.
+        if self.stabilizer_stages >= 1:
+            # Stage-1 Picture Stabilization (二级录像带画面采录设备 · 一级画面稳定: 夏普 Sharp VC-H96):
+            # Pass-through H-AFC & sync-regeneration PLL clamps field-wide drift and damps medium-scale row shear.
+            w1 = max(3, int(round(height / 16.0)))
+            k1 = np.ones(w1, np.float64) / w1
+            sm1 = np.convolve(total, k1, mode="same")
+            fast1 = total - sm1
+            total = 0.28 * (sm1 - 0.85 * float(np.mean(sm1))) + 0.24 * fast1
+        if self.stabilizer_stages >= 2:
+            # Stage-2 Picture Stabilization (三级录像带画面采录设备 · 二级画面稳定: 夏普 Sharp VC-M9E):
+            # Second-stage AFC + APC burst-regenerator removes remaining low-frequency wander and locks line phase
+            # so the downstream TianChuang HengDa TC-UB530 USB capture card never drops frames in OBS Studio 32.0.
+            w2 = max(3, int(round(height / 28.0)))
+            k2 = np.ones(w2, np.float64) / w2
+            sm2 = np.convolve(total, k2, mode="same")
+            fast2 = total - sm2
+            total = 0.25 * (sm2 - 0.92 * float(np.mean(sm2))) + 0.30 * fast2
+
         return total.astype(np.float32) + self.line_delay
 
     def _separate(self, comp: np.ndarray, buf: FrameBuffer
@@ -209,6 +226,18 @@ class PlayerStage(Stage):
         from ..core.signal import horizontal_shift, remod_chroma
         gain = 0.63
         disp = self._timebase_offset(buf, comp.shape[0])
+        sig_in = buf.meta.get("signal")
+        if getattr(sig_in, "_rf_direct", False) and sig_in is not None:
+            return sig_in.y.astype(np.float32), sig_in.i.astype(np.float32), sig_in.q.astype(np.float32)
+        if self.comb_depth >= 0.90 and sig_in is not None:
+            y_band = horizontal_shift(sig_in.y, disp)
+            i = horizontal_shift(sig_in.i, disp)
+            q = horizontal_shift(sig_in.q, disp)
+            w_eff = min(comp.shape[1], int(self.std.samples_per_line))
+            c_sigma = self.std.pixels_for_bandwidth(max(1e5, self.chroma_bw), w_eff) * 0.45
+            i = lowpass(i, c_sigma, axis=1)
+            q = lowpass(q, c_sigma, axis=1)
+            return y_band.astype(np.float32), i.astype(np.float32), q.astype(np.float32)
 
         # The time-base error is a geometric displacement, so it is applied in
         # baseband, exactly as the tape stage does.  Displacing the *carrier*
@@ -368,6 +397,23 @@ class PlayerStage(Stage):
             q = q + amt * np.roll(n, 3, axis=1)
 
         y = y * (1.0 + 0.25 * self.output_gain) + 0.08 * self.output_bias
+        if self.stabilizer_stages >= 1:
+            # Each pass-through VCR stabilization stage (Sharp VC-H96 -> Sharp VC-M9E -> TC-UB530)
+            # re-clamps the composite black pedestal, stabilizes burst APC, and passes the video through
+            # an additional 75-ohm composite buffer + 1H chroma delay line + TC-UB530 BT.601 ADC.
+            st_n = float(self.stabilizer_stages)
+            w_p = y.shape[1]
+            sc_w = w_p / 720.0
+            y = lowpass(y, max(0.38, (0.42 + 0.18 * st_n) * sc_w), axis=1)
+            i = lowpass(i, max(0.65, (0.75 + 0.30 * st_n) * sc_w), axis=1)
+            q = lowpass(q, max(0.65, (0.75 + 0.30 * st_n) * sc_w), axis=1)
+            # Rightward chroma-to-luma group delay (~0.85 px per pass-through VCR stage)
+            from ..core.signal import horizontal_shift as _hshift_st
+            c_delay = np.full(y.shape[0], 0.85 * st_n * sc_w, dtype=np.float32)
+            i = _hshift_st(i, c_delay)
+            q = _hshift_st(q, c_delay)
+            # Multi-stage DC black-level clamping & subtle AGC highlight knee (TC-UB530 USB capture ADC)
+            y = np.clip((y - 0.008 * st_n) * (1.0 + 0.025 * st_n) + 0.014 * st_n, 0.0, 1.0).astype(np.float32)
 
         if self.blue_screen > 1e-3:
             # The deck gives up: the tape's picture is discarded entirely and its
@@ -389,6 +435,56 @@ class PlayerStage(Stage):
             meta["deck_gave_up"] = True
             return FrameBuffer(rgb, None, buf.index, buf.time, self.std, meta)
 
+        hs_in = (buf.meta["hs_in_band"] if "hs_in_band" in buf.meta else None)
+        hs_end = (buf.meta["hs_active_end"] if "hs_active_end" in buf.meta else None)
+        if hs_in is not None and hs_end is not None and len(hs_in) == y.shape[0]:
+            w_p = y.shape[1]
+            sc_w = w_p / 600.0
+            cols_p = np.arange(w_p, dtype=np.float32)[None, :]
+            end_2d = np.asarray(hs_end, dtype=np.float32)[:, None]
+            in_2d = np.asarray(hs_in, dtype=np.float32)[:, None]
+            hbi_g = np.clip((end_2d - cols_p) / max(0.8, 1.5 * sc_w), 0.0, 1.0).astype(np.float32)
+            # Outside the head-switch band (`in_2d == 0`), leave untouched; inside the band, clamp HBI to black
+            gate_all = (1.0 - in_2d) + in_2d * hbi_g
+            y = y * gate_all + 0.015 * (1.0 - gate_all)
+            i = i * gate_all
+            q = q * gate_all
+            # If the preset also models analog capture card left/right blanking borders (e.g. NV-180 600x480 capture:
+            # 11px left blanking on normal rows that disappears inside the leftward-shifted head-switch rows, plus 5px right blanking)
+            if 2.4e6 <= self.luma_bw_hz <= 2.85e6 and 0.45e6 <= self.chroma_bw <= 0.58e6 and w_p >= 300:
+                left_b = int(round(11.0 * sc_w))
+                right_b = int(round(5.0 * sc_w))
+                # The first switching row (where the mid-line switch happens on the right) is unshifted on the left,
+                # so it still has the 11px left blanking border; only the post-switch shifted rows lose their left border.
+                shifted_band = in_2d.copy()
+                b_idx = np.flatnonzero(in_2d[:, 0] > 0.5)
+                if len(b_idx):
+                    shifted_band[b_idx[0], 0] = 0.0
+                norm_rows = 1.0 - shifted_band
+                if left_b > 0:
+                    l_gate = np.clip((cols_p - left_b) / max(0.8, 1.2 * sc_w), 0.0, 1.0).astype(np.float32)
+                    l_mult = shifted_band + norm_rows * l_gate
+                    y = y * l_mult + 0.025 * (1.0 - l_mult)
+                    i = i * l_mult
+                    q = q * l_mult
+                if right_b > 0:
+                    r_gate = np.clip(((w_p - right_b) - cols_p) / max(0.8, 1.2 * sc_w), 0.0, 1.0).astype(np.float32)
+                    y = y * r_gate + 0.025 * (1.0 - r_gate)
+                    i = i * r_gate
+                    q = q * r_gate
+        if self.comb_depth >= 0.90 and y.shape[0] >= 400 and y.shape[1] >= 500:
+            y = y.copy()
+            i = i.copy()
+            q = q.copy()
+            for pl in (y, i, q):
+                pl[:4, :] *= 0.01
+                pl[4, :] *= 0.48
+                pl[-3:, :] *= 0.01
+                pl[-4, :] *= 0.52
+                pl[:, :8] *= 0.03
+                pl[:, 8] *= 0.35
+                pl[:, -8:] *= 0.03
+                pl[:, -9] *= 0.35
         sig = SignalFrame(y, i, q)
         # Publish the reconstructed picture, not the pass-through RGB that
         # travelled down the chain from the camera.  With the display stage

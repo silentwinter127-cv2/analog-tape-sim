@@ -15,6 +15,10 @@ const S = {
   layer: "format",
   presetTab: "factory",
   t: 0.4,
+  previewScale: "0.5",
+  previewQuality: 88,
+  exportScale: "1.0",
+  exportQuality: "high",
   ab: true,
   auto: true,
   busy: false,
@@ -87,8 +91,35 @@ function wireChrome() {
   $("timeSlider").oninput = () => {
     S.t = parseFloat($("timeSlider").value);
     $("timeLabel").textContent = `t = ${S.t.toFixed(2)} s`;
+    renderParams();
+    if (window.SessionUI) {
+      if (typeof SessionUI.renderKeyframes === "function") SessionUI.renderKeyframes();
+      if (typeof SessionUI.renderEnv === "function") SessionUI.renderEnv();
+    }
     refreshPreview();
   };
+  const pScale = $("previewScale");
+  if (pScale) {
+    pScale.onchange = () => {
+      S.previewScale = pScale.value || "0.5";
+      refreshPreview();
+    };
+  }
+  const pQual = $("previewQuality");
+  if (pQual) {
+    pQual.onchange = () => {
+      S.previewQuality = parseInt(pQual.value, 10) || 88;
+      refreshPreview();
+    };
+  }
+  const eScale = $("exportScale");
+  if (eScale) {
+    eScale.onchange = () => { S.exportScale = eScale.value || "1.0"; };
+  }
+  const eQual = $("exportQuality");
+  if (eQual) {
+    eQual.onchange = () => { S.exportQuality = eQual.value || "high"; };
+  }
   $("abToggle").onchange = () => { S.ab = $("abToggle").checked; layoutAB(); };
   $("autoRefresh").onchange = () => { S.auto = $("autoRefresh").checked; };
   $("btnRender").onclick = startRender;
@@ -286,52 +317,238 @@ const SELECTORS = {
     [2, "Super NightShot（帧积累）"],
     [3, "Color Slow Shutter（慢快门保留彩色）"],
   ],
+  "camera.zoom_kind": [
+    [0, "0 · 线性 (linear)"],
+    [1, "1 · 家用电动变焦马达 (motor)"],
+    [2, "2 · 广播级伺服变焦 (cinema)"],
+  ],
+  "format.filter_kind": [
+    [0, "0 · 高斯无相移 (gaussian)"],
+    [1, "1 · 定 K 型多节级联 (constant_k)"],
+    [2, "2 · 巴特沃斯有源滤波 (butterworth)"],
+  ],
+  "format.separation_kind": [
+    [0, "0 · 频带分割 (band)"],
+    [1, "1 · 窄孔径盒式 (box)"],
+    [2, "2 · 1H 延迟线梳状 (line1)"],
+    [3, "3 · 2H 双延迟线梳状 (line2)"],
+    [4, "4 · 2D 对角 FIR 梳状 (fir2d)"],
+    [5, "5 · 递归垂直色度混合 (iir)"],
+  ],
+  "codec.codec_kind": [
+    [0, "0 · 关闭数字编解码（模拟直通）"],
+    [1, "1 · DV25 / MiniDV (4:1:1 / 4:2:0 DCT)"],
+    [2, "2 · MPEG-1 / Video CD (352×240 运动补偿)"],
+  ],
+  "tape.tape_speed": [
+    [0, "0 · SP 标准速度"],
+    [1, "1 · LP 二倍长时"],
+    [2, "2 · EP / SLP 三倍超长时"],
+  ],
+  "tape.shuttle_mode": [
+    [0, "0 · 自动（随介质格式）"],
+    [1, "1 · 强制模拟整行条带 (VHS/Hi8)"],
+    [2, "2 · 强制数字 16×16 宏块 (MiniDV)"],
+  ],
+  "player.separation_kind": [
+    [0, "0 · 频带分割 (band)"],
+    [1, "1 · 窄孔径盒式 (box)"],
+    [2, "2 · 1H 延迟线梳状 (line1)"],
+    [3, "3 · 2H 双延迟线梳状 (line2)"],
+    [4, "4 · 2D 对角 FIR 梳状 (fir2d)"],
+    [5, "5 · 递归垂直色度混合 (iir)"],
+  ],
+  "display.mask_type": [
+    [0, "0 · 荫栅 (Aperture Grille / 特丽珑)"],
+    [1, "1 · 槽孔荫罩 (Slot Mask)"],
+    [2, "2 · 圆点荫罩 (Dot Triad Shadow Mask)"],
+  ],
+  "overlay.at": [
+    [0, "0 · 画面成形之后（摄像机自身 OSD）"],
+    [1, "1 · 介质之前（字幕机录到磁带上）"],
+  ],
+  "overlay.style": [
+    [0, "0 · 自定义（使用下方颜色参数）"],
+    [1, "1 · 绿字·深描边（OSD 经典）"],
+    [2, "2 · 红字·深描边（REC 经典）"],
+    [3, "3 · 白字·深描边"],
+    [4, "4 · 黄字·深描边"],
+    [5, "5 · 青字·深描边"],
+  ],
+  "overlay.halign": [
+    [0, "0 · 左对齐"],
+    [1, "1 · 水平居中"],
+    [2, "2 · 右对齐"],
+  ],
+  "overlay.valign": [
+    [0, "0 · 顶部对齐"],
+    [1, "1 · 垂直居中"],
+    [2, "2 · 底部对齐"],
+  ],
+  "overlay.pos": [
+    [0, "0 · 左上"],
+    [1, "1 · 上中"],
+    [2, "2 · 右上"],
+    [3, "3 · 左中"],
+    [4, "4 · 正中"],
+    [5, "5 · 右中"],
+    [6, "6 · 左下"],
+    [7, "7 · 下中（字幕常用）"],
+    [8, "8 · 右下（录像机常用）"],
+  ],
 };
 
+function selectorOptionsFor(layer, sp) {
+  const fullKey = `${layer}.${sp.key}`;
+  if (fullKey === "overlay.font") {
+    if (window.SessionUI && typeof SessionUI.getOsdFonts === "function") {
+      return SessionUI.getOsdFonts().map((f, i) => [i, `${i} · ${f[1]}`]);
+    }
+    if (S.catalog && Array.isArray(S.catalog.fonts)) {
+      return S.catalog.fonts.filter((f) => f.available !== false).map((f, i) => [i, `${i} · ${f.label}`]);
+    }
+  }
+  return SELECTORS[fullKey] || null;
+}
+
+function formatReadout(sp, v) {
+  if (sp.kind === "text") return String(v ?? "");
+  const isBool = sp.unit === "bool" || (sp.step === 1 && sp.min === 0 && sp.max === 1 && sp.unit === "0/1");
+  if (isBool) return v > 0.5 ? "开" : "关";
+  if (sp.step === 1) return Math.round(v).toFixed(0);
+  return fmt(v);
+}
 
 function paramRow(sp) {
-  const cur = (S.params[S.layer] || {})[sp.key];
-  const val = cur === undefined ? sp.default : cur;
+  const layerName = S.layer;
+  const cur = (S.params[layerName] || {})[sp.key];
+  const baseVal = cur === undefined ? sp.default : cur;
+  const kfInfo = (sp.kind !== "text" && window.SessionUI && typeof SessionUI.trackInfo === "function")
+    ? SessionUI.trackInfo(layerName, sp.key, S.t)
+    : { hasTrack: false, atPoint: false, pointCount: 0, value: null };
+  const val = (kfInfo.hasTrack && kfInfo.value !== null) ? kfInfo.value : baseVal;
+
   const row = document.createElement("div");
-  row.className = "prow";
+  row.className = "prow" + (kfInfo.hasTrack ? " prow-kf" : "");
 
   const head = document.createElement("div");
   head.className = "plabel";
   const name = document.createElement("span");
-  name.textContent = sp.label + (sp.unit && sp.unit !== "0-1" && sp.unit !== "bool" ? ` (${sp.unit})` : "");
+  name.textContent = sp.label + (sp.unit && sp.unit !== "0-1" && sp.unit !== "bool" && sp.unit !== "text" ? ` (${sp.unit})` : "");
+
+  const rightBox = document.createElement("span");
+  rightBox.className = "pright";
+
   const vv = document.createElement("span");
   vv.className = "v";
-  const inPhys = sp.phys_min === null || sp.phys_max === null
+  const inPhys = sp.phys_min === null || sp.phys_max === null || sp.kind === "text"
     || (val >= sp.phys_min - 1e-9 && val <= sp.phys_max + 1e-9);
   if (!inPhys) vv.classList.add("artistic");
-  vv.textContent = sp.step === 1 ? (val > 0.5 ? "开" : "关") : fmt(val);
-  head.append(name, vv);
+  vv.textContent = formatReadout(sp, val);
+  rightBox.appendChild(vv);
 
-  const opts = SELECTORS[`${S.layer}.${sp.key}`];
+  // 为所有可调节数值参数添加关键帧控制按钮（◆ 打关键帧 / 跳上一帧 / 跳下一帧 / 打开曲线）
+  if (sp.kind !== "text" && window.SessionUI && typeof SessionUI.upsertKeyframe === "function") {
+    if (kfInfo.hasTrack) {
+      const prevBtn = document.createElement("button");
+      prevBtn.className = "kfNav";
+      prevBtn.textContent = "‹";
+      prevBtn.title = "跳到上一个关键帧";
+      prevBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        const tTarget = SessionUI.stepKeyframe(layerName, sp.key, -1);
+        if (tTarget != null) {
+          S.t = tTarget;
+          if ($("timeSlider")) $("timeSlider").value = String(tTarget);
+          if ($("timeLabel")) $("timeLabel").textContent = `t = ${tTarget.toFixed(2)} s`;
+          renderParams();
+          refreshPreview();
+        }
+      };
+      const nextBtn = document.createElement("button");
+      nextBtn.className = "kfNav";
+      nextBtn.textContent = "›";
+      nextBtn.title = "跳到下一个关键帧";
+      nextBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        const tTarget = SessionUI.stepKeyframe(layerName, sp.key, 1);
+        if (tTarget != null) {
+          S.t = tTarget;
+          if ($("timeSlider")) $("timeSlider").value = String(tTarget);
+          if ($("timeLabel")) $("timeLabel").textContent = `t = ${tTarget.toFixed(2)} s`;
+          renderParams();
+          refreshPreview();
+        }
+      };
+      rightBox.append(prevBtn, nextBtn);
+    }
+
+    const kfBtn = document.createElement("button");
+    kfBtn.className = "kfBtn" + (kfInfo.hasTrack ? (kfInfo.atPoint ? " on at" : " on") : "");
+    kfBtn.textContent = "◆";
+    kfBtn.title = kfInfo.hasTrack
+      ? (kfInfo.atPoint
+          ? `当前时刻 (t=${S.t.toFixed(2)}s) 已打关键帧（点击删除该点，Shift+点击删除整条轨道，双击打开曲线面板）`
+          : `已有 ${kfInfo.pointCount} 个关键帧（点击在 t=${S.t.toFixed(2)}s 插入关键帧，Shift+点击删除整条轨道，双击打开曲线面板）`)
+      : `在当前时刻 t=${S.t.toFixed(2)}s 为「${sp.label}」打关键帧`;
+    kfBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      if (ev.shiftKey && kfInfo.hasTrack) {
+        SessionUI.removeKeyframe(layerName, sp.key, null, true);
+        renderParams();
+        return;
+      }
+      const curInputVal = r ? (sp.kind === "text" ? r.value : parseFloat(r.value)) : val;
+      if (kfInfo.atPoint) {
+        SessionUI.removeKeyframe(layerName, sp.key, S.t, false);
+      } else {
+        const defaultCurve = (sp.step === 1) ? "hold" : "linear";
+        SessionUI.upsertKeyframe(layerName, sp.key, S.t, curInputVal, defaultCurve);
+      }
+      renderParams();
+    };
+    kfBtn.ondblclick = (ev) => {
+      ev.stopPropagation();
+      if (typeof SessionUI.focusTrack === "function") SessionUI.focusTrack(layerName, sp.key);
+    };
+    rightBox.appendChild(kfBtn);
+  }
+
+  head.append(name, rightBox);
+
+  const opts = selectorOptionsFor(layerName, sp);
   let r;
-  if (opts) {
-    // a selector: the four functions by name, with the numeric value kept in the readout
+  if (sp.kind === "text") {
+    r = document.createElement("input");
+    r.type = "text";
+    r.className = "ssText";
+    r.style.width = "100%";
+    r.value = val == null ? "" : String(val);
+    r.onchange = () => {
+      S.params[layerName] = S.params[layerName] || {};
+      S.params[layerName][sp.key] = r.value;
+      setProject({ params: { [layerName]: { [sp.key]: r.value } } });
+    };
+  } else if (opts) {
     r = document.createElement("select");
     r.className = "psel";
     for (const [v, label] of opts) {
       const o = document.createElement("option");
       o.value = String(v);
       o.textContent = label;
-      if (Math.abs(v - val) < 1e-6) o.selected = true;
+      if (Math.abs(v - Math.round(val)) < 1e-6) o.selected = true;
       r.appendChild(o);
     }
-    vv.textContent = fmt(val);
+    vv.textContent = formatReadout(sp, val);
     r.onchange = () => {
       const nv = parseFloat(r.value);
-      vv.textContent = fmt(nv);
-      // **The mode's own settings are the engine's to decide**, so the page asks what it resolved instead of
-      // keeping a second copy of the preset table.  Without this the panel shows values the camera stage
-      // overrides -- measured in the browser: mode 3 selected with nv_green_mix reading 1 while the renderer
-      // used 0, i.e. two sources of truth for one picture.  setProject re-reads /api/project, which is
-      // where the resolved values come from, and re-renders this panel.
-      S.params[S.layer] = S.params[S.layer] || {};
-      S.params[S.layer][sp.key] = nv;
-      setProject({ params: { [S.layer]: { [sp.key]: nv } } });
+      vv.textContent = formatReadout(sp, nv);
+      if (kfInfo.hasTrack && window.SessionUI) {
+        SessionUI.upsertKeyframe(layerName, sp.key, S.t, nv, "hold");
+      }
+      S.params[layerName] = S.params[layerName] || {};
+      S.params[layerName][sp.key] = nv;
+      setProject({ params: { [layerName]: { [sp.key]: nv } } });
     };
   } else {
     r = document.createElement("input");
@@ -341,13 +558,13 @@ function paramRow(sp) {
     r.value = val;
     r.oninput = () => {
       const nv = parseFloat(r.value);
-      vv.textContent = sp.step === 1 ? (nv > 0.5 ? "开" : "关") : fmt(nv);
+      vv.textContent = formatReadout(sp, nv);
       const stillPhys = sp.phys_min === null || sp.phys_max === null
         || (nv >= sp.phys_min - 1e-9 && nv <= sp.phys_max + 1e-9);
       vv.classList.toggle("artistic", !stillPhys);
-      setParam(S.layer, sp.key, nv, true);
+      setParam(layerName, sp.key, nv, true);
     };
-    r.onchange = () => setParam(S.layer, sp.key, parseFloat(r.value), false);
+    r.onchange = () => setParam(layerName, sp.key, parseFloat(r.value), false);
   }
 
   row.append(head, r);
@@ -371,10 +588,17 @@ let saveTimer = null;
 function setParam(layer, key, value, debounce) {
   S.params[layer] = S.params[layer] || {};
   S.params[layer][key] = value;
+  const hasKf = window.SessionUI && typeof SessionUI.trackInfo === "function"
+    && SessionUI.trackInfo(layer, key, S.t).hasTrack;
   if (!S.auto) return;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => setProject({ params: { [layer]: { [key]: value } } }),
-                         debounce ? 130 : 0);
+  saveTimer = setTimeout(() => {
+    if (hasKf) {
+      SessionUI.upsertKeyframe(layer, key, S.t, value);
+    } else {
+      setProject({ params: { [layer]: { [key]: value } } });
+    }
+  }, debounce ? 130 : 0);
 }
 
 async function setProject(payload) {
@@ -417,18 +641,28 @@ async function uploadClip(ev) {
  * to have the real output, and the preview's 0.5 proxy would quietly halve the
  * resolution of anything the user files away.
  */
+const EXPORT_PROFILES = {
+  lossless: { format: "png", q: 100, crf: 12, preset: "slow", label: "极高画质" },
+  high:     { format: "png", q: 95,  crf: 16, preset: "medium", label: "标准高画质" },
+  medium:   { format: "jpg", q: 92,  crf: 20, preset: "medium", label: "均衡画质" },
+  draft:    { format: "jpg", q: 82,  crf: 24, preset: "fast", label: "快速导出" },
+};
+
 async function exportStill() {
   const btn = $("btnStill");
   const was = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "导出中…"; }
   try {
-    const url = `/api/still?t=${S.t}&scale=1.0&format=png`;
+    const prof = EXPORT_PROFILES[S.exportQuality] || EXPORT_PROFILES.high;
+    const sc = encodeURIComponent(S.exportScale || "1.0");
+    const url = `/api/still?t=${S.t}&scale=${sc}&format=${prof.format}&q=${prof.q}`;
     const r = await fetch(url);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `atsim_${S.t.toFixed(2).replace(".", "_")}s.png`;
+    const ext = prof.format === "jpg" ? "jpg" : "png";
+    a.download = `atsim_${S.t.toFixed(2).replace(".", "_")}s.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -448,8 +682,10 @@ async function refreshPreview() {
   const my = ++S.token;
   const started = performance.now();
   const engine = (typeof G !== "undefined" && G.perNode) ? "&engine=graph" : "";
+  const pScale = encodeURIComponent(S.previewScale || "0.5");
+  const pQual = S.previewQuality || 88;
   try {
-    const blob = await api(`/api/frame?t=${S.t}&scale=0.5&q=88&_=${my}${engine}`);
+    const blob = await api(`/api/frame?t=${S.t}&scale=${pScale}&q=${pQual}&_=${my}${engine}`);
     if (my !== S.token) return;
     if (S.frameUrl) URL.revokeObjectURL(S.frameUrl);
     S.frameUrl = URL.createObjectURL(blob);
@@ -488,8 +724,10 @@ async function refreshPreview() {
 async function loadOriginal() {
   // the original is the simulation with camera/format/tape/player neutralised,
   // so the comparison is honest about what the chain did
+  const pScale = encodeURIComponent(S.previewScale || "0.5");
+  const pQual = S.previewQuality || 88;
   try {
-    const blob = await api("/api/frame?t=" + S.t + "&scale=0.5&q=88&mode=source");
+    const blob = await api(`/api/frame?t=${S.t}&scale=${pScale}&q=${pQual}&mode=source`);
     // release the previous object URL, or every time-cursor move leaks one
     if (S.origUrl) URL.revokeObjectURL(S.origUrl);
     S.origUrl = URL.createObjectURL(blob);
@@ -559,12 +797,14 @@ function renderChainBar(stages) {
 /* --------------------------------------------------------------- render */
 let jobTimer = null;
 async function startRender() {
+  const prof = EXPORT_PROFILES[S.exportQuality] || EXPORT_PROFILES.high;
+  const sc = encodeURIComponent(S.exportScale || "1.0");
   $("jobbar").classList.remove("hidden");
   $("jobDownload").classList.add("hidden");
   $("jobFill").style.width = "0%";
-  $("jobText").textContent = "启动渲染…";
+  $("jobText").textContent = `启动渲染 (${S.exportScale || "1.0"} · CRF ${prof.crf})…`;
   try {
-    const { job } = await api("/api/render?scale=1.0&crf=16");
+    const { job } = await api(`/api/render?scale=${sc}&crf=${prof.crf}&preset=${prof.preset}`);
     clearInterval(jobTimer);
     jobTimer = setInterval(() => pollJob(job), 700);
     pollJob(job);

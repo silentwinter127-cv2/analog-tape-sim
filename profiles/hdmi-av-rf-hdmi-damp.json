@@ -1,0 +1,80 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "HDMI→AV→RF→HDMI 回路（RF 接口受潮实拍）",
+  "standard": "pal",
+  "seed": 20240101,
+  "fps": 25.0,
+  "params": {
+    "camera": {
+      "sensor_noise": 0.0,
+      "noise_grain": 0.0,
+      "sharpness": 1.0,
+      "chroma_aberration": 0.0,
+      "ccd_smear": 0.0,
+      "halation": 0.0
+    },
+    "format": {
+      "luma_bandwidth": 4.2,
+      "chroma_bandwidth": 1.1,
+      "chroma_vertical_averaging": 0.25,
+      "comb_depth": 0.45,
+      "cross_color": 0.35,
+      "cross_luma": 0.22,
+      "color_noise": 0.12,
+      "edge_boost": 0.2,
+      "chroma_gain": 1.0
+    },
+    "codec": {
+      "dv_enabled": 0.0
+    },
+    "connector": {
+      "hdmi_present": 1.0,
+      "hdmi_moisture": 0.0,
+      "hdmi_corrosion": 0.0,
+      "av_present": 1.0,
+      "av_moisture": 0.12,
+      "av_corrosion": 0.08,
+      "av_ground_loop": 0.08,
+      "rf_present": 1.0,
+      "rf_moisture": 0.8,
+      "rf_corrosion": 0.35,
+      "rf_shielding": 0.2
+    },
+    "rf": {
+      "channel_mhz": 6.0,
+      "carrier_offset_mhz": 1.25,
+      "signal_dbm": -68.0,
+      "noise_figure_db": 10.0,
+      "sync_loss_threshold_db": 32.0,
+      "sync_loss_amount": 1.0,
+      "adjacent_channel": 0.35,
+      "broadcast_noise": 0.08
+    },
+    "tape": {
+      "tape_speed": 0.0,
+      "tape_stability": 1.0,
+      "wear": 0.0,
+      "dropout_rate": 0.0,
+      "noise_floor": 0.0,
+      "line_jitter": 0.0,
+      "walk_amplitude": 0.0,
+      "micro_jitter": 0.0,
+      "vertical_instability": 0.0,
+      "head_switching": 0.0,
+      "tracking_error": 0.0,
+      "crease_rate": 0.0
+    },
+    "player": {
+      "transport_jitter": 0.0,
+      "tbc_enabled": 1.0,
+      "tbc_strength": 1.0,
+      "tbc_residual": 0.0,
+      "head_wear": 0.0,
+      "frequency_response": 0.0
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  }
+}

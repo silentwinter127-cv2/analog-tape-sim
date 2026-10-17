@@ -180,24 +180,20 @@ class RFLink:
         # rather than shifted in colour -- which is why it cannot be expressed by
         # the chroma-side controls that handle tape damage.
         if bn > 1e-4:
-            # The noise must be band-limited to roughly the *chroma* bandwidth, not
-            # to the whole channel.  Broadband noise on the composite put most of
-            # its energy where the chroma demodulator could read it, so this control
-            # *raised* saturation (0.34 -> 0.54) instead of burying it -- the
-            # opposite of the reference, where the picture is destroyed across the
-            # whole frame and saturation falls to 0.178.
-            chroma_bw = float(np.clip(float(self.p.channel_mhz) * 1e6 * 0.5,
-                                      0.5e6, 1.6e6))
+            # The noise must stay below the 3.58 MHz subcarrier bandpass window (~1.85 px sigma
+            # at the standard's sample rate), while tuner AGC lifts the black floor and
+            # weak-burst ACC attenuates the colour carrier -- burying both luma and chroma
+            # so saturation falls (~0.20-0.25 on the 1992 Zibo TV weak-signal reference)
+            # rather than rising from false cross-colour.
+            eff_w = min(int(comp.shape[1]), int(self.std.samples_per_line))
+            sigma = max(1.05, self.std.pixels_for_bandwidth(1.95e6, eff_w))
             fine = rng.standard_normal(comp.shape).astype(np.float32)
-            fine = lowpass(fine, max(0.35, self.std.pixels_for_bandwidth(
-                chroma_bw, comp.shape[1])), axis=1)
-            # A coarser component supplies the low-frequency part of the noise;
-            # fine grain alone reads as sparkle rather than as a buried picture.
+            fine = lowpass(fine, sigma, axis=1)
             coarse = rng.standard_normal((comp.shape[0] // 4 + 1,
                                           comp.shape[1] // 4 + 1)).astype(np.float32)
             coarse = np.repeat(np.repeat(coarse, 4, axis=0), 4, axis=1)[
                 :comp.shape[0], :comp.shape[1]]
-            out = out + (0.05 + 0.90 * bn) * fine + 0.22 * bn * coarse
+            out = out + 0.08 * bn + (0.05 + 0.90 * bn) * fine + 0.22 * bn * coarse
         return out.astype(np.float32)
 
     def _sync_lock_artefacts(self, comp: np.ndarray, frame_index: int,

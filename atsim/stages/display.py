@@ -51,11 +51,11 @@ class DisplayStage(Stage):
 
     def __init__(self, ctx: RenderContext):
         super().__init__(ctx)
+        self._cache: dict[tuple, np.ndarray | tuple] = {}
+        self._read_params()
+
+    def _read_params(self) -> None:
         d = self.cfg_of("display")
-        # CRT interface moisture.  Read here, after super().__init__, because `cfg_of` reads
-        # `self.cfg` and that is what super() establishes.  The first insertion put these
-        # lines *above* the super call, so the stage could not be constructed at all --
-        # `AttributeError: 'DisplayStage' object has no attribute 'cfg'`.
         self.crt_moisture = float(d.get("crt_moisture", 0.0))
         self.crt_corrosion = float(d.get("crt_corrosion", 0.0))
         self.crt_age = float(d.get("crt_age", 0.3))
@@ -65,32 +65,15 @@ class DisplayStage(Stage):
         self.bloom = float(d.get("bloom", 0.35))
         self.defocus = float(d.get("defocus", 0.20))
         self.geometry = float(d.get("geometry_warp", 0.15))
-        # --- the tube's own geometry faults -------------------------------------
-        # A trapezoid raster: the yoke's scan is not rectangular to the tube face, so the top
-        # and bottom edges can differ in width and the left and right edges in height.
         self.trapezoid_x = float(d.get("trapezoid_x", 0.0))
         self.trapezoid_y = float(d.get("trapezoid_y", 0.0))
-        # Misconvergence: three beams through a shadow mask, so red and blue land slightly
-        # scaled about the centre.  Zero at the centre and growing outwards, which is why a real
-        # tube fringes at the edges and not in the middle.
         self.convergence = float(d.get("convergence", 0.0))
-        # The tube face is curved, so the picture is magnified about the centre and the edges bow
-        # outward.  Its own parameter: a set can have a curved face and a well-aligned yoke.
         self.curvature = float(d.get("curvature", 0.0))
-        # The scanning beam: a Gaussian spot of this width in lines, and the line pitch in pixels.
-        # Scanlines are the gaps between passes, so their visibility follows the spot -- which is why
-        # a focus control changes them and a painted stripe cannot.
         self.spot_sigma = float(d.get("spot_sigma", 0.42))
         self.scan_pitch = float(d.get("scan_pitch", 2.0))
-        # The shadow mask: the metal grid in front of the phosphors.  Its pitch is a property of
-        # the glass, not of the signal, and its pattern is vertical -- at right angles to the
-        # scanlines -- which is what makes a tube look like a tube rather than a striped picture.
         self.mask_pitch = float(d.get("mask_pitch", 0.0))
         self.mask_depth = float(d.get("mask_depth", 0.35))
         self.mask_type = int(round(float(d.get("mask_type", 0.0))))
-        # High-voltage breathing: a bright picture draws more beam current, the final anode sags,
-        # and the deflection sensitivity rises -- so the picture gets *bigger*.  A dynamic fault,
-        # so it reads the frame rather than a parameter.
         self.breathing = float(d.get("breathing", 0.0))
         self.gamma = float(d.get("gamma", 2.35))
         self.color_temp = float(d.get("color_temp", 0.15))
@@ -100,8 +83,10 @@ class DisplayStage(Stage):
         self.overscan = float(d.get("overscan", 0.06))
         self.vignette = float(d.get("vignette", 0.25))
         self.reflection = float(d.get("reflection", 0.10))
-        self._cache: dict[tuple[str, int, int], np.ndarray | tuple] = {}
         self._prepare_static()
+
+    def on_params_changed(self) -> None:
+        self._read_params()
 
     # ------------------------------------------------------------------
     def prepare(self) -> None:
@@ -126,38 +111,16 @@ class DisplayStage(Stage):
 
     def _masks(self, h: int, w: int):
         key = ("masks", h, w, round(self.spot_sigma, 3), round(self.scan_pitch, 3),
-               round(self.scanlines, 4))
+               round(self.scanlines, 4), round(self.vignette, 4))
         hit = self._cache.get(key)
         if hit is not None:
             return hit
         rows = np.arange(h, dtype=np.float32)[:, None, None]
-        # The beam, not a painted stripe.  The light reaching a row is the Gaussian spot evaluated at its
-        # distance from the nearest scan centre, so the gaps between passes are dark only when the spot is
-        # small compared with the pitch.  With the spot at the pitch the structure vanishes -- which is what a
-        # focus control does, and what a cosine of a fixed period can never reproduce.
-        pitch = max(1.05, float(self.scan_pitch))
+        scale_h = (h / 540.0) if h > 580 else 1.0
+        pitch = max(1.05, float(self.scan_pitch) * scale_h)
         centres = np.round(rows / pitch) * pitch
-        dist = (rows - centres) / max(1e-3, float(self.spot_sigma))
+        dist = (rows - centres) / max(1e-3, float(self.spot_sigma) * scale_h)
         beam = np.exp(-0.5 * dist * dist)
-        # **The beam keeps its own mean.**  Dividing it by its mean would make the deviation average zero and
-        # therefore the mask average one -- tidy physics that moves every existing render brighter by 8%,
-        # because the mask it replaces averaged 0.921 at the default.  The check about fog clearing broke on
-        # exactly that, and the cause was this normalisation rather than the fog.
-        #
-        # The depth is instead scaled so the mask's mean matches the old cosine's, which is
-        # `1 - scanlines * 0.225`.  The *shape* is the beam's, which is what was asked for; the level is
-        # unchanged, which is what keeps the calibration meaningful.
-        # **The beam is used absolutely, and the mean is removed afterwards.**
-        #
-        # Both earlier attempts normalised the deviation *before* applying the depth, and both destroyed the
-        # thing that was meant to vary: `dev / mean(dev)` and `dev / std(dev)` are each identical for every spot
-        # size, because the deviation is sampled once per line and a change of spot width only rescales it.
-        # Measured: the row-to-row standard deviation was 0.14360 for spots of 0.25, 0.42, 0.70 and 1.00.
-        #
-        # A narrow beam delivers less light in the gaps, so the line structure *is* deeper -- that is what a
-        # focus control does on a real set and it should be visible. What must not change is the picture's
-        # overall level, and that is a separate step: build the mask from the absolute beam, then divide by its
-        # own mean. Depth from the beam, level from the mean, in that order.
         mask = 1.0 - self.scanlines * (1.0 - beam)
         mask = mask / max(1e-6, float(mask.mean()))
         row = mask.astype(np.float32)
@@ -174,8 +137,9 @@ class DisplayStage(Stage):
         return out
 
     def _geometry_indices(self, h: int, w: int, breathe: float = 1.0):
-        # the breathing factor belongs in the key: this is the first geometry term that varies per frame
-        key = ("geom", h, w, round(breathe, 5))
+        key = ("geom", h, w, round(breathe, 5), round(self.geometry, 4),
+               round(self.trapezoid_x, 4), round(self.trapezoid_y, 4),
+               round(self.curvature, 4))
         hit = self._cache.get(key)
         if hit is not None:
             return hit
@@ -186,20 +150,13 @@ class DisplayStage(Stage):
         k = self.geometry * 0.035
         sx = nx * (1.0 + k * r2)
         sy = ny * (1.0 + k * 0.6 * r2) + self.geometry * 0.006 * nx * nx
-        # a keystone: the raster's width tapers from the top to the bottom, and its height from the left
-        # to the right.  Two independent faults, as on a real set with a knocked yoke.
         if abs(self.trapezoid_x) > 1e-6 or abs(self.trapezoid_y) > 1e-6:
             sx = sx * (1.0 + self.trapezoid_x * ny)
             sy = sy * (1.0 + self.trapezoid_y * nx)
         if abs(breathe - 1.0) > 1e-6:
-            # the anode sags under beam current, deflection sensitivity rises, and the raster grows
             sx = sx * breathe
             sy = sy * breathe
         if abs(self.curvature) > 1e-6:
-            # A spherical face: the mapping is a radial magnification that grows with radius, so the centre
-            # barely moves while the edges bow outward.  `r2` is the squared radius already computed above.
-            # The square-root form is what makes the *edge* bow rather than the whole picture scaling, which
-            # is the difference between a fisheye and a zoom.
             k = self.curvature * 0.32
             r = np.sqrt(np.clip(r2, 1e-8, None))
             f = 1.0 / (1.0 + k * r2)
@@ -218,20 +175,6 @@ class DisplayStage(Stage):
         return res
 
     def _shadow_mask(self, h: int, w: int) -> np.ndarray | None:
-        """
-        The mask's shadow, as a multiplier on the picture.
-
-        Three real constructions, because the pattern is what identifies the tube:
-
-          * **aperture grille** (type 0) -- continuous vertical wires, so the pattern is vertical stripes only;
-          * **slot mask** (type 1) -- staggered slots, so the vertical lines are broken alternately, which
-            gives a brick-like pattern;
-          * **dot mask** (type 2) -- round holes on a staggered lattice, the commonest shadow mask, whose
-            pattern is two-dimensional.
-
-        The pitch is in pixels of the *displayed* frame and is not tied to the signal, so the same picture on a
-        finer tube shows a finer mask.
-        """
         if self.mask_pitch <= 1e-3 or self.mask_depth <= 1e-4:
             return None
         key = ("mask", h, w, round(self.mask_pitch, 3), round(self.mask_depth, 3), self.mask_type)
@@ -241,16 +184,13 @@ class DisplayStage(Stage):
         pitch = max(1.5, float(self.mask_pitch))
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
         phase = (xx / pitch) % 1.0
-        # a vertical wire/slot profile: bright at the centre of a triad, dark between
         vert = np.cos(2.0 * np.pi * phase)
         m = 0.5 + 0.5 * vert
         if self.mask_type == 1:
-            # staggered slots: the vertical lines are broken every other row band, giving a brick pattern
             band = np.floor(yy / max(1.0, pitch)) % 2.0
             shift = band * 0.5
             m = 0.5 + 0.5 * np.cos(2.0 * np.pi * ((xx / pitch) + shift) % 1.0)
         elif self.mask_type == 2:
-            # a dot mask: holes on a staggered two-dimensional lattice
             cy = np.floor(yy / max(1.0, pitch))
             shift = (cy % 2.0) * 0.5
             dx = ((xx / pitch) + shift) % 1.0 - 0.5
@@ -258,20 +198,12 @@ class DisplayStage(Stage):
             r2 = dx * dx + dy * dy
             m = np.exp(-r2 / 0.08)
         mask = 1.0 - self.mask_depth * (1.0 - m)
-        # the mask must not change the picture's average level, or it is a brightness control
         mask = mask / max(1e-6, float(mask.mean()))
         mask = mask.astype(np.float32)[..., None]
         self._cache[key] = mask
         return mask
 
     def _channel_grid(self, h: int, w: int, scale: float):
-        """
-        A sampling grid with the image scaled about the centre by `scale`.
-
-        Used for misconvergence: scaling each channel about the centre makes the error zero in the middle and
-        worse at the edges, which is the shape a real tube has.  A uniform shift would instead fringe evenly
-        across the whole picture, which is the approximation this avoids.
-        """
         key = ("conv", h, w, round(scale, 6))
         hit = self._cache.get(key)
         if hit is not None:
@@ -298,8 +230,6 @@ class DisplayStage(Stage):
         out = (top * (1.0 - fy) + bot * fy).astype(np.float32)
 
         if abs(self.convergence) > 1e-6:
-            # red is drawn slightly larger than green and blue slightly smaller, both about the centre, so
-            # the fringing is zero in the middle and grows towards the edges
             c = self.convergence * 0.02
             for ch, scale in ((0, 1.0 + c), (2, 1.0 - c)):
                 yy0, xx0, yy1, xx1, ffx, ffy = self._channel_grid(h, w, scale)
@@ -312,48 +242,21 @@ class DisplayStage(Stage):
     # ------------------------------------------------------------------
     def _apply_crt_moisture(self, rgb: np.ndarray, frame_index: int
                             ) -> tuple[np.ndarray, dict]:
-        """
-        The damp video amplifier, at the very end of the chain.
-
-        Three effects with three separate causes, applied in the order the signal meets them:
-        the amplifier's bias shifts the level, the three channels' independent wear produce a
-        cast, and the sagging supply shrinks and breathes the raster.
-
-        The geometry is the one that matters diagnostically: it is the *only* fault in the
-        model that moves the edges of the raster itself. No upstream fault can do that -- a
-        tape cannot bend the picture -- so if the frame edges are moving, the fault is here
-        and nowhere else.
-        """
         if self.crt_moisture <= 1e-4 and self.crt_corrosion <= 1e-4:
             return rgb, {}
         from ..codecs.crt import apply_deflection, moisture_effects
         eff = moisture_effects(self.crt_moisture, self.crt_corrosion, self.crt_age)
         out = np.array(rgb, np.float32, copy=True)
-
-        # the level: a bias shift moves black across the whole picture, so a damp set looks
-        # washed out rather than grainy
         out = out + eff.bias_drift
-
-        # the cast: separate amplifiers per cathode, so the channels gain differently.  The
-        # spread grows with the set's age, which is why a damp room washes out a new set and
-        # tints an old one.
         out = out * np.array(eff.cast, np.float32)[None, None, :]
-
         info = {"bias_drift": round(eff.bias_drift, 4),
                 "cast": [round(g, 4) for g in eff.cast]}
-
-        # the geometry last, because it resamples the picture the first two produced
         out, geo = apply_deflection(out, eff.deflection, frame_index, self.ctx.seed)
         info.update(geo)
         return np.clip(out, 0.0, 1.0), info
 
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
         sig: SignalFrame | None = buf.meta.get("signal")
-        # Even with the display stage disabled, the frame that leaves the chain
-        # must be the *reconstructed picture*.  Returning the pass-through RGB
-        # buffer here would silently discard every bandwidth, crosstalk and
-        # time-base change upstream -- which is exactly what made this stage's
-        # "enabled" switch look like a no-op for the whole format layer.
         if not self.enabled:
             if sig is None:
                 return buf
@@ -364,51 +267,27 @@ class DisplayStage(Stage):
 
         rgb = buf.rgb if sig is None else sig.to_rgb()
 
-        # The tracking-error shift that used to live here has been removed: the
-        # parameter belongs to the tape layer, where it is implemented against the
-        # head-switch band it actually displaces.  Keeping a second copy in the
-        # display stage duplicated the defect and, worse, had the display reading
-        # the medium's parameters -- which is what happens when a parameter moves
-        # between layers and the old reader is forgotten.
-
-        # Every geometry term must be in this gate.  It tested only `geometry`, so a project with curvature or
-        # a trapezoid set and `geometry_warp` at zero had the distortion silently skipped -- reachable and
-        # inert depending on an unrelated value.
         _geom_on = (self.geometry > 1e-3 or abs(self.curvature) > 1e-6
                     or abs(self.trapezoid_x) > 1e-6 or abs(self.trapezoid_y) > 1e-6)
-        # breathing: a bright picture draws more beam current and the raster grows.  The frame's own mean
-        # drives it, because it is a dynamic fault rather than a setting.
         _breathe = 1.0
         if abs(self.breathing) > 1e-6:
-            # 0.12 puts the parameter's full travel at roughly 7% of raster size, which is what a real
-            # colour tube shows on a dark-to-bright cut.  At 0.02 the expansion was +0.14% to +1.15%,
-            # i.e. one pixel at the edge -- present in the numbers and invisible in the picture.
             _breathe = 1.0 + self.breathing * 0.12 * (float((rgb @ LUMA).mean()) - 0.35)
             _geom_on = True
         if _geom_on:
             rgb = self._warp(rgb, _breathe)
 
-        # --- electron optics: beam defocus, then highlight bloom -----------
+        scale_w = (rgb.shape[1] / 720.0) if rgb.shape[1] > 760 else 1.0
         if self.defocus > 1e-3:
-            rgb = lowpass(rgb, 1.0 + self.defocus * 1.5)
+            rgb = lowpass(rgb, (1.0 + self.defocus * 1.5) * scale_w)
         if self.bloom > 1e-3:
             lum = rgb @ LUMA
             hot = np.clip(lum - 0.72, 0.0, None)
-            halo = lowpass(hot, 3.5 + 8.0 * self.bloom)
+            halo = lowpass(hot, (3.5 + 8.0 * self.bloom) * scale_w)
             peak = float(halo.max())
             if peak > 1e-6:
                 rgb = rgb + (self.bloom * 0.55 / peak) * halo[..., None]
 
-        # --- phosphor / tube response --------------------------------------
         rgb = np.clip(rgb, 0.0, 1.0)
-        # `max(1.0, ...)` was removed here, and **it was not the fault it looked like**.  The claim that it made
-        # half the range dead was wrong: the schema's own minimum for this parameter is **1.5**
-        # (`profiles.py`, `define("gamma", ..., 2.35, 1.5, 3.2)`), so the stage never received a value below 1.5 and
-        # the clamp never bound.  Measured, asking for 0.50 / 0.80 / 1.00 / 1.25 / 1.50 left the stage holding
-        # **1.5** every time, and only 2.20 survived -- the *schema* was raising them.
-        #
-        # The line is still written without a lower clamp, since a guard against division by zero is all it needs and
-        # a clamp that happens to be unreachable is a trap for whoever lowers the minimum next.
         g = max(0.05, float(self.gamma))
         if abs(g - 1.0) > 1e-3:
             np.power(rgb, 1.0 / g, out=rgb)
@@ -422,11 +301,6 @@ class DisplayStage(Stage):
             rgb = lum + (rgb - lum) * sat
         rgb = rgb * self._col_temp
 
-        # --- raster mask, vignette, glass ----------------------------------
-        # The mask's shadow is on the glass, so it goes last -- with the scanlines and the vignette,
-        # which are the other panel artefacts.  It was previously applied *before* the beam defocus,
-        # which is the one filter guaranteed to erase a three-pixel vertical pattern: measured, the
-        # rendered column standard deviation was 0.05700 with the mask and 0.05751 without it.
         mask = self._shadow_mask(rgb.shape[0], rgb.shape[1])
         if mask is not None:
             rgb = rgb * mask
@@ -435,26 +309,10 @@ class DisplayStage(Stage):
         if self._refl is not None:
             rgb = rgb + self._refl
         if self.interlace > 1e-3:
-            # thin bright lines flicker because each field carries only
-            # alternate lines; visible on detail, invisible on flat areas
             sign = 1.0 if int(buf.meta.get("field", 0)) == 0 else -1.0
             hf = highpass(rgb @ LUMA, 1.1)
             rgb = rgb + (self.interlace * 0.05 * sign) * hf[..., None]
 
-        # --- overscan: the raster overfills the tube ----------------------
-        # Geometry matters here, and the obvious implementations are both wrong.
-        #
-        # Cropping the edges and stretching what remains magnifies the picture by
-        # 1/(1-2*overscan) and shifts the outermost rows off the frame -- which
-        # silently erased the head-switching band, because that band lives in
-        # exactly those bottom rows.  Cropping and padding with black instead
-        # buried the band under a 6% black border.
-        #
-        # What a set actually does is adjust the raster so it *overfills* the
-        # screen: the whole picture is enlarged and its outer edges fall off the
-        # tube.  So the picture is scaled up and the frame takes the centre --
-        # the edges are genuinely cut, nothing is stretched back, and no border
-        # appears.
         if self.overscan > 1e-4:
             h, w = rgb.shape[:2]
             scale_up = 1.0 / max(0.5, 1.0 - 2.0 * self.overscan)
@@ -465,8 +323,6 @@ class DisplayStage(Stage):
             x0 = (big_w - w) // 2
             rgb = enlarged[y0:y0 + h, x0:x0 + w]
 
-        # CRT interface moisture: the last junction in the chain, and the only fault
-        # that can move the edges of the raster.
         if self.crt_moisture > 1e-4 or self.crt_corrosion > 1e-4:
             rgb, crt_info = self._apply_crt_moisture(rgb, buf.index)
             meta = dict(buf.meta)

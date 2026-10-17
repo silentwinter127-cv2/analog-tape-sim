@@ -1,0 +1,81 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "name": "COSMAG E-180(PAL/SP/LP) → 夏普A62DT(4磁头) → H96(一级稳定) → M9E(二级稳定) → TC-UB530 → K680E(OBS 32.0 MKV · 258分钟成功段)",
+  "standard": "pal",
+  "seed": 20261017,
+  "fps": 25.0,
+  "params": {
+    "camera": {
+      "sensor_noise": 0.02,
+      "noise_grain": 1.2,
+      "fixed_pattern": 0.0,
+      "sharpness": 0.96,
+      "dynamic_range": 8.5,
+      "halation": 0.12,
+      "halation_source_colour": 0.75,
+      "ccd_smear": 0.0
+    },
+    "format": {
+      "filter_kind": 1.0,
+      "filter_sections": 3.0,
+      "luma_bandwidth": 2.95,
+      "chroma_bandwidth": 0.62,
+      "chroma_vertical_averaging": 0.82,
+      "separation_kind": 2.0,
+      "comb_depth": 0.72,
+      "cross_color": 0.22,
+      "cross_luma": 0.14,
+      "edge_boost": 0.22,
+      "color_noise": 0.16,
+      "chroma_gain": 0.95
+    },
+    "connector": {
+      "av_present": 1.0,
+      "av_moisture": 0.04,
+      "av_corrosion": 0.02,
+      "av_ground_loop": 0.03,
+      "mains_hz": 50.0
+    },
+    "tape": {
+      "tape_speed": 0.0,
+      "sp_lp_mix": 0.42,
+      "tape_stability": 0.68,
+      "line_jitter": 0.22,
+      "walk_amplitude": 0.18,
+      "micro_jitter": 0.08,
+      "row_timebase": 0.08,
+      "wear": 0.24,
+      "dropout_rate": 0.38,
+      "noise_floor": 0.16,
+      "crease_rate": 0.14,
+      "demagnetization": 0.08,
+      "base_cracking": 0.04,
+      "binder_loss": 0.03,
+      "head_switching": 0.78,
+      "head_switch_lines": 6.0,
+      "tracking_error": 0.22
+    },
+    "player": {
+      "tbc_enabled": 1.0,
+      "tbc_strength": 0.92,
+      "tbc_residual": 0.03,
+      "stabilizer_stages": 2.0,
+      "transport_jitter": 0.06,
+      "head_wear": 0.12,
+      "preemphasis": 0.2,
+      "ringing": 0.14,
+      "ringing_freq": 0.5,
+      "luma_bandwidth": 2.9,
+      "chroma_bandwidth": 0.6,
+      "separation_kind": 2.0,
+      "comb_depth": 0.78,
+      "cross_color": 0.18,
+      "cross_luma": 0.12,
+      "color_noise": 0.12
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  }
+}

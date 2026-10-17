@@ -177,7 +177,8 @@ class MPEG1Codec:
         frequency would be arbitrary rather than principled.
         """
         blocks, _gh, _gw = _blocks(plane)
-        step = _quant_step(matrix, self.p.quality)
+        eff_q = float(self.p.quality) * (float(getattr(self.p, 'bitrate_kbps', 1150.0)) / 1150.0)
+        step = _quant_step(matrix, eff_q)
         coeffs = dct2(blocks)
 
         flat = coeffs.reshape(coeffs.shape[:-2] + (64,))
@@ -202,6 +203,15 @@ class MPEG1Codec:
         from .dv import rgb_to_ycbcr, subsample_420, upsample_420, ycbcr_to_rgb
 
         cur = np.clip(np.asarray(rgb, np.float32), 0.0, 1.0)
+        orig_h, orig_w = cur.shape[:2]
+        target_w = int(getattr(self.p, "width", 352) or 352)
+        target_h = int(getattr(self.p, "height", 240) or 240)
+        need_resample = (orig_w > target_w or orig_h > target_h) and (orig_h, orig_w) != (176, 288)
+        if need_resample:
+            from ..stages.display import _resample_to
+            cur = _resample_to(cur, min(orig_h, target_h), min(orig_w, target_w))
+        if self._prev_luma is not None and self._prev_luma.shape != cur.shape[:2]:
+            self._prev_luma = None
         y, cb, cr = rgb_to_ycbcr(cur)
 
         i_frame = self._prev_luma is None
@@ -227,4 +237,7 @@ class MPEG1Codec:
         # reconstructed, not from the original, and predicting from the original
         # would hide the accumulation of error that is the artefact this models.
         self._prev_luma = y_c
+        if need_resample:
+            from ..stages.display import _resample_to
+            out = _resample_to(out, orig_h, orig_w)
         return out
