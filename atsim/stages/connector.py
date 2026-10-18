@@ -1,21 +1,10 @@
 """
-Stage 02c -- the connectors the signal passes through on its way to the recorder.
+Stage 02c -- the connectors and RF / TV-DX broadcast link on the way to the recorder.
 
 Placed after the codec and before the medium, because that is the physical order: the
-source produces a signal, cables and connectors carry it, and the recorder stores whatever
-arrives. Damage here is therefore *recorded* -- it becomes part of the tape, and playing
-that tape back later reproduces it. That distinction is the whole reason this is a separate
-stage rather than more tape parameters: tape damage is the medium decaying, connector damage
-is the infrastructure decaying, and the second is written into the first.
-
-Up to three connectors in series, applied in the order the signal meets them:
-
-    HDMI (digital, to the AV converter)
-      -> AV (composite, to the modulator)
-        -> RF (modulated carrier, to the recorder)
-
-Each is skipped unless it is switched on, and each reports its own electrical state, so a
-preset can say *where* a fault is rather than only how bad the picture looks.
+source produces a signal, cables/connectors or an RF broadcast channel (such as a
+TV-DX atmospheric duct or Es ionospheric skywave link captured on a cheap Taobao TV
+tuner card) carry it, and the recorder/capture chain stores whatever arrives.
 """
 from __future__ import annotations
 
@@ -24,36 +13,39 @@ import numpy as np
 from ..codecs.connectors import (CONNECTORS, degrade_composite, degrade_digital,
                                  degrade_rf, degrade_rf_signal, degrade_svideo,
                                  impedance, reflection_coefficient)
+from ..codecs.rf import RFLink, RFParams
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 from ..core.signal import SignalFrame
 
 
 class ConnectorStage(Stage):
-    """Twelve paragraphs of physics, one stage."""
+    """Physical connectors + pluggable RF / TV-DX broadcast signal chain."""
 
     name = "connector"
-    layers = ("connector",)
+    layers = ("connector", "rf")
 
     def __init__(self, ctx: RenderContext):
         super().__init__(ctx)
-        self.state: dict = {}
+        self._rflink: RFLink | None = None
         self._read_params()
+        self.state: dict = {}
 
     def _read_params(self) -> None:
         c = self.cfg_of("connector")
+        r = self.cfg_of("rf")
 
         def f(key: str, default: float = 0.0) -> float:
             return float(c.get(key, default))
 
-        # which links are present, and their condition
+        def rf_f(key: str, default: float = 0.0) -> float:
+            return float(r.get(key, default))
+
+        # which physical connector links are present, and their condition
         self.hdmi_on = f("hdmi_present", 0.0) > 0.5
         self.av_on = f("av_present", 0.0) > 0.5
         self.rf_on = f("rf_present", 0.0) > 0.5
         self.svideo_on = f("svideo_present", 0.0) > 0.5
-        self.aspect_squeeze = float(np.clip(f("aspect_squeeze", 0.0), 0.0, 1.5))
 
-        # moisture and corrosion are per-connector, because in practice one joint in a
-        # chain is wet and the others are not, and that is what makes a fault locatable
         self.hdmi_moist, self.hdmi_corr = f("hdmi_moisture"), f("hdmi_corrosion")
         self.av_moist, self.av_corr = f("av_moisture"), f("av_corrosion")
         self.rf_moist, self.rf_corr = f("rf_moisture"), f("rf_corrosion")
@@ -64,8 +56,49 @@ class ConnectorStage(Stage):
         self.shield = float(np.clip(f("rf_shielding", 0.0), 0.0, 1.0))
         self.leakage = f("svideo_leakage")
 
+        # RF / TV-DX broadcast link parameters
+        self.rf_link_on = rf_f("enabled", 0.0) > 0.5
+        self.rf_params = RFParams(
+            enabled=rf_f("enabled", 0.0),
+            channel_mhz=rf_f("channel_mhz", 6.0),
+            carrier_offset_mhz=rf_f("carrier_offset_mhz", 1.25),
+            noise_figure_db=rf_f("noise_figure_db", 8.0),
+            signal_dbm=rf_f("signal_dbm", -60.0),
+            sync_loss_threshold_db=rf_f("sync_loss_threshold_db", 30.0),
+            sync_loss_amount=rf_f("sync_loss_amount", 1.0),
+            adjacent_channel=rf_f("adjacent_channel", 0.0),
+            broadcast_noise=rf_f("broadcast_noise", 0.0),
+            tv_standard=rf_f("tv_standard", 0.0),
+            propagation_mode=rf_f("propagation_mode", 0.0),
+            distance_km=rf_f("distance_km", 45.0),
+            dx_duct_gain_db=rf_f("dx_duct_gain_db", 24.0),
+            qsb_depth_db=rf_f("qsb_depth_db", 0.0),
+            qsb_rate_hz=rf_f("qsb_rate_hz", 0.25),
+            multipath_level=rf_f("multipath_level", 0.0),
+            multipath_delay_us=rf_f("multipath_delay_us", 0.85),
+            multipath_phase_deg=rf_f("multipath_phase_deg", 35.0),
+            cochannel_interference=rf_f("cochannel_interference", 0.0),
+            cochannel_offset_khz=rf_f("cochannel_offset_khz", 10.05),
+            tuner_type=rf_f("tuner_type", 0.0),
+            tuning_offset_khz=rf_f("tuning_offset_khz", 0.0),
+            front_end_overload=rf_f("front_end_overload", 0.0),
+            color_killer_threshold_db=rf_f("color_killer_threshold_db", 18.0),
+        )
+        if self._rflink is None:
+            self._rflink = RFLink(self.ctx.std, self.rf_params, seed=self.ctx.seed)
+        else:
+            self._rflink.p = self.rf_params
+            self._rflink.tx_node.p = self.rf_params
+            self._rflink.channel_node.p = self.rf_params
+            self._rflink.frontend_node.p = self.rf_params
+            self._rflink.demod_node.p = self.rf_params
+
     def on_params_changed(self) -> None:
         self._read_params()
+
+    def prepare(self) -> None:
+        if self._rflink is not None:
+            self._rflink.reset()
 
     # ------------------------------------------------------------------
     def _stats(self, spec, moisture: float, corrosion: float) -> dict:
@@ -73,42 +106,8 @@ class ConnectorStage(Stage):
         return {"impedance_ohm": round(z, 1),
                 "reflection": round(abs(reflection_coefficient(spec.nominal_z, z)), 4)}
 
-    @staticmethod
-    def _apply_aspect_squeeze(rgb: np.ndarray, squeeze: float) -> tuple[np.ndarray, dict]:
-        """
-        Double horizontal aspect-ratio compression (`16:9 STB -> 4:3 VCR`: `x_scale = (3/4)^squeeze`).
-        """
-        s = float(np.clip(squeeze, 0.0, 1.5))
-        if s <= 1e-4:
-            return rgb, {}
-        h, w = rgb.shape[:2]
-        ratio = float(0.75 ** s)
-        active_w = max(4.0, w * ratio)
-        pad_left = 0.5 * (w - active_w)
-        cols = np.arange(w, dtype=np.float32)
-        src_x = (cols - pad_left) / max(1e-6, ratio)
-        src_c = np.clip(src_x, 0.0, w - 1.001)
-        x0 = np.floor(src_c).astype(np.int32)
-        x1 = np.minimum(x0 + 1, w - 1)
-        fx = (src_c - x0)[None, :, None].astype(np.float32)
-        squeezed = rgb[:, x0] * (1.0 - fx) + rgb[:, x1] * fx
-
-        # Smooth 1.8-pixel analog blanking transition at the left and right pillarbox boundaries
-        scale_w = w / 720.0
-        edge_px = max(0.8, 1.8 * scale_w)
-        gate_l = np.clip((cols - pad_left) / edge_px, 0.0, 1.0)
-        gate_r = np.clip(((w - pad_left) - cols) / edge_px, 0.0, 1.0)
-        gate = (gate_l * gate_r)[None, :, None].astype(np.float32)
-        pedestal = np.full_like(squeezed, 0.018)
-        out = squeezed * gate + pedestal * (1.0 - gate)
-        return out.astype(np.float32), {
-            "aspect_squeeze": round(s, 3),
-            "width_ratio": round(ratio, 4),
-            "pillarbox_px": int(round(pad_left)),
-        }
-
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
-        active = self.hdmi_on or self.av_on or self.svideo_on or self.rf_on or (self.aspect_squeeze > 1e-4)
+        active = self.hdmi_on or self.av_on or self.svideo_on or self.rf_on or self.rf_link_on
         if not active:
             return buf
 
@@ -118,14 +117,7 @@ class ConnectorStage(Stage):
         comp = buf.composite
         sig: SignalFrame | None = meta.get("signal")
 
-        # ---- 0. STB 16:9 -> HDMI-AV -> 4:3 VCR horizontal aspect-ratio compression
-        if self.aspect_squeeze > 1e-4:
-            from ..core.signal import composite_encode
-            base_in = sig.to_rgb() if sig is not None else np.clip(rgb, 0.0, 1.0).astype(np.float32)
-            rgb, sq_info = self._apply_aspect_squeeze(base_in, self.aspect_squeeze)
-            report["aspect"] = sq_info
-            sig = SignalFrame.from_rgb(rgb, buf.std)
-            comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+        from ..core.signal import composite_encode, demod_chroma, split_composite
 
         # ---- 1. HDMI: digital, and the only one that can drop the link entirely
         if self.hdmi_on:
@@ -153,7 +145,6 @@ class ConnectorStage(Stage):
         if self.av_on:
             spec = CONNECTORS["av"]
             if sig is not None:
-                from ..core.signal import composite_encode
                 comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
             if comp is not None:
                 comp, info = degrade_composite(comp, spec, self.av_moist, self.av_corr,
@@ -161,15 +152,50 @@ class ConnectorStage(Stage):
                                                buf.index)
                 report["av"] = info
 
-        from ..core.signal import composite_encode, demod_chroma, split_composite
-
-        if comp is not None and self.av_on and not self.rf_on:
+        if comp is not None and self.av_on and not self.rf_on and not self.rf_link_on:
             y, chroma = split_composite(comp, buf.std, comb_depth=0.0,
                                         chroma_bandwidth_hz=0.9e6)
             i, q = demod_chroma(chroma / 0.63, buf.std, i_bw_hz=1.2e6, q_bw_hz=1.2e6)
             sig = SignalFrame(y, i, q)
 
-        # ---- 4. RF: the modulated carrier (HDMI -> AV -> RF -> HDMI loop or VHF CATV -> VCR)
+        # ---- 4. Radio / TV-DX Broadcast RF Link (Modulator -> Channel -> Tuner -> Demod)
+        if self.rf_link_on and self._rflink is not None:
+            if sig is None:
+                sig = SignalFrame.from_rgb(np.clip(rgb, 0.0, 1.0), buf.std)
+            if comp is None or self.hdmi_on or self.svideo_on:
+                comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+
+            rng_rf = np.random.default_rng((int(self.ctx.seed) * 8191 + int(buf.index) * 131) & 0xFFFFFFFF)
+            base_comp, rf_info = self._rflink.apply(comp, int(buf.index), rng_rf)
+
+            window = float(np.clip(
+                float(self.ctx.layer("format").get("chroma_bandwidth", 0.75)) * 1.15e6,
+                0.35e6, 1.2e6))
+            y_rf, chroma_rf = split_composite(base_comp, buf.std, comb_depth=0.0,
+                                              chroma_bandwidth_hz=window)
+            i_rf, q_rf = demod_chroma(chroma_rf / 0.63, buf.std, i_bw_hz=1.5e6, q_bw_hz=1.5e6)
+
+            ph = self._rflink.chroma_phase_error()
+            if ph is not None:
+                ph_arr = np.asarray(ph, dtype=np.float32).reshape(-1, 1)
+                c_p, s_p = np.cos(ph_arr), np.sin(ph_arr)
+                i_rf, q_rf = i_rf * c_p - q_rf * s_p, i_rf * s_p + q_rf * c_p
+
+            ck_gain = self._rflink.color_killer_gain()
+            if ck_gain < 0.999:
+                i_rf = i_rf * ck_gain
+                q_rf = q_rf * ck_gain
+
+            sig = SignalFrame(y_rf.astype(np.float32),
+                              i_rf.astype(np.float32),
+                              q_rf.astype(np.float32))
+            comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+            rgb = np.clip(sig.to_rgb(), 0.0, 1.0).astype(np.float32)
+            report["rf_link"] = rf_info
+            meta["rf"] = rf_info
+            self.state["rf_link"] = rf_info
+
+        # ---- 5. Physical RF Coaxial Connector Degradation (damp/corroded joint)
         if self.rf_on:
             spec = CONNECTORS["rf"]
             base_rgb = sig.to_rgb() if sig is not None else np.clip(rgb, 0.0, 1.0)
@@ -179,9 +205,8 @@ class ConnectorStage(Stage):
             sig = SignalFrame.from_rgb(rgb_rf, buf.std)
             rgb = rgb_rf
             comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
-            if self.rf_moist > 0.08 or self.rf_corr > 0.08:
-                sig._rf_direct = True
-        elif self.hdmi_on or self.svideo_on:
+            sig._rf_direct = True
+        elif (self.hdmi_on or self.svideo_on) and not self.rf_link_on:
             sig = SignalFrame.from_rgb(np.clip(rgb, 0.0, 1.0), buf.std)
 
         if sig is not None:

@@ -1,0 +1,78 @@
+{
+  "kind": "atsim.config",
+  "version": 1,
+  "exported": "2026-10-18T20:15:00",
+  "name": "SONY DCR-TRV310E 实拍光条与 W-T 光学变焦配置",
+  "standard": "ntsc",
+  "seed": 20240101,
+  "fps": 29.97,
+  "params": {
+    "camera": {
+      "nv_mode": 0.0,
+      "nv_nir_material": 0.0,
+      "nv_nir_depth": 0.0,
+      "exposure": 0.12,
+      "white_balance_temp": 0.18,
+      "dynamic_range": 6.8,
+      "sharpness": 1.38,
+      "ccd_smear": 0.62,
+      "halation": 0.58,
+      "halation_source_colour": 0.78,
+      "overflow_drain": 0.34,
+      "overflow_width": 2.0,
+      "bloom_amount": 0.42,
+      "bloom_threshold": 0.78,
+      "ccd_gain": 0.55,
+      "sensor_noise": 0.18,
+      "color_cast": 0.45,
+      "highlight_tint": 0.35,
+      "chroma_aberration": 0.42,
+      "longitudinal_ca": 0.38,
+      "coma": 0.48,
+      "axis_offset": 0.18,
+      "spherical_aberration": 0.28,
+      "source_glow": 0.012,
+      "lens_flare": 0.36,
+      "flare_blades": 6.0,
+      "spike_spread": 0.65,
+      "flare_defocus": 0.52,
+      "light_streak_amount": 0.78,
+      "light_streak_angle": -12.0,
+      "light_streak_length": 0.68,
+      "wt_zoom": 0.65,
+      "wt_max_zoom": 4.0,
+      "zoom_center_x": 0.608,
+      "zoom_center_y": 0.248,
+      "zoom_dynamic_mode": 0.0,
+      "zoom_speed": 0.68,
+      "zoom_resolve_detail": 0.95,
+      "zoom_osd": 1.0,
+      "shake_intensity": 0.12
+    },
+    "format": {
+      "luma_bandwidth": 4.2,
+      "chroma_bandwidth": 1.1,
+      "edge_boost": 0.35,
+      "color_noise": 0.14,
+      "chroma_gain": 1.12
+    },
+    "codec": {
+      "dv_enabled": 1.0,
+      "dv_quality": 0.92,
+      "dv_chroma_mode": 0.0
+    },
+    "tape": {
+      "tape_stability": 0.88,
+      "line_jitter": 0.08,
+      "dropout_rate": 0.02,
+      "noise_floor": 0.05
+    },
+    "player": {
+      "tbc_enabled": 1.0,
+      "tbc_strength": 0.92
+    },
+    "display": {
+      "enabled": 0.0
+    }
+  }
+}

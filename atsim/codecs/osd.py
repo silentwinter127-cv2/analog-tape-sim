@@ -84,6 +84,28 @@ class OSDPlan:
     #: bitmap-derived and a character generator's ROM is one bit per pixel -- there is no antialiasing
     #: anywhere in the apparatus, and smoothing the glyphs removes the reason to use these fonts.
     hard_edges: bool = True
+    #: analog keyer rise-time / optical title lens softness (0 = 1-bit ROM step edge, >0 = continuous analog/optical edge)
+    edge_softness: float = 0.0
+    #: optical title halation / CRT highlight bloom around bright glyphs (0..1)
+    glow: float = 0.0
+    #: 1980s broadcast hardware character-generator 3D relief / emboss bevel (0..1)
+    bevel: float = 0.0
+    #: subtitle animation mode:
+    #:   0 = static (no animation)
+    #:   1 = typewriter character-by-character reveal (逐字打字机显字)
+    #:   2 = line-by-line sequential reveal (逐行顺序切入)
+    #:   3 = horizontal raster wipe reveal (水平光栅扫描擦除)
+    #:   4 = venetian-blind interlace reveal (百叶窗隔行扫描显字)
+    #:   5 = vertical credit roll / crawl (垂直滚屏字幕)
+    #:   6 = optical dissolve fade-in/out (光学叠化淡入淡出)
+    #:   7 = horizontal slide-in to rest (横向推拉飞入定格)
+    anim_mode: int = 0
+    #: animation playback speed multiplier
+    anim_speed: float = 1.0
+    #: duration in seconds for the entrance animation to complete
+    anim_in_s: float = 1.2
+    #: optional cycle period in seconds (0 = play once and hold; >0 = periodic cycle)
+    anim_cycle_s: float = 0.0
 
 
 class CharacterGenerator:
@@ -174,11 +196,17 @@ class CharacterGenerator:
         cw = half * 2 if is_full_width(ch) else half
         plan_iter = self.plan.italic
         sx, sy = self._eff_stretch()
+        sw = float(getattr(self.spec, "stroke_weight", 0.0))
+        sf = float(getattr(self.spec, "serif_flare", 0.0))
+        rg = int(getattr(self.spec, "rom_grid", 0))
+        es = float(getattr(self.plan, "edge_softness", 0.0))
+        he = bool(self.plan.hard_edges)
         # **The transform belongs in the key.**  Without it the first glyph rendered at a given cell size is
         # returned for every later shear and stretch -- which is why the rendered italic measurement showed both
         # signs leaning the same way while the same shear applied to a plain mask was correctly signed.
-        key = "%s|%d|%d|%.4f|%.4f|%.4f" % (ch, cw, cell_h, float(plan_iter),
-                                           float(sx), float(sy))
+        key = "%s|%d|%d|%.4f|%.4f|%.4f|%.3f|%.3f|%d|%.3f|%d" % (
+            ch, cw, cell_h, float(plan_iter), float(sx), float(sy),
+            sw, sf, rg, es, int(he))
         got = self._cache.get(key)
         if got is not None:
             return got if got.size else None
@@ -197,6 +225,34 @@ class CharacterGenerator:
                 pass
         a = np.asarray(big, np.float32) / 255.0
         small = a[1:1 + cell_h, 1:1 + cw]
+
+        # --- Typeface optical phototypesetting / stroke-weight & serif flare morphology ---
+        if abs(sw) > 1e-3 or sf > 1e-3:
+            from scipy.ndimage import gaussian_filter, maximum_filter, minimum_filter
+            if sw > 1e-3:
+                dil = maximum_filter(small, size=(2, 2))
+                small = np.clip(small + sw * 0.85 * (dil - small), 0.0, 1.0)
+            elif sw < -1e-3:
+                ero = minimum_filter(small, size=(2, 2))
+                small = np.clip(small + (-sw) * 0.65 * (ero - small), 0.0, 1.0)
+            if sf > 1e-3:
+                # Horizontal serif / terminal wedge flare characteristic of 1980s BiaoSong & WeiBei title cards
+                h_flare = maximum_filter(small, size=(1, 3))
+                v_edge = np.abs(small - gaussian_filter(small, sigma=(1.2, 0.4)))
+                small = np.clip(small + sf * 0.65 * (h_flare - small) * np.clip(v_edge * 2.5, 0.25, 1.0), 0.0, 1.0)
+
+        # --- Hardware dot-matrix ROM quantization (e.g., 24x24 Chinese character card ROM) ---
+        if rg > 0 and small.shape[0] > 4 and small.shape[1] > 4:
+            gh0, gw0 = small.shape
+            gy = max(8, int(rg))
+            gx = max(4, int(rg if is_full_width(ch) else max(4, rg // 2)))
+            yi_q = np.clip(np.floor(np.arange(gy, dtype=np.float32) * gh0 / gy).astype(np.int32), 0, gh0 - 1)
+            xi_q = np.clip(np.floor(np.arange(gx, dtype=np.float32) * gw0 / gx).astype(np.int32), 0, gw0 - 1)
+            rom_cell = (small[yi_q][:, xi_q] >= 0.46).astype(np.float32)
+            yo_q = np.clip(np.floor(np.arange(gh0, dtype=np.float32) * gy / gh0).astype(np.int32), 0, gy - 1)
+            xo_q = np.clip(np.floor(np.arange(gw0, dtype=np.float32) * gx / gw0).astype(np.int32), 0, gx - 1)
+            small = rom_cell[yo_q][:, xo_q]
+
         # **Scale first, shear second**, and both by re-indexing the mask.
         if abs(sx - 1.0) > 1e-3 or abs(sy - 1.0) > 1e-3:
             hh, ww = small.shape
@@ -229,7 +285,15 @@ class CharacterGenerator:
             self._shear_pad = pad
         else:
             self._shear_pad = 0
-        if self.plan.hard_edges:
+        if es > 1e-3:
+            # Analog downstream keyer rise-time / optical title lens softness:
+            # sharp binary core softened along the scanline (horizontal rise/fall time) and optical PSF
+            from scipy.ndimage import gaussian_filter
+            core_b = np.clip((small - 0.25) / 0.50, 0.0, 1.0).astype(np.float32)
+            sig_y = 0.25 + 0.85 * es
+            sig_x = 0.45 + 1.45 * es
+            small = np.clip(gaussian_filter(core_b, sigma=(sig_y, sig_x)) * 1.08, 0.0, 1.0).astype(np.float32)
+        elif self.plan.hard_edges:
             small = (small >= 0.5).astype(np.float32)
         self._cache[key] = small
         return small if small.size else None
@@ -238,18 +302,22 @@ class CharacterGenerator:
         return sorted({c for c in text if c not in "\r\n\t" and not self.spec.can_draw(c)})
 
     # ------------------------------------------------------------------ drawing
-    def draw(self, rgb: np.ndarray) -> tuple[np.ndarray, dict]:
-        out, reported, _mask = self.draw_with_mask(rgb)
+    def draw(self, rgb: np.ndarray, time_s: float = 0.0, frame_index: int = 0,
+             fps: float = 30.0) -> tuple[np.ndarray, dict]:
+        out, reported, _mask = self.draw_with_mask(rgb, time_s=time_s,
+                                                   frame_index=frame_index, fps=fps)
         return out, reported
 
-    def draw_with_mask(self, rgb: np.ndarray) -> tuple[np.ndarray, dict, np.ndarray]:
+    def draw_with_mask(self, rgb: np.ndarray, time_s: float = 0.0,
+                       frame_index: int = 0, fps: float = 30.0
+                       ) -> tuple[np.ndarray, dict, np.ndarray]:
         """
         Draw the character generator overlay onto `rgb`, returning `(out_rgb, reported, changed_mask)`.
 
         `changed_mask` is a float32 `(H, W)` weight in `0..1` marking every pixel modified by the
-        character generator (glyphs, outline, shadow, or background box).  This lets the pre-tape
-        slot (`overlay.at == 1`) composite the generator's output onto the existing signal & carrier
-        *only where the generator actually drew*, leaving the rest of the frame's encoded signal
+        character generator (glyphs, outline, shadow, bevel, glow, or background box).  This lets the
+        pre-tape slot (`overlay.at == 1`) composite the generator's output onto the existing signal &
+        carrier *only where the generator actually drew*, leaving the rest of the frame's encoded signal
         untouched.
         """
         out = rgb
@@ -257,11 +325,25 @@ class CharacterGenerator:
         half, cell_h = self.cell()
         h, w = rgb.shape[:2]
         zero_mask = np.zeros((h, w), np.float32)
+        amode = int(np.clip(round(float(getattr(plan, "anim_mode", 0))), 0, 7))
         reported: dict = {"drawn": 0, "missing": [], "lines": len(plan.lines),
                           "cell": [half, cell_h], "font": self.font_key,
-                          "halign": plan.halign, "valign": plan.valign}
+                          "halign": plan.halign, "valign": plan.valign,
+                          "anim_mode": amode}
         if not plan.lines or plan.opacity <= 1e-3:
             return out, reported, zero_mask
+
+        # --- Physical subtitle animation timing envelope ---
+        anim_speed = max(0.1, float(getattr(plan, "anim_speed", 1.0)))
+        anim_in = max(0.08, float(getattr(plan, "anim_in_s", 1.2)))
+        anim_cycle = float(getattr(plan, "anim_cycle_s", 0.0))
+        eff_t = max(0.0, float(time_s)) * anim_speed
+        if anim_cycle > 0.15:
+            eff_t = eff_t % anim_cycle
+        # Lead offset `0.22 * anim_in` so frame 0 (t=0.0s) already displays the initial animation state
+        # rather than an empty frame, and advances monotonically to 1.0 across `t = 0 .. anim_in`.
+        prog = float(np.clip((eff_t + 0.22 * anim_in) / anim_in, 0.0, 1.0)) if amode > 0 else 1.0
+        reported["anim_progress"] = round(prog, 4)
 
         layer = np.zeros((h, w), np.float32)
         missing: set[str] = set()
@@ -279,11 +361,42 @@ class CharacterGenerator:
             y0_block = plan.margin_y
         usable_w = max(0, w - 2 * plan.margin_x)
 
+        # Mode 5: Vertical credit roll / crawl (垂直滚屏字幕)
+        scroll_dy = 0
+        if amode == 5:
+            span_y = usable_h + block_h
+            # At prog=0.22 starts in lower third; scrolls smoothly upward as time advances
+            scroll_frac = ((eff_t / max(0.2, anim_in * 1.5)) + 0.35) % 1.0
+            y0_target = int(round((usable_h + plan.margin_y) - scroll_frac * span_y))
+            scroll_dy = y0_target - y0_block
+
+        # Mode 7: Horizontal slide-in to rest (横向推拉飞入定格)
+        slide_dx = 0
+        if amode == 7:
+            ease_out = 1.0 - (1.0 - prog) ** 3
+            slide_dx = -int(round((1.0 - ease_out) * max(24.0, w * 0.42)))
+
+        total_chars = max(1, sum(len([c for c in (ln.text or "") if c not in "\r\n\t "]) for ln in plan.lines))
+        char_Budget = prog * total_chars if amode == 1 else float(total_chars)
+        non_space_idx = 0
+
         drawn_cells = 0
         ink_rows = [h, 0]
         ink_cols = [w, 0]
-        for line in plan.lines:
-            y = y0_block + line.row * (pitch + plan.gap)
+        for line_idx, line in enumerate(plan.lines):
+            # Mode 2: Line-by-line sequential reveal (逐行顺序切入)
+            line_alpha = 1.0
+            line_dx = 0
+            if amode == 2:
+                l_start = line_idx / float(n_lines)
+                l_span = 1.0 / float(n_lines)
+                l_prog = float(np.clip((prog - l_start) / max(1e-4, l_span), 0.0, 1.0))
+                if l_prog <= 1e-4:
+                    continue
+                line_alpha = l_prog
+                line_dx = -int(round((1.0 - l_prog) * max(4.0, cell_h * 0.45)))
+
+            y = y0_block + line.row * (pitch + plan.gap) + scroll_dy
             if y >= h or y + cell_h < 0:
                 continue
             line_w = self.line_pixels(line.text or "")
@@ -293,12 +406,26 @@ class CharacterGenerator:
                 x = plan.margin_x + max(0, usable_w - line_w)
             else:
                 x = plan.margin_x
-            x += max(0, line.col) * self.adv(False)
+            x += max(0, line.col) * self.adv(False) + slide_dx + line_dx
             for ch in (line.text or ""):
                 full = is_full_width(ch)
                 cw = self.adv(full)
+                is_space = ch in " \t"
+                char_weight = line_alpha
+                if amode == 1 and not is_space:
+                    # Mode 1: Hardware character-generator typewriter step reveal
+                    rem = char_Budget - non_space_idx
+                    non_space_idx += 1
+                    if rem <= 0.0:
+                        x += cw
+                        continue
+                    char_weight *= float(np.clip(rem * 2.5, 0.0, 1.0))
+
                 if x >= w:
                     break
+                if x + cw < 0:
+                    x += cw
+                    continue
                 g = self._glyph(ch, cell_h)
                 if g is None or not self.spec.can_draw(ch):
                     missing.add(ch)
@@ -310,7 +437,7 @@ class CharacterGenerator:
                 y0, x0 = max(0, y), max(0, x_draw)
                 y1, x1 = min(h, y + gh), min(w, x_draw + gw)
                 if y1 > y0 and x1 > x0:
-                    sub = g[y0 - y:y1 - y, x0 - x_draw:x1 - x_draw]
+                    sub = g[y0 - y:y1 - y, x0 - x_draw:x1 - x_draw] * char_weight
                     dest = layer[y0:y1, x0:x1]
                     np.maximum(dest, sub, out=dest)
                     reported["drawn"] += 1
@@ -332,7 +459,36 @@ class CharacterGenerator:
         if reported["drawn"] == 0:
             return out, reported, zero_mask
 
+        # --- Spatial/Optical Animation Masks (Modes 3, 4, 6) ---
+        if amode == 3 and ink_cols[1] > ink_cols[0]:
+            # Mode 3: Horizontal raster scanline wipe (水平光栅扫描擦除)
+            span_w = max(1, ink_cols[1] - ink_cols[0])
+            wipe_x = ink_cols[0] + prog * (span_w + max(4.0, cell_h * 0.4))
+            soft_w = max(2.0, cell_h * 0.25)
+            xs_grid = np.arange(w, dtype=np.float32)[None, :]
+            wipe_mask = np.clip((wipe_x - xs_grid) / soft_w, 0.0, 1.0)
+            layer = layer * wipe_mask
+        elif amode == 4 and ink_rows[1] > ink_rows[0]:
+            # Mode 4: Venetian-blind interlace scanline reveal (百叶窗隔行扫描显字)
+            slat_h = max(2, int(round(cell_h / 4.0)))
+            ys_grid = np.arange(h, dtype=np.float32)[:, None]
+            slat_phase = np.mod(ys_grid - ink_rows[0], float(slat_h)) / float(slat_h)
+            blind_mask = np.clip((prog * 1.15 - slat_phase) * 5.0, 0.0, 1.0)
+            layer = layer * blind_mask
+
         op = float(np.clip(plan.opacity, 0.0, 1.0))
+        if amode == 6:
+            # Mode 6: Optical printer cross-dissolve fade-in / hold / fade-out
+            if anim_cycle > 0.2:
+                cyc_p = eff_t / anim_cycle
+                fade_in = np.clip((cyc_p + 0.06) / 0.28, 0.0, 1.0)
+                fade_out = np.clip((0.96 - cyc_p) / 0.22, 0.0, 1.0)
+                op *= float(fade_in * fade_out)
+            else:
+                # Smooth S-curve optical fade-in
+                s_p = prog * prog * (3.0 - 2.0 * prog)
+                op *= float(s_p)
+
         a = layer * op
         base = out.astype(np.float32, copy=True)
         changed = a.copy()
@@ -348,6 +504,21 @@ class CharacterGenerator:
                 box = base[r0:r1, c0:c1]
                 base[r0:r1, c0:c1] = box + (bg[None, None, :] - box) * op
                 changed[r0:r1, c0:c1] = np.maximum(changed[r0:r1, c0:c1], op)
+
+        # --- Optical Title Glow / Halation (光学叠印辉光/荧光漫射) ---
+        glow_amt = float(np.clip(getattr(plan, "glow", 0.0), 0.0, 1.5))
+        if glow_amt > 1e-3:
+            from scipy.ndimage import gaussian_filter
+            sig_g1 = max(1.2, cell_h * 0.14)
+            sig_g2 = max(2.8, cell_h * 0.36)
+            halo = 0.65 * gaussian_filter(a, sigma=(sig_g1 * 0.8, sig_g1 * 1.25)) + \
+                   0.45 * gaussian_filter(a, sigma=(sig_g2 * 0.85, sig_g2 * 1.35))
+            halo = np.clip(halo * glow_amt * 0.85, 0.0, 1.0)
+            col_arr = np.asarray(plan.colour, np.float32)
+            # Warm optical title halation tint carrying the glyph's own color
+            glow_tint = np.clip(col_arr * 0.82 + np.array([0.22, 0.14, 0.04], np.float32), 0.0, 1.15)
+            base = np.clip(base + halo[..., None] * glow_tint[None, None, :], 0.0, 1.0)
+            np.maximum(changed, np.clip(halo * 0.85, 0.0, 1.0), out=changed)
 
         if plan.shadow > 1e-3:
             ox = int(plan.shadow_x) if plan.shadow_x else max(1, cell_h // 12)
@@ -380,7 +551,25 @@ class CharacterGenerator:
             np.maximum(changed, np.clip(border, 0.0, 1.0), out=changed)
 
         col = np.array(plan.colour, np.float32)
-        out = base * (1.0 - a[..., None]) + col[None, None, :] * a[..., None]
+        fill_rgb = np.broadcast_to(col[None, None, :], base.shape).copy()
+
+        # --- 1980s Hardware Character Generator 3D Bevel / Relief (立体浮雕切角) ---
+        bevel_amt = float(np.clip(getattr(plan, "bevel", 0.0), 0.0, 1.0))
+        if bevel_amt > 1e-3:
+            b_step = max(1, cell_h // 18)
+            a_tl = np.zeros_like(a)
+            a_br = np.zeros_like(a)
+            a_tl[b_step:, b_step:] = a[:-b_step, :-b_step]
+            a_br[:-b_step, :-b_step] = a[b_step:, b_step:]
+            hi_rim = np.clip(a - a_tl, 0.0, 1.0) * a
+            lo_rim = np.clip(a - a_br, 0.0, 1.0) * a
+            spec_col = np.clip(col + np.array([0.28, 0.26, 0.22], np.float32), 0.0, 1.0)
+            shade_col = col * 0.42
+            fill_rgb = (fill_rgb
+                        + (spec_col[None, None, :] - fill_rgb) * (hi_rim[..., None] * bevel_amt * 0.85)
+                        + (shade_col[None, None, :] - fill_rgb) * (lo_rim[..., None] * bevel_amt * 0.80))
+
+        out = base * (1.0 - a[..., None]) + fill_rgb * a[..., None]
 
         COEF = np.array([0.299, 0.587, 0.114], np.float32)
         text_luma = float(np.asarray(plan.colour, np.float32) @ COEF)
@@ -401,7 +590,11 @@ class CharacterGenerator:
             reported["behind_luma"] = None
             reported["contrast"] = None
             reported["legible"] = None
-        return out.astype(np.float32), reported, np.clip(changed > 1e-4, 0.0, 1.0).astype(np.float32)
+        if float(getattr(plan, "edge_softness", 0.0)) > 1e-3 or glow_amt > 1e-3 or (amode > 0 and prog < 0.999):
+            mask_out = np.clip(changed, 0.0, 1.0).astype(np.float32)
+        else:
+            mask_out = np.clip(changed > 1e-4, 0.0, 1.0).astype(np.float32)
+        return out.astype(np.float32), reported, mask_out
 
 
 def parse_lines(spec) -> list[OSDLine]:

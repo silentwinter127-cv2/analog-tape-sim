@@ -459,3 +459,25 @@ button.kfNav:hover { color: #ffd166; border-color: #ffd166; }
   font-family: var(--mono);
   font-size: 11px;
 }
+
+.wtBar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 14px; border-top: 1px solid var(--line); background: #141210;
+  font-size: 12px;
+}
+.wtBar .wt-title {
+  color: var(--accent); font-weight: 600; letter-spacing: 0.3px; white-space: nowrap;
+}
+.wtBar .wt-btn {
+  padding: 3px 10px; font-size: 11px; font-weight: 600; user-select: none;
+}
+.wtBar .wt-btn:active {
+  background: var(--accent); color: #15120e; border-color: var(--accent);
+}
+.wtBar input[type=range] {
+  flex: 1; accent-color: var(--accent); min-width: 110px;
+}
+.wtBar .wt-badge {
+  padding: 2px 8px; border-radius: 3px; background: #1e1b17;
+  border: 1px solid var(--line); color: #e8a33d; font-size: 11px; white-space: nowrap;
+}

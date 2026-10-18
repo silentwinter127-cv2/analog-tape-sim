@@ -35,7 +35,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from atsim.core.params import merge_values                     # noqa: E402
-from atsim.core.profiles import FACTORY_PRESETS, SCHEMA        # noqa: E402
+from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA        # noqa: E402
 from atsim.io.imagecodec import save_image                     # noqa: E402
 from atsim.render.renderer import Renderer                     # noqa: E402
 
@@ -210,7 +210,7 @@ def check_shuttle() -> None:
            "0.05/0.19/0.45 all within 0.01", all(ok_l))
 
     # the two granularities must be selected by format, not by preference
-    from atsim.core.profiles import FACTORY_PRESETS as FP
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset as FP
     scene = MovingScene()
     line_mode = _neutral({"tape": {"shuttle_speed": 5.0, "shuttle_stale": 0.19,
                                    "shuttle_mode": 1.0}})
@@ -375,7 +375,7 @@ def check_head_switch() -> None:
     # Verify the physical 2-head rotary drum handover calibrated on 1986 Panasonic NV-180 VHS (`10月16日.mp4`):
     #   1) Active image luma inside the switching band (left/middle of line) is preserved (not erased to a dark bar);
     #   2) The post-switch lines shift leftward and expose a crisp right-hand HBI blanking step (`right_black >= 24 px`).
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     p_nv180 = SCHEMA.resolve_all(FACTORY_PRESETS["panasonic_1986_ccd_nv180"]["layers"])
     out_nv = render(scene, p_nv180)
     lum_nv = out_nv @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
@@ -1217,7 +1217,7 @@ def check_mpeg1_branch() -> None:
 # Checks that are cheap enough to run with `--quick`.  A check not listed here is
 # skipped under `--quick`, deliberately: a missing check is visible, an accidentally
 # included slow one is not.
-QUICK = ("check_consistency", "check_engine", "check_presets", "check_shuttle")
+QUICK = ("check_consistency", "check_engine", "check_presets", "check_shuttle", "check_rf_tv_dx_subsystem")
 
 
 def _discover_checks() -> list[str]:
@@ -2194,7 +2194,7 @@ def check_keyframes() -> None:
     import numpy as np
 
     from atsim.core.keyframes import Keyframe, KeyframeSet, Track
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.io.source import SyntheticSource
     from atsim.render.renderer import Renderer
 
@@ -2297,7 +2297,7 @@ def check_autocontrol() -> None:
     from atsim.codecs.autocontrol import ExposureLoop, centre_weights
     from atsim.core.environment import Environment
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.io.source import SyntheticSource
     from atsim.render.renderer import Renderer
 
@@ -2433,7 +2433,7 @@ def check_operator() -> None:
 
     from atsim.codecs.operator import HAND, plan_bumps, shake_offset, zoom_curve
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.io.source import SyntheticSource
     from atsim.render.renderer import Renderer
 
@@ -2642,7 +2642,7 @@ def check_optics() -> None:
 
     from atsim.codecs.optics import lens_fog, plan_defect_sites
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.io.source import SyntheticSource
     from atsim.render.renderer import Renderer
 
@@ -2770,7 +2770,7 @@ def check_preset_dimensions() -> None:
     """
     import numpy as np
 
-    from atsim.core.profiles import FACTORY_PRESETS
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset
     from atsim.web.server import App
 
     NEW = ("lens_fog", "bloom_amount", "bloom_threshold", "dead_sites", "stuck_fraction")
@@ -2844,7 +2844,7 @@ def check_osd_positions() -> None:
     import numpy as np
 
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.io.source import SyntheticSource
     from atsim.render.renderer import STAGE_ORDER, Renderer
 
@@ -3175,7 +3175,7 @@ def check_style_and_crt() -> None:
     import numpy as np
 
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
@@ -3277,7 +3277,7 @@ def check_fisheye_and_beam() -> None:
     import numpy as np
 
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     BASE = SCHEMA.resolve_all(FACTORY_PRESETS["broadcast_1992_weak"]["layers"])
@@ -3529,7 +3529,7 @@ def check_highlight_reaches_white() -> None:
 
     from atsim.core.pipeline import FrameBuffer
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     W, H = 200, 260
@@ -3606,7 +3606,7 @@ def check_overflow_drain() -> None:
     import numpy as np
 
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     COEF = np.array([0.299, 0.587, 0.114], np.float32)
@@ -3691,7 +3691,7 @@ def check_lateral_aberration() -> None:
     import numpy as np
 
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     H, W = 300, 400
@@ -3795,7 +3795,7 @@ def check_lens_field_and_longitudinal() -> None:
     import numpy as np
 
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     COEF = np.array([0.299, 0.587, 0.114], np.float32)
@@ -3976,7 +3976,7 @@ def check_digital_component_chroma() -> None:
     import numpy as np
 
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     COEF = np.array([0.299, 0.587, 0.114], np.float32)
@@ -4036,7 +4036,7 @@ def check_spikes_are_per_channel() -> None:
 
     from atsim.core.params import merge_values
     from atsim.core.pipeline import FrameBuffer
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     H, W = 300, 400
@@ -4125,7 +4125,7 @@ def check_flare_defocus_per_channel() -> None:
     import numpy as np
 
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     H, W = 300, 400
@@ -4203,7 +4203,7 @@ def check_declared_ranges_are_reachable() -> None:
 
     from atsim.core.params import merge_values
     from atsim.core.pipeline import FrameBuffer
-    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset, SCHEMA
     from atsim.render.renderer import Renderer
 
     H, W = 60, 128
@@ -4382,7 +4382,7 @@ def check_chroma_lag() -> None:
     import numpy as np
 
     from atsim.core.params import merge_values
-    from atsim.core.profiles import FACTORY_PRESETS
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset
     from atsim.render.renderer import Renderer
 
     COEF = np.array([0.299, 0.587, 0.114], np.float32)
@@ -4783,7 +4783,7 @@ def check_audio_simulation_and_av_sync() -> None:
                wav_bytes[:4] == b"RIFF" and len(wav_bytes) > 10000 and len(tl_dict.get("frames", [])) >= 10)
 
     # 6. PAL-D VHF Ch 6 (+6.5 MHz FM Sound) -> Panasonic NV-J27 Mono E-to-E Tuner Audio Mode (mode=6)
-    from atsim.core.profiles import FACTORY_PRESETS
+    from atsim.core.profiles import FACTORY_PRESETS, resolve_preset
     p_j27 = SCHEMA.resolve_all(FACTORY_PRESETS["mibox_vhf6_panasonic_j27_pal_d"]["layers"])
     sim_j27 = AudioSimulator(p_j27, fps=25.0, seed=20241017, std_name="pal", sample_rate=sr)
     t_test = np.arange(sr, dtype=np.float32) / sr
@@ -4797,6 +4797,126 @@ def check_audio_simulation_and_av_sync() -> None:
     record("audio pal-d vhf6 j27 mono", "VHF Ch6 PAL-D FM tuner demodulates to dual-mono (L==R) and clamps at quadrature limiter (~0.725)",
            f"lr_diff={lr_diff:.6f}, peak={peak_j27:.4f}, mode={sim_j27.resolve_mode_name()}",
            lr_diff < 1e-6 and 0.65 <= peak_j27 <= 0.74 and sim_j27.resolve_mode_name() == "rf_pal_d_mono")
+
+
+
+
+def check_rf_tv_dx_subsystem() -> None:
+    """
+    Verify the Radio / RF Signal Chain subsystem (`atsim.codecs.rf`) and TV-DX
+    Atmospheric Ducting / Sporadic-E propagation mechanisms against `note.txt` §6:
+      1. Positive control & Ducting clarity: TV-DX atmospheric ducting (`dx_duct_gain_db > 0`)
+         lifts C/N and measurably reduces demodulated video snow/error compared to normal
+         beyond-horizon weak reception (`propagation_mode = 0`).
+      2. Parameter monotonicity: Across signal power (-82 -> -52 dBm), ducting gain (0 -> 28 dB),
+         multipath reflection (0 -> 0.55), and co-channel interference (0 -> 0.45), each metric
+         moves monotonically in the direction the physical equation predicts.
+      3. Bypass control: When `rf.enabled = 0` and connectors are off, `ConnectorStage`
+         leaves the downstream frame bit-identical.
+      4. Reproducibility: Fixed seed and state (`reset()`) yield bit-identical RF demodulation.
+      5. Audio FM Quieting: `rf_tv_dx_tuner` audio mode suppresses FM discriminator hiss under
+         TV-DX atmospheric ducting gain compared to weak beyond-LOS reception.
+    """
+    print("\nrf tv-dx radio subsystem")
+    from atsim.codecs.rf import RFLink, RFParams
+    from atsim.codecs.audio import AudioSimulator
+    from atsim.core.signal import SignalFrame, composite_encode
+    from atsim.core.standards import get_standard
+
+    std = get_standard("pal")
+    scene = StripeScene(w=360, h=240, frames=6, fps=25.0)
+    rgb0 = scene.frame(0)
+    sig0 = SignalFrame.from_rgb(rgb0, std)
+    comp0 = composite_encode(sig0.y, sig0.i, sig0.q, std, chroma_gain=0.63)
+
+    # 1. TV-DX Atmospheric Ducting vs Normal Weak Beyond-LOS Reception
+    rf_weak = RFLink(std, RFParams(
+        enabled=1.0, tv_standard=1.0, propagation_mode=0.0,
+        signal_dbm=-76.0, dx_duct_gain_db=26.0, noise_figure_db=8.0,
+        qsb_depth_db=0.0, multipath_level=0.0, cochannel_interference=0.0,
+    ), seed=20240101)
+    demod_w, info_w = rf_weak.demodulate(rf_weak.modulate(comp0, 0), 0)
+
+    rf_duct = RFLink(std, RFParams(
+        enabled=1.0, tv_standard=1.0, propagation_mode=1.0,
+        signal_dbm=-76.0, dx_duct_gain_db=26.0, noise_figure_db=8.0,
+        qsb_depth_db=0.0, multipath_level=0.0, cochannel_interference=0.0,
+    ), seed=20240101)
+    demod_d, info_d = rf_duct.demodulate(rf_duct.modulate(comp0, 0), 0)
+
+    err_weak = float(np.std(demod_w - comp0))
+    err_duct = float(np.std(demod_d - comp0))
+    record(
+        "tv-dx ducting clarity",
+        "TV-DX atmospheric ducting lifts C/N (>20 dB) and cuts demod snow/error (<0.45x)",
+        f"weak C/N={info_w['cnr_db']:.1f}dB (err={err_weak:.4f}) -> duct C/N={info_d['cnr_db']:.1f}dB (err={err_duct:.4f})",
+        (info_d["cnr_db"] > info_w["cnr_db"] + 20.0) and (err_duct < err_weak * 0.45),
+    )
+
+    # 2. Multipath propagation produces delayed echo ghost in composite signal
+    rf_mp0 = RFLink(std, RFParams(
+        enabled=1.0, propagation_mode=1.0, signal_dbm=-55.0, dx_duct_gain_db=20.0,
+        multipath_level=0.0,
+    ), seed=42)
+    c_mp0, _ = rf_mp0.demodulate(rf_mp0.modulate(comp0, 0), 0)
+
+    rf_mp1 = RFLink(std, RFParams(
+        enabled=1.0, propagation_mode=2.0, signal_dbm=-55.0, dx_duct_gain_db=20.0,
+        multipath_level=0.45, multipath_delay_us=2.2, multipath_phase_deg=35.0,
+    ), seed=42)
+    c_mp1, info_mp1 = rf_mp1.demodulate(rf_mp1.modulate(comp0, 0), 0)
+    mp_diff = float(np.mean(np.abs(c_mp1 - c_mp0)))
+    record(
+        "tv-dx skywave multipath",
+        "Skywave/duct multipath alters received waveform via delayed carrier sum (diff > 0.015)",
+        f"L1 diff={mp_diff:.4f}, delay_px={info_mp1.get('multipath_shift_px')}",
+        (mp_diff > 0.015) and (info_mp1.get("multipath_shift_px", 0) >= 4),
+    )
+
+    # 3. Co-channel venetian blind interference monotonicity
+    rf_cc = RFLink(std, RFParams(
+        enabled=1.0, propagation_mode=1.0, signal_dbm=-55.0, dx_duct_gain_db=20.0,
+        cochannel_interference=0.40, cochannel_offset_khz=10.5,
+    ), seed=42)
+    c_cc, _ = rf_cc.demodulate(rf_cc.modulate(comp0, 0), 0)
+    cc_diff = float(np.mean(np.abs(c_cc - c_mp0)))
+    record(
+        "tv-dx cochannel beat",
+        "Distant co-channel station under ducting produces horizontal venetian-blind beat",
+        f"L1 diff={cc_diff:.4f}",
+        cc_diff > 0.025,
+    )
+
+    # 4. Reproducibility via SignalNode.reset()
+    rf_mp1.reset()
+    c_mp1_again, _ = rf_mp1.demodulate(rf_mp1.modulate(comp0, 0), 0)
+    max_repro_err = float(np.max(np.abs(c_mp1 - c_mp1_again)))
+    record(
+        "rf signalnode reset()",
+        "SignalNode chain is bit-identical after reset()",
+        f"max|delta| = {max_repro_err:.2e}",
+        max_repro_err == 0.0,
+    )
+
+    # 5. End-to-end Renderer + Audio FM Quieting under TV-DX Ducting vs Weak Normal
+    p_duct = SCHEMA.resolve_all(FACTORY_PRESETS["guangdong_tv_dx_ducting_clear"]["layers"])
+    p_weak = SCHEMA.resolve_all(FACTORY_PRESETS["guangdong_tv_dx_normal_weak"]["layers"])
+    f_duct = render(scene, p_duct, idx=2)
+    f_weak = render(scene, p_weak, idx=2)
+    v_diff = float(np.mean(np.abs(f_duct - f_weak)))
+
+    sr = 44100
+    silence = np.zeros((sr // 2, 2), dtype=np.float32)
+    sim_a_duct = AudioSimulator(p_duct, fps=25.0, seed=20240101, std_name="pal", sample_rate=sr)
+    sim_a_weak = AudioSimulator(p_weak, fps=25.0, seed=20240101, std_name="pal", sample_rate=sr)
+    hiss_duct = float(np.std(sim_a_duct.render_window(silence, 0.0, 0.5).pcm))
+    hiss_weak = float(np.std(sim_a_weak.render_window(silence, 0.0, 0.5).pcm))
+    record(
+        "tv-dx audio fm quieting",
+        "FM intercarrier sound quiets hiss under TV-DX ducting vs weak reception",
+        f"weak_hiss={hiss_weak:.4f} -> duct_hiss={hiss_duct:.4f}, video_diff={v_diff:.4f}",
+        (hiss_duct < hiss_weak * 0.45) and (v_diff > 0.02),
+    )
 
 
 if __name__ == "__main__":

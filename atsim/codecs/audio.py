@@ -363,6 +363,7 @@ class AudioSimulator:
         4: "minidv_pcm",
         5: "vcd_mp2",
         6: "rf_pal_d_mono",
+        7: "rf_tv_dx_tuner",
     }
 
     def __init__(self, params_or_renderer: Any, fps: float = 29.97, seed: int = 20240101,
@@ -395,7 +396,7 @@ class AudioSimulator:
 
     def resolve_mode_name(self) -> str:
         m = int(self.spec.mode)
-        if m in (1, 2, 3, 4, 5, 6):
+        if m in (1, 2, 3, 4, 5, 6, 7):
             return self.MODE_NAMES[m]
         # Auto-resolve from codec, connector & tape layers
         codec_cfg = self.params.get("codec") or {}
@@ -811,6 +812,20 @@ class AudioSimulator:
         rng = np.random.default_rng((self.seed * 2654435761 + int(round(start_s * 1000))) & 0xFFFFFFFF)
         mean_speed_ratio = float(np.clip(np.mean(speed_ratio_arr), 0.25, 1.0))
 
+        # Pre-Tape RF Broadcast Intercarrier Tuner Cascade ("VHS 录像带电视杂录"):
+        # When RF wireless reception is enabled (`rf.enabled > 0.5`) AND the recording medium
+        # is a magnetic tape (`vhs_linear`, `vhs_hifi`, `hi8_afm`), the wireless TV broadcast
+        # audio first passes through the VCR's FM intercarrier demodulator (where the FM
+        # limiter + discriminator + 50us de-emphasis give audio an ~18-24 dB SNR advantage
+        # over the AM-VSB video picture!) before being recorded onto the VHS tape track.
+        rf_cfg_cascade = self.params.get("rf") or {}
+        rf_enabled_cascade = float(rf_cfg_cascade.get("enabled", 0.0)) > 0.5
+        rf_cascade_meta: dict = {}
+        if rf_enabled_cascade and mode_name in ("vhs_linear", "vhs_hifi", "hi8_afm"):
+            sig, rf_cascade_meta = self._apply_rf_broadcast_tuner_prestage(
+                sig, t_arr, sr, n_samples, rng, rf_cfg_cascade
+            )
+
         # Build the VHS Linear Track signal (used both in Mode 1 and as the fallback track in Mode 2)
         def _build_linear_track(inp: np.ndarray) -> np.ndarray:
             # Linear track cutoff scales directly with tape speed (SP=1.0, LP=0.5, EP=0.333) and azimuth loss
@@ -928,6 +943,55 @@ class AudioSimulator:
                 w_norm[p0 : p0 + win_len] += win * win
             valid = w_norm[:, 0] > 1e-4
             sig[valid] = out_mp2[valid] / w_norm[valid]
+
+        elif mode_name == "rf_tv_dx_tuner":
+            # 7. Taobao Cheap TV Capture Card (SAA7130 / TDA9887) FM Intercarrier Demodulator
+            #    with TV-DX Atmospheric Ducting / Sporadic-E FM Quieting & QSB Fading:
+            #    - PAL-D (+6.5 MHz) / PAL-I (+6.0 MHz) FM sound subcarrier (50 us de-emphasis, ~12 kHz BW).
+            #    - FM Capture & Quieting threshold around C/N = 18 dB:
+            #      When TV-DX atmospheric ducting (`dx_duct_gain_db`) lifts effective C/N above threshold,
+            #      FM capture effect suppresses background hiss so distant stations sound surprisingly clean!
+            #    - QSB slow ionospheric fading modulates C/N over time, causing noise floor to "breathe".
+            #    - Intercarrier Vision-into-Sound 50 Hz / 15.625 kHz buzz when white OSD text overmodulates carrier.
+            rf_cfg = self.params.get("rf") or {}
+            p_mode = int(round(float(rf_cfg.get("propagation_mode", 1.0))))
+            sig_dbm = float(rf_cfg.get("signal_dbm", -72.0))
+            duct_gain = float(rf_cfg.get("dx_duct_gain_db", 24.0)) if p_mode in (1, 2, 3) else 0.0
+            nf_db = float(rf_cfg.get("noise_figure_db", 7.5))
+            qsb_depth = float(rf_cfg.get("qsb_depth_db", 4.5)) if p_mode > 0 else 0.0
+            qsb_rate = float(rf_cfg.get("qsb_rate_hz", 0.35))
+            buzz_lv = float((self.params.get("audio") or {}).get("rf_buzz", 0.12))
+
+            noise_floor_dbm = -106.2 + nf_db
+            qsb_wave = qsb_depth * (
+                0.65 * np.sin(2.0 * np.pi * qsb_rate * t_arr)
+                + 0.35 * np.cos(2.0 * np.pi * (qsb_rate * 1.73) * t_arr + 0.8)
+            ).astype(np.float32)
+            cnr_t = (sig_dbm + duct_gain + qsb_wave) - noise_floor_dbm
+
+            # FM capture & quieting curve: below 14 dB is pure FM discriminator static; above 26 dB is quieted
+            fm_quieting = np.clip((cnr_t - 13.0) / 15.0, 0.0, 1.0).astype(np.float32)
+            voice_gate = np.clip((cnr_t - 10.0) / 10.0, 0.05, 1.0).astype(np.float32)[:, None]
+
+            mono = 0.5 * (sig[:, 0] + sig[:, 1])
+            mono = _highpass_audio(mono[:, None], 65.0, sr, order=2)[:, 0]
+            mono = _lowpass_audio(mono[:, None], 11500.0, sr, order=4)[:, 0]
+            sig = np.stack([mono, mono], axis=1) * voice_gate
+
+            # FM discriminator triangulated hiss (modulated by QSB fading and suppressed by ducting gain)
+            hiss_raw = rng.standard_normal((n_samples, 1)).astype(np.float32)
+            hiss_shaped = _bandpass_audio(hiss_raw, 300.0, 9500.0, sr, order=2)
+            hiss_env = ((1.0 - fm_quieting) ** 1.6 * 0.22 + 0.008 * (1.0 - 0.6 * fm_quieting))[:, None]
+
+            # Vision-into-sound 50 Hz frame + 100 Hz harmonic intercarrier buzz on cheap TV card
+            buzz_50 = (
+                0.55 * np.sin(2.0 * np.pi * 50.0 * t_arr)
+                + 0.30 * np.sin(2.0 * np.pi * 100.0 * t_arr + 0.4)
+                + 0.15 * np.sin(2.0 * np.pi * 150.0 * t_arr + 1.1)
+            ).astype(np.float32)[:, None]
+            buzz_amt = buzz_lv * 0.025 * (0.4 + 0.6 * (1.0 - fm_quieting[:, None]))
+
+            sig = np.tanh((sig + hiss_shaped * hiss_env + buzz_50 * buzz_amt) * 1.18) / 1.10
 
         elif mode_name == "rf_pal_d_mono":
             # PAL-D VHF Channel 6 (171 MHz, +6.5 MHz FM Sound Carrier) -> Panasonic NV-J27 Mono RF Tuner -> AV Capture Card
@@ -1109,6 +1173,8 @@ class AudioSimulator:
             "hifi_fallback_frames": sum(1 for f in frame_faults if f.hifi_fallback > 0.1),
             "fault_frames": fault_frame_count,
             "rms_db": round(float(20.0 * np.log10(max(1e-6, float(np.sqrt(np.mean(sig ** 2)))))), 2),
+            "rf_tuner_cascaded": bool(rf_enabled_cascade and mode_name in ("vhs_linear", "vhs_hifi", "hi8_afm")),
+            **rf_cascade_meta,
         }
         return AudioRun(
             samples=sig,
@@ -1120,6 +1186,70 @@ class AudioSimulator:
             frame_faults=frame_faults,
             summary=summary,
         )
+
+    def _apply_rf_broadcast_tuner_prestage(
+        self, sig: np.ndarray, t_arr: np.ndarray, sr: int, n_samples: int,
+        rng: np.random.Generator, rf_cfg: dict
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Wireless Analog TV Broadcast FM Intercarrier Sound Demodulator (pre-tape VCR tuner).
+
+        Physical reason why wireless RF audio degradation is much smaller than video:
+          1. Modulation & Limiter Capture Effect:
+             - Video is AM-VSB (Vestigial Sideband Amplitude Modulation, 5-6 MHz wide). Every dB of
+               RF path loss or thermal noise directly adds snow to the picture, and multipath echoes
+               directly superimpose ghosts and cancel chroma phase.
+             - Audio is FM (±50 kHz deviation on the +6.5 MHz PAL-D / +6.0 MHz PAL-I / +4.5 MHz NTSC
+               sound-vision intercarrier, only ~180 kHz IF bandwidth). Before frequency discrimination,
+               the IF stage passes through a hard amplitude limiter that strips off AM noise and
+               multipath envelope fluctuations (FM Quieting & Capture Effect).
+          2. Bandwidth & De-emphasis Processing Gain:
+             - Narrower IF bandwidth (180 kHz vs 5 MHz) gives a 14.4 dB lower thermal noise floor.
+             - FM Carson/discriminator processing gain + 50 us de-emphasis filter (f_c = 3183 Hz)
+               attenuates triangular high-frequency phase noise, yielding an 18-24 dB SNR advantage
+               over video above the ~13 dB CNR FM threshold!
+        """
+        p_mode = int(round(float(rf_cfg.get("propagation_mode", 0.0))))
+        sig_dbm = float(rf_cfg.get("signal_dbm", -66.0))
+        duct_gain = float(rf_cfg.get("dx_duct_gain_db", 0.0)) if p_mode in (1, 2, 3) else 0.0
+        nf_db = float(rf_cfg.get("noise_figure_db", 7.0))
+        multipath = float(rf_cfg.get("multipath_level", 0.15))
+        noise_floor_dbm = -106.2 + nf_db
+        cnr_db = (sig_dbm + duct_gain) - noise_floor_dbm
+
+        # FM capture & quieting factor (1.0 = full quieting above 26 dB CNR; drops below 13 dB threshold)
+        fm_quieting = float(np.clip((cnr_db - 13.0) / 14.0, 0.0, 1.0))
+        snr_adv_db = float(np.clip(6.0 + 16.5 * fm_quieting, 4.0, 22.5))
+
+        # Broadcast mono intercarrier demodulation + 50 us de-emphasis + 12 kHz ceramic IF filter
+        mono = 0.5 * (sig[:, 0] + sig[:, 1])
+        mono_lp = _lowpass_audio(mono[:, None], 3183.1, sr, order=1)[:, 0]
+        mono = 0.42 * mono + 0.58 * mono_lp
+        mono = _highpass_audio(mono[:, None], 55.0, sr, order=2)[:, 0]
+        mono = _lowpass_audio(mono[:, None], 11500.0, sr, order=4)[:, 0]
+        out = np.stack([mono, mono], axis=1)
+
+        # Residual FM discriminator triangular hiss (heavily suppressed when above FM threshold)
+        hiss_raw = rng.standard_normal((n_samples, 1)).astype(np.float32)
+        hiss_shaped = _bandpass_audio(hiss_raw, 800.0, 10500.0, sr, order=2)
+        hiss_amp = ((1.0 - fm_quieting) ** 1.8) * 0.14 + 0.0025 * (1.0 - 0.5 * fm_quieting)
+
+        # Vision-into-sound 50 Hz/60 Hz intercarrier sync buzz (from multipath or white OSD overmodulation)
+        f_field = 50.0 if "pal" in self.std_name else 59.94
+        buzz_wave = (
+            0.60 * np.sin(2.0 * np.pi * f_field * t_arr)
+            + 0.28 * np.sin(4.0 * np.pi * f_field * t_arr + 0.4)
+            + 0.12 * np.sin(6.0 * np.pi * f_field * t_arr + 1.1)
+        ).astype(np.float32)[:, None]
+        buzz_amp = (0.0015 + 0.012 * multipath + 0.008 * (1.0 - fm_quieting)) * float(np.clip(self.spec.rf_buzz + 0.25, 0.0, 1.5))
+
+        out = (out + hiss_shaped * hiss_amp + buzz_wave * buzz_amp).astype(np.float32)
+        meta = {
+            "rf_cnr_db": round(cnr_db, 2),
+            "rf_fm_quieting": round(fm_quieting, 4),
+            "rf_video_vs_audio_snr_advantage_db": round(snr_adv_db, 2),
+        }
+        return out, meta
 
     def simulate(self, clean_stereo: np.ndarray, start_s: float = 0.0,
                  duration_s: float | None = None, **kwargs) -> AudioRun:

@@ -49,6 +49,12 @@ class FontSpec:
     #: default horizontal/vertical stretch of the character generator ROM (e.g. tall OSD, wide karaoke)
     rom_stretch_x: float = 1.0
     rom_stretch_y: float = 1.0
+    #: optical phototypesetting / stroke-weight bias (-0.5 thin FangSong .. +0.5 heavy title WeiBei/CuHei)
+    stroke_weight: float = 0.0
+    #: horizontal serif / stroke-end flare (simulates 1980s optical title card / BiaoSong & WeiBei terminals)
+    serif_flare: float = 0.0
+    #: hardware character-generator dot-matrix quantization grid (e.g. 24 for 24x24 CJK ROM, 0 for native)
+    rom_grid: int = 0
     #: units of advance for a half-width cell, from the font itself
     half_advance: int = 0
     full_advance: int = 0
@@ -87,13 +93,16 @@ class FontSpec:
                 "units_per_em": self.units_per_em, "glyph_count": self.glyph_count,
                 "half_advance": self.half_advance, "full_advance": self.full_advance,
                 "ascent": self.ascent, "covers": len(self.covered),
-                "rom_stretch_x": self.rom_stretch_x, "rom_stretch_y": self.rom_stretch_y}
+                "rom_stretch_x": self.rom_stretch_x, "rom_stretch_y": self.rom_stretch_y,
+                "stroke_weight": self.stroke_weight, "serif_flare": self.serif_flare,
+                "rom_grid": self.rom_grid}
 
 
-#: The full font registry: original 15 typefaces + 5 era-authentic camcorder/VCR/LD/CCTV typefaces.
+#: The full font registry: original 15 typefaces + 5 camcorder/VCR/LD/CCTV typefaces + 8 late-1980s
+#: broadcast documentary & hardware character-generator typefaces (28 total).
 #: Every entry declares cross-platform fallback paths matching its script coverage (Latin-only vs CJK+Latin)
-#: and visual family (Mono, Song/Mincho, Hei/Gothic, Bold Karaoke, Narrow Tall OSD) so all 20 fonts are
-#: genuinely distinct and usable on both Windows and Linux.
+#: and visual family (Mono, Song/Mincho, Hei/Gothic, BiaoSong, ChangSong, FangSong, KaiShu, WeiBei, 24x24 ROM)
+#: so all 28 fonts are genuinely distinct and usable on both Windows and Linux.
 FONTS: dict[str, FontSpec] = {
     "osd": FontSpec(
         key="osd", label="VCR OSD Mono（仅英文/数字）",
@@ -263,6 +272,86 @@ FONTS: dict[str, FontSpec] = {
         ),
         rom_stretch_x=0.92, rom_stretch_y=1.10,
         scripts=("latin",)),
+    "docu_biaosong": FontSpec(
+        key="docu_biaosong", label="80年代纪录片大标宋（片头光学重衬线印字）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\STZHONGS.TTF"),
+        fallbacks=(
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+        ),
+        rom_stretch_x=1.06, rom_stretch_y=1.02,
+        stroke_weight=0.28, serif_flare=0.35,
+        scripts=("latin", "cjk")),
+    "docu_changsong": FontSpec(
+        key="docu_changsong", label="80年代电视长宋（解说词窄长体字幕）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\simsun.ttc"),
+        fallbacks=(
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+        ),
+        rom_stretch_x=0.80, rom_stretch_y=1.16,
+        stroke_weight=0.10, serif_flare=0.20,
+        scripts=("latin", "cjk")),
+    "docu_cuhei": FontSpec(
+        key="docu_cuhei", label="80年代专题片粗黑（章节主标题大黑体）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\simhei.ttf"),
+        fallbacks=(
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        ),
+        rom_stretch_x=1.05, rom_stretch_y=1.00,
+        stroke_weight=0.35, serif_flare=0.0,
+        scripts=("latin", "cjk")),
+    "docu_bianhei": FontSpec(
+        key="docu_bianhei", label="广播级字幕机扁黑（人物职务与地名标版）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\simhei.ttf"),
+        fallbacks=(
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        ),
+        rom_stretch_x=1.18, rom_stretch_y=0.86,
+        stroke_weight=0.15, serif_flare=0.0,
+        scripts=("latin", "cjk")),
+    "docu_fangsong": FontSpec(
+        key="docu_fangsong", label="传统铅印仿宋体（历史文献与卷首语字幕）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\simfang.ttf"),
+        fallbacks=(
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        ),
+        rom_stretch_x=0.92, rom_stretch_y=1.08,
+        stroke_weight=-0.18, serif_flare=0.25,
+        scripts=("latin", "cjk")),
+    "docu_kaishu": FontSpec(
+        key="docu_kaishu", label="传统碑刻楷体（纪实人文题跋字幕）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\simkai.ttf"),
+        fallbacks=(
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+        ),
+        rom_stretch_x=1.02, rom_stretch_y=1.04,
+        stroke_weight=0.12, serif_flare=0.40,
+        scripts=("latin", "cjk")),
+    "docu_weibei": FontSpec(
+        key="docu_weibei", label="80年代片头魏碑体（金石刀刻重骨片头字）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\STXINWEI.TTF"),
+        fallbacks=(
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        ),
+        rom_stretch_x=1.12, rom_stretch_y=0.96,
+        stroke_weight=0.42, serif_flare=0.55,
+        scripts=("latin", "cjk")),
+    "docu_amber_cg": FontSpec(
+        key="docu_amber_cg", label="早期微机汉卡 24×24 点阵宋（硬件字符发生器）",
+        path=os.path.expandvars(r"C:\\WINDOWS\\Fonts\\simsun.ttc"),
+        fallbacks=(
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        ),
+        rom_stretch_x=1.00, rom_stretch_y=1.00,
+        stroke_weight=0.08, serif_flare=0.0, rom_grid=24,
+        scripts=("latin", "cjk")),
 }
 
 #: which character class a codepoint belongs to, since the cell size depends on it

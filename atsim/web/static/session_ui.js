@@ -730,6 +730,14 @@
     ["karaoke_ld_song", "LD/VCD 卡拉OK 大粗宋（90年代伴唱大字报）", ["latin", "cjk"]],
     ["karaoke_ld_hei", "LD/VCD 卡拉OK 综艺粗黑（KTV 双色描边字幕）", ["latin", "cjk"]],
     ["cctv_timecode", "CCTV 监控时间码（BNC 画面分割器等宽数字）", ["latin"]],
+    ["docu_biaosong", "80年代纪录片·大标宋（照排片头立体粗宋）", ["latin", "cjk"]],
+    ["docu_changsong", "80年代纪录片·长宋（光学印片窄高解说宋）", ["latin", "cjk"]],
+    ["docu_cuhei", "80年代电视专题片·粗黑（新闻纪实醒目黑体）", ["latin", "cjk"]],
+    ["docu_bianhei", "80年代新闻片·扁黑（电视台章节小标题宽体黑）", ["latin", "cjk"]],
+    ["docu_fangsong", "80年代文献片·仿宋（历史档案纪年引文体）", ["latin", "cjk"]],
+    ["docu_kaishu", "80年代历史片·硬楷（传统碑帖书法题字楷书）", ["latin", "cjk"]],
+    ["docu_weibei", "80年代片头·魏碑体（金石刀刻厚重片名体）", ["latin", "cjk"]],
+    ["docu_amber_cg", "80年代广播字幕机·24×24 点阵宋（早期电视台硬件字库）", ["latin", "cjk"]],
   ];
 
   function getOsdFonts() {
@@ -802,7 +810,9 @@
     const styleSel = el("select", "ssSel");
     [["0", "自定义（用下面的颜色参数）"], ["1", "绿字·深描边（OSD 经典）"],
      ["2", "红字·深描边（REC 经典）"], ["3", "白字·深描边"],
-     ["4", "黄字·深描边"], ["5", "青字·深描边"]].forEach(([v, t]) => {
+     ["4", "黄字·深描边"], ["5", "青字·深描边"],
+     ["6", "80年代纪录片·金黄标宋立体字"], ["7", "80年代纪录片·象牙白光学叠印字"],
+     ["8", "广播级字幕机·琥珀黄滚屏字"], ["9", "80年代专题片·深红描金标题字"]].forEach(([v, t]) => {
       const o = el("option", null, t);
       o.value = v;
       styleSel.append(o);
@@ -840,6 +850,24 @@
       + "<b>点阵发生器没有真正的斜体，它是把字形剪切</b>，所以斜着的 OSD 文字边缘是台阶状的。"
       + "字格高度、字宽/字高拉伸、字色与阴影偏移在右侧参数面板「06 字幕机」里均可打关键帧。";
     host.append(sl, srow, crow, snote);
+
+    const anl = el("div", "palGroup", "字幕动画与光学质感（80年代字幕机/印片台）");
+    const anrow = el("div", "ssRow");
+    const animSel = el("select", "ssSel");
+    [["0", "0 · 静态常显（无动画）"],
+     ["1", "1 · 逐字打字机显字（纪实解说/电传）"],
+     ["2", "2 · 逐行顺序显字（多行章节标题）"],
+     ["3", "3 · 水平光栅扫描拉幕（电子束横向擦除）"],
+     ["4", "4 · 百叶窗隔行扫描显字（奇偶场分步切入）"],
+     ["5", "5 · 纵向滚屏字幕（片尾演职员表自下而上）"],
+     ["6", "6 · 光学叠化淡入淡出（印片机柔和溶入）"],
+     ["7", "7 · 横向滑入定格（电视台左向飞入）"]].forEach(([v, t]) => {
+      const o = el("option", null, t);
+      o.value = v;
+      animSel.append(o);
+    });
+    anrow.append(animSel);
+    host.append(anl, anrow);
 
     const al = el("div", "palGroup", "对齐（不用再打空格挪位置）");
     const arow = el("div", "ssRow");
@@ -900,7 +928,7 @@
     host.append(readout);
 
     osdEls = { ta, fsel, psel, chk: echk, state: estate, warn, readout, btn,
-               hsel, vsel, quick, styleSel, ital, glyphColor, outColor };
+               hsel, vsel, quick, styleSel, animSel, ital, glyphColor, outColor };
 
     let timer = null;
     const refreshWarn = () => {
@@ -957,6 +985,7 @@
         halign: parseFloat(hsel.value) || 0,
         valign: parseFloat(vsel.value) || 0,
         style: parseFloat(styleSel.value) || 0,
+        anim_mode: parseFloat(animSel.value) || 0,
         italic: parseFloat(ital.value) || 0.0,
         ...(hexToRgb(glyphColor.value)
           ? { red: hexToRgb(glyphColor.value)[0], green: hexToRgb(glyphColor.value)[1],
@@ -979,6 +1008,7 @@
     hsel.onchange = push;
     vsel.onchange = push;
     styleSel.onchange = push;
+    animSel.onchange = push;
     ital.onchange = push;
     ital.oninput = () => {
       if (ital.nextSibling) ital.nextSibling.textContent = Number(ital.value).toFixed(2);
@@ -1036,6 +1066,7 @@
     if (fonts[idx]) e.fsel.value = fonts[idx][0];
     e.psel.value = String(Math.round(Number(cur.at == null ? 0 : cur.at)));
     e.styleSel.value = String(Math.round(Number(cur.style == null ? 0 : cur.style)));
+    if (e.animSel) e.animSel.value = String(Math.round(Number(cur.anim_mode == null ? 0 : cur.anim_mode)));
     e.glyphColor.value = rgbOf(cur, "red", "green", "blue");
     e.outColor.value = rgbOf(cur, "outline_red", "outline_green", "outline_blue");
     e.ital.value = String(Number(cur.italic == null ? 0 : cur.italic));

@@ -87,6 +87,13 @@ class OverlayStage(Stage):
         self.shadow_y = float(cfg.get("shadow_y", 2.0))
         self.colour = (float(cfg.get("red", 0.92)), float(cfg.get("green", 0.94)),
                        float(cfg.get("blue", 0.90)))
+        self.edge_softness = float(cfg.get("edge_softness", 0.0))
+        self.glow = float(cfg.get("glow", 0.0))
+        self.bevel = float(cfg.get("bevel", 0.0))
+        self.anim_mode = int(np.clip(round(float(cfg.get("anim_mode", 0.0))), 0, 7))
+        self.anim_speed = float(cfg.get("anim_speed", 1.0))
+        self.anim_in_s = float(cfg.get("anim_in_s", 1.2))
+        self.anim_cycle_s = float(cfg.get("anim_cycle_s", 0.0))
         self._apply_style()
 
     def on_params_changed(self) -> None:
@@ -115,7 +122,9 @@ class OverlayStage(Stage):
                self.row, self.col, self.colour, round(self.shadow, 4), round(self.opacity, 4),
                round(self.outline, 4), eff_outline_px, self.outline_colour, round(self.italic, 4),
                eff_shadow_x, eff_shadow_y, round(self.stretch_x, 4), round(self.stretch_y, 4),
-               eff_letter_gap, eff_line_gap, self.bg_on)
+               eff_letter_gap, eff_line_gap, self.bg_on, round(self.edge_softness, 4),
+               round(self.glow, 4), round(self.bevel, 4), self.anim_mode,
+               round(self.anim_speed, 4), round(self.anim_in_s, 4), round(self.anim_cycle_s, 4))
         if self._gen is not None and self._gen_sig == sig:
             return self._gen
 
@@ -128,7 +137,10 @@ class OverlayStage(Stage):
                        italic=self.italic, shadow_x=eff_shadow_x, shadow_y=eff_shadow_y,
                        stretch_x=self.stretch_x, stretch_y=self.stretch_y,
                        letter_gap=eff_letter_gap, line_gap=eff_line_gap,
-                       background=(0.0, 0.0, 0.0) if self.bg_on else None)
+                       background=(0.0, 0.0, 0.0) if self.bg_on else None,
+                       edge_softness=self.edge_softness, glow=self.glow, bevel=self.bevel,
+                       anim_mode=self.anim_mode, anim_speed=self.anim_speed,
+                       anim_in_s=self.anim_in_s, anim_cycle_s=self.anim_cycle_s)
         for line in plan.lines:
             line.row += self.row
             line.col += self.col
@@ -145,16 +157,21 @@ class OverlayStage(Stage):
     #: (glyph colour, outline colour, italic) for each template.  Index 0 is "custom".
     STYLE_PRESETS = (
         None,
-        ((0.35, 0.95, 0.45), (0.03, 0.05, 0.04), 0.0),     # green inside near-black: the OSD classic
-        ((0.92, 0.20, 0.22), (0.05, 0.03, 0.03), 0.0),     # red inside near-black: the REC classic
-        ((0.96, 0.96, 0.96), (0.03, 0.03, 0.04), 0.0),     # white inside near-black
-        ((0.98, 0.86, 0.20), (0.04, 0.03, 0.02), 0.0),     # yellow inside near-black
-        ((0.30, 0.92, 0.95), (0.02, 0.04, 0.05), 0.0),     # cyan inside near-black
+        ((0.35, 0.95, 0.45), (0.03, 0.05, 0.04), 0.0),     # 1: green inside near-black: the OSD classic
+        ((0.92, 0.20, 0.22), (0.05, 0.03, 0.03), 0.0),     # 2: red inside near-black: the REC classic
+        ((0.96, 0.96, 0.96), (0.03, 0.03, 0.04), 0.0),     # 3: white inside near-black
+        ((0.98, 0.86, 0.20), (0.04, 0.03, 0.02), 0.0),     # 4: yellow inside near-black
+        ((0.30, 0.92, 0.95), (0.02, 0.04, 0.05), 0.0),     # 5: cyan inside near-black
+        ((0.98, 0.84, 0.26), (0.14, 0.05, 0.02), 0.0),     # 6: 80s documentary golden-yellow title with warm dark-brown outline & bevel
+        ((0.96, 0.95, 0.88), (0.05, 0.05, 0.06), 0.0),     # 7: 80s documentary warm ivory narration subtitle with soft optical halo
+        ((0.98, 0.72, 0.16), (0.02, 0.02, 0.02), 0.0),     # 8: broadcast amber character-generator credit roll
+        ((0.88, 0.16, 0.12), (0.96, 0.84, 0.28), 0.0),     # 9: 80s documentary crimson chapter title with gold border
     )
 
     def _apply_style(self) -> None:
         """Set the colour, outline and slant from the template, leaving them alone for index 0."""
-        st = int(round(float(self.cfg_of("overlay").get("style", 0.0))))
+        cfg = self.cfg_of("overlay")
+        st = int(round(float(cfg.get("style", 0.0))))
         if st <= 0 or st >= len(self.STYLE_PRESETS):
             return
         colour, outline, italic = self.STYLE_PRESETS[st]
@@ -162,6 +179,27 @@ class OverlayStage(Stage):
         self.outline_colour = tuple(float(v) for v in outline)
         if self.italic == 0.0:
             self.italic = float(italic)
+        # Apply default era-authentic optical/bevel characteristics for documentary templates (6..9)
+        # when the user has not explicitly overridden them away from 0.0:
+        if st == 6:
+            if self.bevel <= 1e-4:
+                self.bevel = 0.55
+            if self.glow <= 1e-4:
+                self.glow = 0.35
+            if self.edge_softness <= 1e-4:
+                self.edge_softness = 0.28
+        elif st == 7:
+            if self.glow <= 1e-4:
+                self.glow = 0.22
+            if self.edge_softness <= 1e-4:
+                self.edge_softness = 0.32
+        elif st == 9:
+            if self.bevel <= 1e-4:
+                self.bevel = 0.65
+            if self.glow <= 1e-4:
+                self.glow = 0.40
+            if self.edge_softness <= 1e-4:
+                self.edge_softness = 0.25
 
     def prepare(self) -> None:
         pass
@@ -188,7 +226,9 @@ class OverlayStage(Stage):
         gen = self._generator(base_rgb.shape[1], base_rgb.shape[0])
         if gen is None:
             return buf
-        out, rep, mask = gen.draw_with_mask(base_rgb)
+        out, rep, mask = gen.draw_with_mask(
+            base_rgb, time_s=float(buf.time), frame_index=int(buf.index),
+            fps=float(self.ctx.fps))
         self.report = rep
         if not np.any(mask > 0.0):
             return buf
@@ -196,12 +236,13 @@ class OverlayStage(Stage):
         meta = dict(buf.meta)
         sig_osd = SignalFrame.from_rgb(out, buf.std)
         if self.slot == self.SLOT_PRE_TAPE and sig_in is not None:
-            # Replace Y, I, Q ONLY on the pixels where the character generator actually drew (glyphs,
-            # outline, shadow, or background box), preserving the upstream encoded Y, I, Q everywhere else
-            # bit-for-bit.
-            y_new = np.where(mask > 0.5, sig_osd.y, sig_in.y).astype(np.float32)
-            i_new = np.where(mask > 0.5, sig_osd.i, sig_in.i).astype(np.float32)
-            q_new = np.where(mask > 0.5, sig_osd.q, sig_in.q).astype(np.float32)
+            # Blend Y, I, Q ONLY on the pixels where the character generator actually drew (glyphs,
+            # outline, shadow, bevel, glow, or background box), preserving the upstream encoded Y, I, Q
+            # everywhere else bit-for-bit.
+            w_m = np.clip(mask, 0.0, 1.0).astype(np.float32)
+            y_new = (sig_in.y * (1.0 - w_m) + sig_osd.y * w_m).astype(np.float32)
+            i_new = (sig_in.i * (1.0 - w_m) + sig_osd.i * w_m).astype(np.float32)
+            q_new = (sig_in.q * (1.0 - w_m) + sig_osd.q * w_m).astype(np.float32)
             sig = SignalFrame(y_new, i_new, q_new)
             if getattr(sig_in, "_rf_direct", False):
                 sig._rf_direct = True
@@ -209,7 +250,7 @@ class OverlayStage(Stage):
             comp = buf.composite
             if comp is not None:
                 comp_osd = composite_encode(sig_osd.y, sig_osd.i, sig_osd.q, buf.std, chroma_gain=0.63)
-                comp = np.where(mask > 0.5, comp_osd, comp).astype(np.float32)
+                comp = (comp * (1.0 - w_m) + comp_osd * w_m).astype(np.float32)
             return FrameBuffer(out.astype(np.float32), comp, buf.index, buf.time, buf.std, meta)
 
         meta["signal"] = sig_osd

@@ -119,14 +119,18 @@ class GraphExecutor:
         """
         The RF link, built lazily and shared by the modulator and tuner nodes.
 
-        Shared on purpose: it carries the AFC error and the interference beat,
-        which are continuous processes across frames.  A per-node instance would
-        restart those every frame and the tearing would look like noise.
+        Shared on purpose: it carries the AFC error, QSB fading, and interference
+        beat, which are continuous processes across frames.  A per-node instance
+        would restart those every frame and the tearing would look like noise.
         """
         if getattr(self, "_rflink", None) is None:
             from ..codecs.rf import RFLink, RFParams
-            p = self.ctx.layer("rf") or {}
+            p = dict(self.ctx.layer("rf") or {})
+            for n_kind in ("rf_modulator", "rf_tuner"):
+                if n_kind in self.params:
+                    p.update(self.params[n_kind])
             self._rflink = RFLink(self.std, RFParams(
+                enabled=float(p.get("enabled", 1.0)),
                 channel_mhz=float(p.get("channel_mhz", 6.0)),
                 carrier_offset_mhz=float(p.get("carrier_offset_mhz", 1.25)),
                 noise_figure_db=float(p.get("noise_figure_db", 8.0)),
@@ -135,6 +139,21 @@ class GraphExecutor:
                 sync_loss_amount=float(p.get("sync_loss_amount", 1.0)),
                 adjacent_channel=float(p.get("adjacent_channel", 0.0)),
                 broadcast_noise=float(p.get("broadcast_noise", 0.0)),
+                tv_standard=float(p.get("tv_standard", 0.0)),
+                propagation_mode=float(p.get("propagation_mode", 0.0)),
+                distance_km=float(p.get("distance_km", 45.0)),
+                dx_duct_gain_db=float(p.get("dx_duct_gain_db", 24.0)),
+                qsb_depth_db=float(p.get("qsb_depth_db", 0.0)),
+                qsb_rate_hz=float(p.get("qsb_rate_hz", 0.25)),
+                multipath_level=float(p.get("multipath_level", 0.0)),
+                multipath_delay_us=float(p.get("multipath_delay_us", 0.85)),
+                multipath_phase_deg=float(p.get("multipath_phase_deg", 35.0)),
+                cochannel_interference=float(p.get("cochannel_interference", 0.0)),
+                cochannel_offset_khz=float(p.get("cochannel_offset_khz", 10.05)),
+                tuner_type=float(p.get("tuner_type", 0.0)),
+                tuning_offset_khz=float(p.get("tuning_offset_khz", 0.0)),
+                front_end_overload=float(p.get("front_end_overload", 0.0)),
+                color_killer_threshold_db=float(p.get("color_killer_threshold_db", 18.0)),
             ), seed=self.seed)
         return self._rflink
 
@@ -226,16 +245,10 @@ class GraphExecutor:
             sig = buf.meta.get("signal")
             if sig is None:
                 sig = SignalFrame.from_rgb(buf.rgb, self.std)
-            rgb_in = sig.to_rgb()
-            conn_cfg = self.ctx.layer("connector") or {}
-            sq = float(conn_cfg.get("aspect_squeeze", 0.0))
-            if sq > 1e-4:
-                from ..stages.connector import ConnectorStage
-                rgb_in, _ = ConnectorStage._apply_aspect_squeeze(rgb_in, sq)
             # A converter box really does encode the picture itself, so the
             # format layer runs here rather than being borrowed from elsewhere.
             fmt = self._format_clone()
-            comp = fmt.apply(FrameBuffer(rgb_in, None, index, buf.time,
+            comp = fmt.apply(FrameBuffer(sig.to_rgb(), None, index, buf.time,
                                          self.std, dict(buf.meta)))
             return comp, comp.meta["signal"].to_rgb()
 
@@ -279,6 +292,10 @@ class GraphExecutor:
                 ph = np.asarray(ph, dtype=np.float32).reshape(-1, 1)
                 c, s = np.cos(ph), np.sin(ph)
                 i, q = i * c - q * s, i * s + q * c
+            ck_gain = rf.color_killer_gain()
+            if ck_gain < 0.999:
+                i = i * ck_gain
+                q = q * ck_gain
             sig_rf = SignalFrame(y.astype(np.float32),
                                  i.astype(np.float32),
                                  q.astype(np.float32))

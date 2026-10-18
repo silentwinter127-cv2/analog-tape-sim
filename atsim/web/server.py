@@ -518,7 +518,7 @@ class App:
                            "luma_bandwidth": 5.0, "chroma_bandwidth": 1.5,
                            "filter_kind": 0.0},    # gaussian: no group delay
                 "codec": {"dv_enabled": 0.0},
-                "rf": {"adjacent_channel": 0.0, "sync_loss_amount": 0.0},
+                "rf": {"enabled": 0.0, "adjacent_channel": 0.0, "sync_loss_amount": 0.0, "multipath_level": 0.0, "cochannel_level": 0.0, "if_saw_ringing": 0.0, "front_end_overload": 0.0},
                 "audio": {"enabled": 0.0},
             }
             neutral = _neutral_checked(neutral)
@@ -712,21 +712,22 @@ class App:
         }
 
     def _source_audio_window(self, start_s: float, duration_s: float,
-                             sample_rate: int, spec) -> tuple[np.ndarray, bool]:
+                             sample_rate: int, spec,
+                             project: Project | None = None) -> tuple[np.ndarray, bool]:
         """
         Fetch or synthesize a stereo float32 PCM window [start_s, start_s + duration_s).
         Returns (pcm_array, is_synthetic).
         """
         from ..codecs.audio import synthesize_test_audio
         from ..io.ffmpeg import read_audio_pcm
-        p = self.current
+        p = project if project is not None else self.current
         if p.source and int(round(spec.synth_type)) == 0:
             clip = self.store.clip_path(p.source)
-            if clip.exists() and (p.source_info or {}).get("has_audio", False):
+            if clip.exists() and (p.source_info or {}).get("has_audio", True):
                 pcm = read_audio_pcm(clip, sample_rate=sample_rate,
                                      start_s=max(0.0, float(start_s)),
                                      duration_s=max(0.1, float(duration_s)))
-                if pcm is not None and len(pcm) > 0:
+                if pcm is not None and len(pcm) > 0 and float(np.max(np.abs(pcm))) > 1e-5:
                     target_n = max(1, int(round(duration_s * sample_rate)))
                     if len(pcm) < target_n:
                         pad = np.zeros((target_n - len(pcm), 2), dtype=np.float32)
@@ -734,7 +735,8 @@ class App:
                     else:
                         pcm = pcm[:target_n]
                     return pcm, False
-        kind = int(round(spec.synth_type)) if int(round(spec.synth_type)) > 0 else 1
+        # Preserve synth_type=0 (retro synth chord+beat) when falling back so preview & export match:
+        kind = int(round(spec.synth_type))
         pcm = synthesize_test_audio(duration_s, sample_rate=sample_rate,
                                     kind=kind, seed=p.seed, start_s=start_s)
         return pcm, True
@@ -874,21 +876,16 @@ class App:
             audio_enabled = float(audio_cfg.get("enabled", 1.0)) > 0.5
             if keep_audio:
                 try:
-                    from ..codecs.audio import AudioSimulator, AudioSpec, synthesize_test_audio
-                    from ..io.ffmpeg import read_audio_pcm, wav_encode
+                    from ..codecs.audio import AudioSimulator, AudioSpec
+                    from ..io.ffmpeg import wav_encode
                     spec_a = AudioSpec.from_params(audio_cfg)
                     dur_s = max(1.0 / max(1.0, project.fps), total / max(1e-6, project.fps))
                     sr = 44100
-                    pcm_in = None
-                    if project.source and int(round(spec_a.synth_type)) == 0:
-                        clip = self.store.clip_path(project.source)
-                        if clip.exists():
-                            pcm_in = read_audio_pcm(clip, sample_rate=sr, start_s=0.0, duration_s=dur_s)
-                    if pcm_in is None and int(round(spec_a.synth_type)) > 0:
-                        pcm_in = synthesize_test_audio(dur_s, sample_rate=sr,
-                                                       kind=int(round(spec_a.synth_type)),
-                                                       seed=project.seed, start_s=0.0)
-                    if pcm_in is not None:
+                    # Always use the exact same _source_audio_window helper as /api/audio preview
+                    # so previewed sound, exported WAV, and exported MP4 audio track are 100% identical
+                    # and never silent even when source has no audio track or synth_type == 0.
+                    pcm_in, _ = self._source_audio_window(0.0, dur_s, sr, spec_a, project=project)
+                    if pcm_in is not None and len(pcm_in) > 0:
                         if audio_enabled:
                             if r.chain is None:
                                 r._build_chain()
@@ -898,6 +895,7 @@ class App:
                             sim_a = AudioSimulator(resolved_p, seed=project.seed,
                                                    fps=project.fps, sample_rate=sr)
                             arun = sim_a.process(pcm_in, start_s=0.0,
+                                                 tape_stage=t_stage,
                                                  tape_plan=getattr(t_stage, "plan", None))
                             pcm_out = arun.pcm
                         else:
@@ -905,10 +903,6 @@ class App:
                         sim_wav_path = self.store.renders / f"{job_id}_audio.wav"
                         sim_wav_path.write_bytes(wav_encode(pcm_out, sample_rate=sr))
                         audio_src = str(sim_wav_path)
-                    elif project.source:
-                        clip = self.store.clip_path(project.source)
-                        if clip.exists():
-                            audio_src = str(clip)
                 except Exception:
                     if project.source:
                         clip = self.store.clip_path(project.source)

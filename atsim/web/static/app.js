@@ -78,7 +78,30 @@ function applyProject(d) {
     : "内置测试图（未导入素材）";
   // 维度面板：环境 / 设备个体 / 关键帧时间线。放在最后，
   // 所以面板反映的是服务端刚刚返回的状态——只有一份真相。
+  syncWTBar();
   if (window.SessionUI) SessionUI.syncFromProject(d);
+}
+
+function updateWTReadout(zVal) {
+  const cam = (S.params && S.params.camera) || {};
+  const z = Math.min(1, Math.max(0, zVal !== undefined ? zVal : (cam.wt_zoom || 0)));
+  const maxZ = cam.wt_max_zoom || 4.0;
+  const mag = Math.pow(maxZ, z);
+  const fnum = 1.4 + (2.9 - 1.4) * Math.pow(z, 1.15);
+  const state = z < 0.15 ? "W 端光晕态" : (z < 0.55 ? "中焦过渡态" : "T 端具体光源细节");
+  const rd = $("wtReadout");
+  if (rd) rd.textContent = `${mag.toFixed(2)}× · f/${fnum.toFixed(1)} · ${state}`;
+}
+
+function syncWTBar() {
+  const cam = (S.params && S.params.camera) || {};
+  const sl = $("wtZoomSlider");
+  if (sl && document.activeElement !== sl) sl.value = cam.wt_zoom !== undefined ? cam.wt_zoom : 0;
+  const dm = $("wtDynMode");
+  if (dm) dm.value = String(Math.round(cam.zoom_dynamic_mode || 0));
+  const osd = $("wtOsdToggle");
+  if (osd) osd.checked = (cam.zoom_osd || 0) > 0.5;
+  updateWTReadout(cam.wt_zoom || 0);
 }
 
 /* --------------------------------------------------------------- chrome */
@@ -171,9 +194,79 @@ function wireChrome() {
   $("btnTimeline").onclick = showTimeline;
   $("tlClose").onclick = () => $("modal").classList.add("hidden");
   $("jobClose").onclick = () => $("jobbar").classList.add("hidden");
+  wireWTBar();
   initDivider();
   layoutAB();
   initAudioMonitor();
+}
+
+function wireWTBar() {
+  const sl = $("wtZoomSlider");
+  const btnW = $("btnZoomW");
+  const btnT = $("btnZoomT");
+  const dm = $("wtDynMode");
+  const osd = $("wtOsdToggle");
+  if (!sl) return;
+
+  const applyZ = (nv, debounce) => {
+    const z = Math.min(1, Math.max(0, parseFloat(nv) || 0));
+    sl.value = z;
+    S.params.camera = S.params.camera || {};
+    S.params.camera.wt_zoom = z;
+    updateWTReadout(z);
+    if (S.layer === "camera") renderParams();
+    setParam("camera", "wt_zoom", z, debounce);
+  };
+
+  sl.oninput = () => applyZ(sl.value, true);
+  sl.onchange = () => applyZ(sl.value, false);
+
+  let rockerTimer = null;
+  const startRocker = (dir) => {
+    clearInterval(rockerTimer);
+    const stepOnce = () => {
+      const cur = parseFloat(sl.value) || 0;
+      const next = Math.min(1, Math.max(0, cur + dir * 0.04));
+      applyZ(next, true);
+      if (next <= 0 || next >= 1) stopRocker();
+    };
+    stepOnce();
+    rockerTimer = setInterval(stepOnce, 75);
+  };
+  const stopRocker = () => {
+    if (rockerTimer) {
+      clearInterval(rockerTimer);
+      rockerTimer = null;
+      applyZ(sl.value, false);
+    }
+  };
+  if (btnW) {
+    btnW.onmousedown = () => startRocker(-1);
+    btnW.ontouchstart = (e) => { e.preventDefault(); startRocker(-1); };
+  }
+  if (btnT) {
+    btnT.onmousedown = () => startRocker(1);
+    btnT.ontouchstart = (e) => { e.preventDefault(); startRocker(1); };
+  }
+  window.addEventListener("mouseup", stopRocker);
+  window.addEventListener("touchend", stopRocker);
+
+  if (dm) {
+    dm.onchange = () => {
+      const v = parseFloat(dm.value) || 0;
+      S.params.camera = S.params.camera || {};
+      S.params.camera.zoom_dynamic_mode = v;
+      setProject({ params: { camera: { zoom_dynamic_mode: v } } });
+    };
+  }
+  if (osd) {
+    osd.onchange = () => {
+      const v = osd.checked ? 1.0 : 0.0;
+      S.params.camera = S.params.camera || {};
+      S.params.camera.zoom_osd = v;
+      setProject({ params: { camera: { zoom_osd: v } } });
+    };
+  }
 }
 
 function jsonPost(obj) {
@@ -312,104 +405,65 @@ function renderParams() {
 // here.  The control still calls `setParam(layer, key, value)` with a number, so the API, the settings file, the
 // keyframes and the render path are all unchanged: only the widget differs.
 const SELECTORS = {
+  "camera.zoom_dynamic_mode": [
+    [0, "手动固定 W–T 位置"],
+    [1, "W→T 电动推进放大（光晕→具体光源）"],
+    [2, "T→W 电动拉远缩小（具体光源→光晕）"],
+    [3, "W↔T 往复变焦测试"],
+  ],
   "camera.nv_mode": [
     [0, "关"],
     [1, "NightShot（红外 + 绿单色）"],
     [2, "Super NightShot（帧积累）"],
     [3, "Color Slow Shutter（慢快门保留彩色）"],
   ],
-  "camera.zoom_kind": [
-    [0, "0 · 线性 (linear)"],
-    [1, "1 · 家用电动变焦马达 (motor)"],
-    [2, "2 · 广播级伺服变焦 (cinema)"],
+  "rf.tv_standard": [
+    [0, "PAL-D/K（中国大陆 8MHz / +6.5MHz 伴音）"],
+    [1, "PAL-I（港澳珠三角 8MHz / +6.0MHz 伴音）"],
+    [2, "NTSC-M（6MHz / +4.5MHz 伴音）"],
   ],
-  "format.filter_kind": [
-    [0, "0 · 高斯无相移 (gaussian)"],
-    [1, "1 · 定 K 型多节级联 (constant_k)"],
-    [2, "2 · 巴特沃斯有源滤波 (butterworth)"],
+  "rf.propagation_mode": [
+    [0, "本地视距传播 (LOS)"],
+    [1, "常规超视距弱信号 (Troposcatter)"],
+    [2, "TV-DX 大气波导现象 (Atmospheric Ducting 异常清晰)"],
+    [3, "电离层 Es 突发层反射 (Sporadic-E Skywave)"],
   ],
-  "format.separation_kind": [
-    [0, "0 · 频带分割 (band)"],
-    [1, "1 · 窄孔径盒式 (box)"],
-    [2, "2 · 1H 延迟线梳状 (line1)"],
-    [3, "3 · 2H 双延迟线梳状 (line2)"],
-    [4, "4 · 2D 对角 FIR 梳状 (fir2d)"],
-    [5, "5 · 递归垂直色度混合 (iir)"],
-  ],
-  "codec.codec_kind": [
-    [0, "0 · 关闭数字编解码（模拟直通）"],
-    [1, "1 · DV25 / MiniDV (4:1:1 / 4:2:0 DCT)"],
-    [2, "2 · MPEG-1 / Video CD (352×240 运动补偿)"],
-  ],
-  "tape.tape_speed": [
-    [0, "0 · SP 标准速度"],
-    [1, "1 · LP 二倍长时"],
-    [2, "2 · EP / SLP 三倍超长时"],
-  ],
-  "tape.shuttle_mode": [
-    [0, "0 · 自动（随介质格式）"],
-    [1, "1 · 强制模拟整行条带 (VHS/Hi8)"],
-    [2, "2 · 强制数字 16×16 宏块 (MiniDV)"],
-  ],
-  "player.separation_kind": [
-    [0, "0 · 频带分割 (band)"],
-    [1, "1 · 窄孔径盒式 (box)"],
-    [2, "2 · 1H 延迟线梳状 (line1)"],
-    [3, "3 · 2H 双延迟线梳状 (line2)"],
-    [4, "4 · 2D 对角 FIR 梳状 (fir2d)"],
-    [5, "5 · 递归垂直色度混合 (iir)"],
-  ],
-  "display.mask_type": [
-    [0, "0 · 荫栅 (Aperture Grille / 特丽珑)"],
-    [1, "1 · 槽孔荫罩 (Slot Mask)"],
-    [2, "2 · 圆点荫罩 (Dot Triad Shadow Mask)"],
-  ],
-  "overlay.at": [
-    [0, "0 · 画面成形之后（摄像机自身 OSD）"],
-    [1, "1 · 介质之前（字幕机录到磁带上）"],
-  ],
-  "overlay.style": [
-    [0, "0 · 自定义（使用下方颜色参数）"],
-    [1, "1 · 绿字·深描边（OSD 经典）"],
-    [2, "2 · 红字·深描边（REC 经典）"],
-    [3, "3 · 白字·深描边"],
-    [4, "4 · 黄字·深描边"],
-    [5, "5 · 青字·深描边"],
-  ],
-  "overlay.halign": [
-    [0, "0 · 左对齐"],
-    [1, "1 · 水平居中"],
-    [2, "2 · 右对齐"],
-  ],
-  "overlay.valign": [
-    [0, "0 · 顶部对齐"],
-    [1, "1 · 垂直居中"],
-    [2, "2 · 底部对齐"],
-  ],
-  "overlay.pos": [
-    [0, "0 · 左上"],
-    [1, "1 · 上中"],
-    [2, "2 · 右上"],
-    [3, "3 · 左中"],
-    [4, "4 · 正中"],
-    [5, "5 · 右中"],
-    [6, "6 · 左下"],
-    [7, "7 · 下中（字幕常用）"],
-    [8, "8 · 右下（录像机常用）"],
+  "rf.tuner_type": [
+    [0, "传统铁壳高频头 (Can Tuner)"],
+    [1, "淘宝廉价电视卡硅调谐器 (SAA713x / TDA9887)"],
+    [2, "高选择性 DX 接收机 (High-Q DX Tuner)"],
   ],
   "audio.mode": [
-    [0, "自动（跟随磁带/编码格式）"    [6, "PAL-D RF 伴音解调（VHF 6频道 6.5MHz FM + 松下J27单声道）"],
-  ],
-    [1, "VHS 线性磁迹（窄带 + 磁带嘶声 + 明显抖晃）"],
-    [2, "VHS Hi-Fi AFM 立体声（失落时回退线性磁迹 + 切换爆音）"],
+    [0, "自动（跟随磁带制式）"],
+    [1, "VHS 线性磁迹"],
+    [2, "VHS Hi-Fi 调频深层记录"],
     [3, "8mm / Hi8 AFM 调频伴音"],
-    [4, "MiniDV 12-bit 非线性 PCM（数字静音/保持块故障）"],
-    [5, "Video CD MP2 低码率数字伴音"],
+    [4, "MiniDV PCM 数字音频"],
+    [5, "机内麦克风直录"],
+    [6, "RF 射频潮湿受潮回路伴音"],
+    [7, "TV-DX 电视卡 FM 伴音解调（含静噪门限与波导呼吸）"],
   ],
-  "audio.synth_type": [
-    [0, "和弦 + 节拍脉冲（综合测试音画同步与音高抖晃）"],
-    [1, "1 kHz 基准正弦波（测试抖晃与谐波失真）"],
-    [2, "扫频 + 瞬态滴答（测试频响带宽与瞬态失落）"],
+  "overlay.style": [
+    [0, "0 · 自定义（使用上方RGB参数）"],
+    [1, "1 · 绿字黑边（OSD 经典）"],
+    [2, "2 · 红字黑边（REC 经典）"],
+    [3, "3 · 白字黑边"],
+    [4, "4 · 黄字黑边"],
+    [5, "5 · 青字黑边"],
+    [6, "6 · 80年代纪录片·金黄标宋立体字"],
+    [7, "7 · 80年代纪录片·象牙白光学叠印字"],
+    [8, "8 · 广播级字幕机·琥珀黄滚屏字"],
+    [9, "9 · 80年代专题片·深红描金标题字"],
+  ],
+  "overlay.anim_mode": [
+    [0, "0 · 静态常显"],
+    [1, "1 · 逐字打字机显字"],
+    [2, "2 · 逐行顺序显字"],
+    [3, "3 · 水平光栅扫描擦除"],
+    [4, "4 · 百叶窗隔行扫描显字"],
+    [5, "5 · 纵向滚屏（片尾字幕）"],
+    [6, "6 · 光学叠化淡入淡出"],
+    [7, "7 · 横向滑入定格"],
   ],
 };
 
@@ -884,6 +938,64 @@ function initAudioMonitor() {
   const scope = $("audioScope");
   if (!btn || !player || !scope) return;
 
+  const btnWin = $("btnAudioExportWin");
+  if (btnWin) {
+    btnWin.onclick = async () => {
+      const clean = $("audioClean") && $("audioClean").checked ? "original" : "sim";
+      const start = Math.max(0, Math.floor(S.t / 1.5) * 1.5);
+      const orig = btnWin.textContent;
+      btnWin.disabled = true;
+      btnWin.textContent = "导出中…";
+      try {
+        const r = await fetch(`/api/audio?t=${start.toFixed(3)}&dur=${_audioWinDur}&mode=${clean}&_=${Date.now()}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const blob = await r.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `atsim_audio_${start.toFixed(1).replace(".", "_")}s_${_audioWinDur}s.wav`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        toast("已导出试听段伴音 " + a.download);
+      } catch (e) {
+        toast("伴音导出失败：" + e.message);
+      } finally {
+        btnWin.disabled = false;
+        btnWin.textContent = orig;
+      }
+    };
+  }
+  const btnFull = $("btnAudioExportFull");
+  if (btnFull) {
+    btnFull.onclick = async () => {
+      const clean = $("audioClean") && $("audioClean").checked ? "original" : "sim";
+      const orig = btnFull.textContent;
+      btnFull.disabled = true;
+      btnFull.textContent = "合成中…";
+      try {
+        const info = (S.project && S.project.source_info) || {};
+        const dur = Math.min(30.0, Math.max(3.0, parseFloat(info.duration) || 6.0));
+        const r = await fetch(`/api/audio?t=0&dur=${dur.toFixed(3)}&mode=${clean}&_=${Date.now()}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const blob = await r.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `atsim_audio_full_${dur.toFixed(1).replace(".", "_")}s.wav`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        toast("已导出全片伴音 " + a.download);
+      } catch (e) {
+        toast("全片伴音导出失败：" + e.message);
+      } finally {
+        btnFull.disabled = false;
+        btnFull.textContent = orig;
+      }
+    };
+  }
+
   btn.onclick = () => {
     if (!player.paused) {
       player.pause();
@@ -891,7 +1003,8 @@ function initAudioMonitor() {
     }
     const clean = $("audioClean") && $("audioClean").checked ? "original" : "sim";
     _audioWinDur = 3.0;
-    _audioWinStart = Math.max(0, S.t);
+    // Align preview start time with refreshAudioTimeline & exported window
+    _audioWinStart = Math.max(0, Math.floor(S.t / 1.5) * 1.5);
     player.src = `/api/audio?t=${_audioWinStart.toFixed(3)}&dur=${_audioWinDur}&mode=${clean}&_=${Date.now()}`;
     btn.textContent = "加载伴音…";
     player.play().then(() => {

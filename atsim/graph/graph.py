@@ -732,3 +732,36 @@ GRAPH_PRESETS: dict[str, dict] = {
         },
     },
 }
+
+
+GRAPH_PRESETS["tv_dx_ducting"] = {
+    "label": "广东无线模拟电视 TV-DX 大气波导超视距接收（淘宝电视卡）",
+    "note": "源 → 编码 → RF 发射调制 → TV-DX 波导/电离层信道 → 淘宝硅调谐器电视卡解调 → 显示",
+    "build": rf_loop_graph,
+    "params": {
+        "rf": {
+            "enabled": 1.0,
+            "tv_standard": 0.0,
+            "propagation_mode": 2.0,
+            "distance_km": 210.0,
+            "signal_dbm": -74.0,
+            "dx_duct_gain_db": 26.0,
+            "qsb_depth_db": 5.5,
+            "qsb_rate_hz": 0.35,
+            "multipath_level": 0.22,
+            "multipath_delay_us": 1.15,
+            "multipath_phase_deg": 42.0,
+            "multipath_drift_hz": 0.22,
+            "tuner_type": 1.0,
+            "noise_figure_db": 9.5,
+            "if_saw_ringing": 0.42,
+            "tuning_offset_khz": 35.0,
+            "adjacent_channel": 0.14,
+            "cochannel_interference": 0.16,
+            "cochannel_offset_khz": 10.5,
+            "front_end_overload": 0.08,
+            "color_killer_threshold_db": 15.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}

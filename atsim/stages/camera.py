@@ -26,7 +26,8 @@ from ..core.signal import gaussian_kernel, lowpass
 #: The luma vector, used by the tone mechanisms.  Rec.601 weights, as elsewhere in the model.
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 from ..codecs.lens import (LensSpec, field_curvature, longitudinal_ca, chromatic_aberration,
-                           coma, astigmatism, spherical, distortion, source_glow)
+                           coma, astigmatism, spherical, distortion, source_glow,
+                           optical_wt_zoom, light_streaks, draw_trv310e_zoom_osd)
 
 
 def _subpixel_shift(rgb: np.ndarray, dx: float, dy: float) -> np.ndarray:
@@ -80,6 +81,8 @@ class CameraStage(Stage):
         self._bumps = None
         self._sites = None
         self._zoom_softness = 0.0
+        self._cur_eff_zoom = 0.0
+        self._prev_eff_zoom = None
         self._defocus = 0.0
         self._af_offset = 0.0
         # state that must survive a parameter change: the auto-control loops take time to
@@ -254,6 +257,17 @@ class CameraStage(Stage):
         #: which `zoom_curve` could never match against its `"linear"` / `"cinema"` names -- so even once the call
         #: site stopped hardcoding `"motor"`, the value still had to be translated rather than stringified.
         self.zoom_kind = float(cfg.get("zoom_kind", 1.0))
+        self.wt_zoom = float(np.clip(cfg.get("wt_zoom", 0.0), 0.0, 1.0))
+        self.wt_max_zoom = float(np.clip(cfg.get("wt_max_zoom", 4.0), 1.0, 16.0))
+        self.zoom_center_x = float(np.clip(cfg.get("zoom_center_x", 0.5), 0.05, 0.95))
+        self.zoom_center_y = float(np.clip(cfg.get("zoom_center_y", 0.5), 0.05, 0.95))
+        self.zoom_dynamic_mode = int(round(float(cfg.get("zoom_dynamic_mode", 0.0))))
+        self.zoom_speed = float(np.clip(cfg.get("zoom_speed", 0.35), 0.05, 2.0))
+        self.zoom_resolve_detail = float(np.clip(cfg.get("zoom_resolve_detail", 0.75), 0.0, 1.5))
+        self.zoom_osd = float(cfg.get("zoom_osd", 0.0)) > 0.5
+        self.light_streak_amount = float(np.clip(cfg.get("light_streak_amount", 0.0), 0.0, 2.0))
+        self.light_streak_angle = float(cfg.get("light_streak_angle", 0.0))
+        self.light_streak_length = float(np.clip(cfg.get("light_streak_length", 0.55), 0.1, 1.5))
         self.smear = float(cfg.get("ccd_smear", 0.0))
         self.halation = float(cfg.get("halation", 0.0))
         #: How much the halation's tint follows the **blown region's own colour** instead of the fixed
@@ -886,6 +900,11 @@ class CameraStage(Stage):
         must not be confusable with the display stage's bloom.
         """
         if self.smear < 1e-4 or (getattr(self.nv, "_emit", None) is not None and self.smear <= 0.40):
+            if getattr(self, 'light_streak_amount', 0.0) > 1e-4:
+                return light_streaks(rgb, self.light_streak_amount,
+                                     angle_deg=getattr(self, 'light_streak_angle', 0.0),
+                                     length=getattr(self, 'light_streak_length', 0.55),
+                                     zoom_pos=getattr(self, '_cur_eff_zoom', 0.0))
             return rgb
         # **Per channel, because the excess charge is a property of each well.**  The red channel's well fills
         # first in a tungsten-lit highlight, then green's, then blue's -- so the charge that spills down the
@@ -911,7 +930,13 @@ class CameraStage(Stage):
         # a wavelength-dependent transfer efficiency, because blue is transferred less efficiently along the
         # readout and lingers: the reason a night smear reads cyan rather than the grey a pure threshold gives
         lead = np.array([0.80, 1.00, 1.30], dtype=np.float32)[None, None, :]
-        return (rgb + (0.85 * self.smear) * cols * lead).astype(np.float32)
+        out = (rgb + (0.85 * self.smear) * cols * lead).astype(np.float32)
+        if getattr(self, 'light_streak_amount', 0.0) > 1e-4:
+            out = light_streaks(out, self.light_streak_amount,
+                                angle_deg=getattr(self, 'light_streak_angle', 0.0),
+                                length=getattr(self, 'light_streak_length', 0.55),
+                                zoom_pos=getattr(self, '_cur_eff_zoom', 0.0))
+        return out
 
     def _halation(self, rgb: np.ndarray) -> np.ndarray:
         """
@@ -1205,8 +1230,14 @@ class CameraStage(Stage):
                 hp_h = rgb_olpf - _gf_cfa(rgb_olpf, sigma=(0.0, 2.3 * sc, 0.0))
                 rgb_base = np.clip(rgb_olpf + 0.22 * hp_h, 0.0, 2.0)
 
-                emit_zone = np.clip(_gf_cfa(emit, sigma=3.0 * sc) * 2.1, 0.0, 1.0)
-                mesh_fill_w = np.clip(emit_zone * (rel_peak0 ** 1.6) * 0.68, 0.0, 0.65)
+                _z_cur = float(np.clip(getattr(self, '_cur_eff_zoom', 0.0), 0.0, 1.0))
+                _z_res = float(np.clip(getattr(self, 'zoom_resolve_detail', 0.75), 0.0, 1.5))
+                # At Wide (z=0), mesh_fill_w coalesces perforated fan mesh and closely-spaced LEDs into
+                # a continuous glowing halo; as we zoom toward Telephoto (z->1), mesh_fill_w drops so
+                # individual LED beads, twin light tubes, and mesh apertures resolve clearly!
+                _halo_coalesce = float(np.clip(1.0 - 0.82 * _z_cur * _z_res, 0.12, 1.25))
+                emit_zone = np.clip(_gf_cfa(emit, sigma=max(0.8, (3.0 - 1.35 * _z_cur) * sc)) * 2.1, 0.0, 1.0)
+                mesh_fill_w = np.clip(emit_zone * (rel_peak0 ** 1.6) * 0.68 * _halo_coalesce, 0.0, 0.65)
                 rgb_opt = rgb_base * (1.0 - mesh_fill_w[..., None]) + np.maximum(rgb_base, rgb_max_env * 0.92) * mesh_fill_w[..., None]
 
                 r, g, b = rgb_opt[..., 0], rgb_opt[..., 1], rgb_opt[..., 2]
@@ -1270,9 +1301,10 @@ class CameraStage(Stage):
 
                 # 4. Focused Emitter Bloom & CCD Highlight Translucency (White-Hot Core Desaturation)
                 hot_emit = emit_zone * (peak_env ** 2.6) * (1.0 - (0.45 + 0.40 * indoor_lock) * front_atten)
-                bloom_b = _gf_cfa(hot_emit * b + 0.15 * (wall_plume ** 1.6) * b, sigma=3.0 * sc)
-                bloom_g = _gf_cfa(hot_emit * g + 0.12 * (wall_plume ** 1.6) * g, sigma=3.0 * sc)
-                bloom_r = _gf_cfa((hub_region * (peak_env ** 1.8) + 0.38 * hot_emit + 0.12 * (wall_plume ** 1.6)) * r, sigma=3.2 * sc)
+                _b_sig = max(1.1, (3.0 - 1.25 * _z_cur * min(1.0, _z_res)) * sc)
+                bloom_b = _gf_cfa(hot_emit * b + 0.15 * (wall_plume ** 1.6) * b, sigma=_b_sig)
+                bloom_g = _gf_cfa(hot_emit * g + 0.12 * (wall_plume ** 1.6) * g, sigma=_b_sig)
+                bloom_r = _gf_cfa((hub_region * (peak_env ** 1.8) + 0.38 * hot_emit + 0.12 * (wall_plume ** 1.6)) * r, sigma=_b_sig * 1.06)
 
                 cfa_rgb[..., 0] += (0.44 * (1.0 - indoor_lock) + 0.30 * indoor_lock) * bloom_r
                 cfa_rgb[..., 1] += (0.35 * (1.0 - indoor_lock) + 0.26 * indoor_lock) * bloom_g + 0.14 * bloom_b
@@ -1579,8 +1611,33 @@ class CameraStage(Stage):
         # furthest from the spacing they were designed around.  Applied through the operator's motor
         # curve rather than linearly, because that is how the control moves.  Without this the parameter
         # is read and never used -- which is the "reachable but inert" fault this project keeps finding.
+        # --- W-T Optical Zoom Rocker Position & Dynamic Trajectory -------------
+        from ..codecs.operator import zoom_curve
+        _kind = {0: "linear", 1: "motor", 2: "cinema"}.get(int(round(float(getattr(self, "zoom_kind", 1.0)))), "motor")
+        eff_wt_zoom = float(getattr(self, "wt_zoom", 0.0))
+        dyn_mode = int(getattr(self, "zoom_dynamic_mode", 0))
+        if dyn_mode > 0:
+            t_sec = buf.index / max(1e-6, self.ctx.fps)
+            phase = float(np.clip(t_sec * float(getattr(self, "zoom_speed", 0.35)), 0.0, 2.0))
+            target_w = eff_wt_zoom if eff_wt_zoom > 0.05 else 1.0
+            if dyn_mode == 1:    # W -> T push-in zoom
+                eff_wt_zoom = target_w * zoom_curve(min(1.0, phase), _kind)
+            elif dyn_mode == 2:  # T -> W pull-out zoom
+                eff_wt_zoom = target_w * (1.0 - zoom_curve(min(1.0, phase), _kind))
+            elif dyn_mode == 3:  # W -> T -> W rocker sweep
+                tri = phase if phase <= 1.0 else max(0.0, 2.0 - phase)
+                eff_wt_zoom = target_w * zoom_curve(tri, _kind)
+        eff_wt_zoom = float(np.clip(eff_wt_zoom, 0.0, 1.0))
+        self._cur_eff_zoom = eff_wt_zoom
+        if self._prev_eff_zoom is None:
+            zoom_vel = 0.0
+        else:
+            zoom_vel = abs(eff_wt_zoom - self._prev_eff_zoom) / max(1e-4, dt)
+        self._prev_eff_zoom = eff_wt_zoom
+        wt_active = (eff_wt_zoom > 1e-4) or (dyn_mode > 0)
+        wt_mag = float(getattr(self, "wt_max_zoom", 4.0) ** eff_wt_zoom) if wt_active else 1.0
+
         if self.zoom_travel > 1e-6:
-            from ..codecs.operator import zoom_curve
             #: **The curve the user chose, which was being replaced by a hardcoded `"motor"` right here.**
             #:
             #: `zoom_kind` is a selector -- 0 linear, 1 consumer motor, 2 professional servo -- and `zoom_curve`
@@ -1602,10 +1659,14 @@ class CameraStage(Stage):
             self._zoom_softness = 0.22 * zoom_curve(self.zoom_travel, _kind)
         else:
             self._zoom_softness = 0.0
+        self._cur_eff_zoom = 0.0
+        self._prev_eff_zoom = None
         # the total defocus this frame: the loop's motor position plus the zoom's softness.  Applied as
         # a blur, not as the coating loss `_lens_wear` models -- a misfocused lens convolves the image,
         # while a worn coating scatters light and lifts the blacks, and they are different faults.
-        self._defocus = float(np.clip(getattr(self, "_af_offset", 0.0) + self._zoom_softness,
+        # Telephoto shallow DOF + transient AF hunting during active W-T rocker motion
+        _wt_defocus = (0.14 * zoom_curve(eff_wt_zoom, _kind) + 0.28 * min(1.0, zoom_vel * 0.8)) if wt_active else 0.0
+        self._defocus = float(np.clip(getattr(self, "_af_offset", 0.0) + self._zoom_softness + _wt_defocus,
                                       0.0, 1.6))
 
         if self.shake_intensity > 1e-6 or self.bump_amount > 1e-6:
@@ -1618,7 +1679,21 @@ class CameraStage(Stage):
             dx, dy = shake_offset(HAND, self.shake_intensity, buf.index, self.ctx.fps,
                                   derive_seed(self.ctx.seed, "camera", "hand"), self._bumps,
                                   width=rgb.shape[1])
+            # Angular handshake displacement scales up with focal length (Telephoto magnifies angular tremor)
+            if wt_active and wt_mag > 1.0:
+                ang_scale = float(wt_mag ** 0.72)
+                dx *= ang_scale
+                dy *= ang_scale
             rgb = _subpixel_shift(rgb, dx, dy)
+
+        # --- W-T Optical Magnification & Halo-to-Source Resolution (before sensor readout) ---
+        if wt_active:
+            rgb, _ = optical_wt_zoom(
+                rgb, eff_wt_zoom, max_zoom=self.wt_max_zoom,
+                center_x=self.zoom_center_x, center_y=self.zoom_center_y,
+                resolve_detail=self.zoom_resolve_detail,
+            )
+            self._raw_frame_rgb = rgb
 
         # --- automatic control, in the order the camera makes its decisions ----
         # focus first: it is the lens, before anything else in the chain
@@ -1655,6 +1730,17 @@ class CameraStage(Stage):
             self.exposure = float(np.clip(self.exposure + float(getattr(self, "nv_exposure_trim", 0.0)), -3.0, 3.0))
         if self.awb_enabled:
             self._awb_gains = self._awb.update(rgb, dt)
+
+        # Effective aperture drop from f/1.4 (W) to f/2.9 (T): light reaching the sensor falls by ~1.05 stops
+        # while the camcorder's AE/AGC loop compensates most of the brightness at the cost of higher AGC noise.
+        _saved_exposure = self.exposure
+        _saved_gain = self.gain
+        if wt_active and eff_wt_zoom > 1e-4:
+            # Uncompensated residual exposure drop at T (-0.18 stops when AE is on, -0.42 stops when fixed)
+            aperture_ev_drop = (-0.18 if self.ae_enabled else -0.36) * (eff_wt_zoom ** 1.25)
+            self.exposure = float(self.exposure + aperture_ev_drop)
+            # Automatic gain control (AGC) boosts analog gain as f-number narrows toward T
+            self.gain = float(self.gain + 0.32 * (eff_wt_zoom ** 1.15))
 
         rgb = self._white_balance(rgb)
         rgb = self._expose(rgb)
@@ -1716,18 +1802,43 @@ class CameraStage(Stage):
         # Measured, putting `distortion` ahead of `field_curvature` cost 2.96e-04 in the corners even with
         # `distortion` at zero -- it returns `rgb` through a copy, so the array `field_curvature` receives has a
         # different float32 history.  A move has to preserve the *sequence*, not just the set.
-        rgb = distortion(rgb, self.lens)
-        rgb = chromatic_aberration(rgb, self.lens)
-        rgb = field_curvature(rgb, self.lens)
-        rgb = longitudinal_ca(rgb, self.lens)
-        rgb = coma(rgb, self.lens)
-        rgb = astigmatism(rgb, self.lens)
+        # W-T Zoom-Coupled Lens Aberration Envelope:
+        #   - Distortion shifts from barrel (<0) at Wide (W) to pincushion (>0) at Telephoto (T)
+        #   - Lateral CA, longitudinal CA, and spherical aberration grow with focal length at T
+        #   - Source glow tightens at T as diffuse wide-angle halos resolve into concrete source details
+        if wt_active:
+            import dataclasses as _dc
+            z_t = eff_wt_zoom
+            dist_wt = self.lens.distortion + (-0.12 * (1.0 - z_t) if z_t < 0.35 else 0.14 * ((z_t - 0.35) / 0.65)) * z_t
+            lat_ca_wt = self.lens.chroma_aberration * (1.0 + 0.65 * z_t) + 0.18 * z_t
+            lon_ca_wt = self.lens.longitudinal_ca * (1.0 + 0.85 * z_t) + 0.22 * (z_t ** 1.3)
+            coma_wt   = self.lens.coma * (1.0 + 0.30 * z_t)
+            sph_wt    = self.lens.spherical + 0.14 * (z_t ** 1.4)
+            glow_wt   = self.lens.source_glow * float(np.clip(1.0 - 0.55 * z_t * self.zoom_resolve_detail, 0.25, 1.0))
+            eff_lens = _dc.replace(
+                self.lens,
+                distortion=dist_wt,
+                chroma_aberration=lat_ca_wt,
+                longitudinal_ca=lon_ca_wt,
+                coma=coma_wt,
+                spherical=sph_wt,
+                source_glow=glow_wt,
+            )
+        else:
+            eff_lens = self.lens
+
+        rgb = distortion(rgb, eff_lens)
+        rgb = chromatic_aberration(rgb, eff_lens)
+        rgb = field_curvature(rgb, eff_lens)
+        rgb = longitudinal_ca(rgb, eff_lens)
+        rgb = coma(rgb, eff_lens)
+        rgb = astigmatism(rgb, eff_lens)
         # **Scattered light first, because it is the widest and softest of the light mechanisms.**  A halo
         # that carries the source's own colour, which is what the reference's near field shows: 60 and 100
         # rows below a blown core it runs to B-R -0.170 and -0.510, where the model reached -0.014 and
         # -0.034.  Nothing else in the module follows the source's colour.
-        rgb = source_glow(rgb, self.lens)
-        rgb = spherical(rgb, self.lens)
+        rgb = source_glow(rgb, eff_lens)
+        rgb = spherical(rgb, eff_lens)
         rgb = self._sharpen(rgb)
         rgb = self._overflow_drain_comatic(rgb)
         # **The monochrome green view, after every sensor term.**  It is the viewfinder's output, so nothing at the
@@ -1766,7 +1877,18 @@ class CameraStage(Stage):
         # gain the camera settles on and the black level it puts under it.  Everything before this is the signal.
         rgb = self._dsp_level(rgb)
         rgb = self._highlight_compress(rgb)
+        if wt_active and getattr(self, "zoom_osd", False):
+            rgb = draw_trv310e_zoom_osd(rgb, eff_wt_zoom)
+        self.exposure = _saved_exposure
+        self.gain = _saved_gain
 
+        out_meta = dict(buf.meta)
+        if wt_active:
+            out_meta["wt_zoom"] = {
+                "zoom_pos": round(eff_wt_zoom, 4),
+                "magnification": round(wt_mag, 3),
+                "effective_f_number": round(1.4 + (2.9 - 1.4) * (eff_wt_zoom ** 1.15), 2),
+            }
         return FrameBuffer(np.clip(rgb, 0.0, 2.0).astype(np.float32), None,
-                           buf.index, buf.time, buf.std, dict(buf.meta))
+                           buf.index, buf.time, buf.std, out_meta)
 

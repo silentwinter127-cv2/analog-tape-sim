@@ -192,6 +192,34 @@ def build_schema() -> ParamSchema:
                help="0=线性；1=**消费机马达**（克服静摩擦 → 扫过 → 断电停住）；"
                     "2=专业伺服（两端都平滑）。中段斜率 0.91、末端 1.70——"
                     "断电的马达**仍然有速度**，这正是它和缓入缓出的区别。")
+    cam.define("wt_zoom", "W-T 变焦位置", 0.0, 0.0, 1.0, unit="W..T", group=g,
+               phys_min=0.0, phys_max=1.0, source="SONY DCR-TRV310E 20x 光学变焦镜头 (f=3.6–72mm, f/1.4–2.9)",
+               help="0.0 = W（广角端，小细节融合成柔和光晕）；1.0 = T（望远放大端）。"
+                    "**真实的光学变焦发生在传感器采样与 OLPF 之前**：向 T 端推近时，不仅视场角收窄、"
+                    "有效光圈从 f/1.4 降至 f/2.9（触发 AGC 增益补偿）、枕形畸变与纵向/横向色差随焦距上升，"
+                    "而且**原本在广角端因光学 PSF 与传感器扩散而融合成一片的光晕，在放大后会分离并解析为"
+                    "更具体的光源细节**（如独立的 LED 灯珠、双灯管结构与机箱冲孔网眼）。")
+    cam.define("wt_max_zoom", "T 端最大倍率", 4.0, 1.0, 12.0, unit="×", group=g,
+               phys_min=1.5, phys_max=8.0, source="光学变焦常用取景段 1x–8x",
+               help="T 端（wt_zoom=1.0）对应的光学放大倍率 M = wt_max_zoom ** wt_zoom。")
+    cam.define("zoom_center_x", "变焦光轴中心 X", 0.5, 0.1, 0.9, unit="0-1", group=g,
+               phys_min=0.25, phys_max=0.75,
+               help="W-T 放大缩小的光学中心横坐标（对准发光主体时可观察光晕向具体光源结构解析的过程）。")
+    cam.define("zoom_center_y", "变焦光轴中心 Y", 0.5, 0.1, 0.9, unit="0-1", group=g,
+               phys_min=0.25, phys_max=0.75,
+               help="W-T 放大缩小的光学中心纵坐标。")
+    cam.define("zoom_dynamic_mode", "W-T 动态变焦轨迹", 0.0, 0.0, 3.0, unit="模式", group=g, step=1.0,
+               phys_min=0.0, phys_max=3.0,
+               help="0=固定在当前 W-T 位置；1=W→T 电动推进放大；2=T→W 电动拉远缩小；3=W↔T 往复变焦。")
+    cam.define("zoom_speed", "电动变焦速度", 0.35, 0.05, 1.5, unit="1/s", group=g,
+               phys_min=0.15, phys_max=0.85,
+               help="W-T 摇杆驱动直流变焦马达的速度；快速变焦期间会伴随自动对焦（AF）短暂呼吸失焦。")
+    cam.define("zoom_resolve_detail", "放大解析光源细节", 0.75, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.3, phys_max=1.2,
+               help="控制从 W 端（光晕融合）向 T 端（具体光源细节：独立灯珠、灯管间隙、散热网孔）的光学解析度跃迁强度。")
+    cam.define("zoom_osd", "显示 W-T 变焦条 OSD", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0,
+               help="在取景器左上侧绘制索尼 Handycam 标志性的 W [━━━|━━━] T 白色变焦指示条。")
     cam.define("motion_blur", "运动模糊", 0.15, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.05, phys_max=0.6, source="1/60s 快门")
     cam.define("ccd_smear", "CCD 垂直拖尾", 0.35, 0.0, 1.5, unit="0-1", group=g,
@@ -694,6 +722,17 @@ def build_schema() -> ParamSchema:
                     "结果是**彩色的射线**——高光向外散出分立的红绿蓝条纹。"
                     "消色差的星芒无论调多大都做不出它：一个几何图形乘上一个颜色，"
                     "三个通道拿到的是同一组射线。0 = 消色差，1 = 明显的分色。")
+    cam.define("light_streak_amount", "实拍光条强度", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.2, source="SONY DCR-TRV310E 实拍高光光条与列溢出",
+               help="建模 SONY DCR-TRV310E 实拍画面中强光源产生的**光条细节**：包含隔行 Super HAD CCD "
+                    "垂直读出通道的电荷泄漏光柱（核心颈部膨大+蓝青色长尾）以及前组镜片/光圈边缘产生的"
+                    "定向光学眩光光条。与 W-T 变焦联动：广角端光晕拉出宽光带，放大后分解为每颗灯珠独立的细光条。")
+    cam.define("light_streak_angle", "光条延伸角度", 0.0, -90.0, 90.0, unit="deg", group=g,
+               phys_min=-45.0, phys_max=45.0,
+               help="定向光学眩光光条的倾角（0° 为水平光条，90° 为垂直光条，配合 CCD 垂直拖尾形成十字或斜向光束）。")
+    cam.define("light_streak_length", "光条延伸长度", 0.55, 0.1, 1.5, unit="0-1", group=g,
+               phys_min=0.2, phys_max=1.2,
+               help="控制高光光条向画面外侧延伸的衰减尺度。")
     cam.define("flare_defocus", "闪光逐通道离焦", 0.5, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.5,
                help="**纵向色差让三个通道聚焦在不同距离上**，所以孔径的**离焦像在蓝通道比红通道更大**。"
@@ -868,31 +907,87 @@ def build_schema() -> ParamSchema:
                source="DV 量化表量级",
                help="量化步长基准。暗部块状伪影的强度主要由它决定。")
 
-    # ------------------------------------------------------------ RF 链路
+    # ------------------------------------------------------------ RF 链路（无线电系统）
     rf = s.layer("rf")
-    g = "射频通道"
+    g = "发射与制式"
+    rf.define("enabled", "启用独立 RF 无线电链路", 0.0, 0.0, 1.0, unit="bool", step=1.0, group=g,
+              source="独立 RF 射频信号链（发射 -> 传播 -> 调谐 -> 解调）",
+              help="在固定链路中开启独立无线电模拟电视接收子系统（节点图中的 RF 调制器/调谐器始终使用本层参数）。")
+    rf.define("tv_standard", "模拟电视射频制式", 0.0, 0.0, 2.0, unit="enum", step=1.0, group=g,
+              phys_min=0.0, phys_max=2.0, source="GB 3174 PAL-D (6.5MHz) / HK PAL-I (6.0MHz) / FCC M/NTSC (4.5MHz)",
+              help="0=中国大陆 PAL-D/K (8MHz 频道, +6.5MHz 伴音)，1=香港/珠三角外溢 PAL-I (8MHz 频道, +6.0MHz 伴音)，2=NTSC-M (6MHz 频道, +4.5MHz 伴音)。")
     rf.define("channel_mhz", "频道带宽", 6.0, 5.0, 8.0, unit="MHz", group=g,
-              phys_min=6.0, phys_max=8.0, source="M/NTSC 6 MHz，PAL/B/G 8 MHz",
-              help="单个电视频道的宽度。决定了视频信息能占用的最高频率。")
+              phys_min=6.0, phys_max=8.0, source="M/NTSC 6 MHz，PAL-D/I 8 MHz",
+              help="单个电视频道的宽度。决定了残留边带滤波与视频信息能占用的最高频率。")
     rf.define("carrier_offset_mhz", "图像载波位置", 1.25, 0.5, 2.5, unit="MHz", group=g,
-              phys_min=1.0, phys_max=1.5, source="M/NTSC 图像载波距频道下沿 1.25 MHz")
-    rf.define("signal_dbm", "接收电平", -70.0, -90.0, -30.0, unit="dBm", group=g,
-              phys_min=-80.0, phys_max=-40.0, source="天线输入电平",
-              help="与噪声系数共同决定载噪比 C/N。本工具按 6 MHz 频道计算："
-                   "C/N ≈ 接收电平 + 98 dB − 噪声系数。默认 −70 dBm 对应 C/N ≈ 28 dB，"
-                   "略低于失锁阈值，因此画面底部会出现 RF 特有的撕裂与彩色错乱。"
-                   "调到 −55 dBm 以上画面即干净；调到 −85 dBm 会整幅失去同步。")
-    rf.define("noise_figure_db", "调谐器噪声系数", 8.0, 2.0, 20.0, unit="dB", group=g,
-              phys_min=4.0, phys_max=14.0, source="消费级电视高频头",
-              help="与接收电平共同决定载噪比 C/N：噪声系数每高 1 dB，C/N 就低 1 dB。")
-    rf.define("sync_loss_threshold_db", "失锁阈值", 30.0, 18.0, 44.0, unit="dB", group=g,
-              phys_min=24.0, phys_max=38.0, source="行 AFC 保持范围",
-              help="C/N 低于此值时行同步开始打滑，出现横向撕裂与彩色错乱。")
-    rf.define("sync_loss_amount", "失锁强度", 1.0, 0.0, 2.0, unit="0-2", group=g,
+              phys_min=1.0, phys_max=1.5, source="图像载波距频道下沿偏移")
+
+    g = "大气波导与电离层传播 (TV-DX)"
+    rf.define("propagation_mode", "无线电传播模式", 0.0, 0.0, 3.0, unit="enum", step=1.0, group=g,
+              phys_min=0.0, phys_max=3.0, source="ITU-R P.452 对流层波导 / ITU-R P.534 电离层 Es 突发层",
+              help="0=常规视距/绕射传播，1=对流层大气波导 (TV-DX 逆温层波导，令超视距远方频道比平时异常清晰)，"
+                   "2=电离层活跃突发 E 层 (Sporadic-E 天波超远距传播，伴随明显多径与慢衰落)，"
+                   "3=大气波导 + 电离层活跃复合传播。")
+    rf.define("distance_km", "发射台距离", 45.0, 5.0, 1200.0, unit="km", group=g,
+              phys_min=10.0, phys_max=800.0, source="ITU-R P.1546 地面广播传播距离",
+              help="接收点与发射台之间的地面距离。超过视距（~55 km）后常规传播迅速衰减，而大气波导与 Es 电离层反射可在 150–800 km 维持高信噪比。")
+    rf.define("signal_dbm", "基准接收电平", -70.0, -95.0, -30.0, unit="dBm", group=g,
+              phys_min=-85.0, phys_max=-40.0, source="天线常规输入电平",
+              help="无异常传播时的常规天线接收电平。远距离台站在常规状态下往往只有 −80 ~ −72 dBm（满屏雪花），"
+                   "而在开启 TV-DX 大气波导或电离层活跃增益后会跃升至 −55 ~ −45 dBm，画面变得比一般时候清晰得多。")
+    rf.define("dx_duct_gain_db", "TV-DX 波导/电离层异常增益", 0.0, 0.0, 36.0, unit="dB", group=g,
+              phys_min=0.0, phys_max=32.0, source="华南沿海春夏逆温层大气波导 / 电离层 Es 层反射增益",
+              help="当大气波导形成或电离层活跃时，原本散逸到太空中或被地球曲率遮挡的电磁波被波导捕获，"
+                   "带来 15~30 dB 的额外路径增益，使平时满是雪花的远距弱台突然变得清晰锐利。")
+    rf.define("qsb_depth_db", "QSB 慢衰落深度", 0.0, 0.0, 24.0, unit="dB", group=g,
+              phys_min=0.0, phys_max=18.0, source="电离层电子密度起伏与波导湍流衰落",
+              help="TV-DX 远距离接收特有的信号呼吸感：电离层云团或大气波导界面缓慢漂移引起的周期性电平起伏。")
+    rf.define("qsb_rate_hz", "QSB 衰落速率", 0.35, 0.05, 2.5, unit="Hz", group=g,
+              phys_min=0.1, phys_max=1.5, source="VHF/UHF 远距慢衰落周期 (0.1~1.5 Hz)")
+    rf.define("multipath_level", "天波/波导多径重影强度", 0.0, 0.0, 0.85, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.65, source="r(t)=Σ a_k s(t-τ_k)exp(jφ_k)",
+              help="多条波导路径或地面/海面反射造成的延迟副本。经解调后自然形成右侧重影与色度副载波相位干涉。")
+    rf.define("multipath_delay_us", "多径相对延迟", 1.8, 0.2, 8.0, unit="μs", group=g,
+              phys_min=0.4, phys_max=6.0, source="路径差 Δd = c·Δτ (1 μs ≈ 300 m 路径差)")
+    rf.define("multipath_phase_deg", "多径载波初相", 35.0, -180.0, 180.0, unit="deg", group=g,
+              phys_min=-180.0, phys_max=180.0, source="反射路径射频相位 φ_1")
+    rf.define("multipath_drift_hz", "多径相位漂移率", 0.22, 0.0, 2.0, unit="Hz", group=g,
+              phys_min=0.0, phys_max=1.2, source="电离层反射高度微变引起的多普勒相移",
+              help="多径反射点移动导致重影极性（正像/负像）与彩色重影色调随时间缓慢交替。")
+
+    g = "淘宝电视卡高频头与同邻频干扰"
+    rf.define("tuner_type", "接收机/电视卡前端模型", 1.0, 0.0, 2.0, unit="enum", step=1.0, group=g,
+              phys_min=0.0, phys_max=2.0, source="Philips SAA7130/7134 PCI 电视卡 / 硅高频头 USB 电视棒",
+              help="0=标准电视调谐器，1=淘宝几十块廉价电视卡 (SAA713x + TDA9887：窄锯齿声表面波中频滤波、群延时振铃、阶梯 AGC 与高色度串扰)，2=高选择性 DX 接收机。")
+    rf.define("noise_figure_db", "高频头噪声系数", 8.0, 2.0, 20.0, unit="dB", group=g,
+              phys_min=4.0, phys_max=14.0, source="消费级硅高频头 / 铁壳高频头 NF",
+              help="廉价电视卡高频头通常在 8~11 dB 左右，且容易串入 USB/PCI 总线底噪。")
+    rf.define("tuning_offset_khz", "本振调谐频偏", 0.0, -250.0, 250.0, unit="kHz", group=g,
+              phys_min=-150.0, phys_max=150.0, source="廉价电视卡步进锁相环 (PLL) 频偏 / 奈奎斯特斜坡失配",
+              help="负向频偏会切掉高频细节与色度副载波；正向频偏会令高频边缘过冲振铃并加重伴音载波串扰。")
+    rf.define("if_saw_ringing", "中频 SAW 滤波器振铃", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.75, source="廉价声表面波滤波器 (SAW) 群延时起伏与驻波",
+              help="淘宝电视卡标志性的硬边缘右侧明暗回波（台标与字幕右侧的紧邻轮廓伴影）。")
+    rf.define("front_end_overload", "前端过载与三阶互调", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.8, source="LNA 1dB 压缩点与混频器 IM3 交调",
+              help="当大气波导使远距信号或本地强台过强时，廉价电视卡 LNA 进入非线性区，导致高光压缩与细密交调网纹。")
+    rf.define("cochannel_interference", "同频干扰（百叶窗效应）", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6, source="TV-DX 远距离同频道第二个电台载波差拍",
+              help="大气波导常把几百公里外的同频电台一并送入天线，两个图像载波的微小频差形成水平百叶窗明暗横纹。")
+    rf.define("cochannel_offset_khz", "同频台载波偏置", 10.0, 0.5, 25.0, unit="kHz", group=g,
+              phys_min=1.0, phys_max=20.0, source="精密偏置电视发射机行频倍数差 (10 kHz / 15.625 kHz)")
+    rf.define("adjacent_channel", "邻频干扰与伴音差拍", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_max=0.6, source="相邻频道载波与本频道图像/伴音差拍",
+              help="廉价电视卡邻频抑制不足时，斜向游走的人字形/网状差拍条纹。")
+    rf.define("sync_loss_threshold_db", "行同步失锁阈值", 30.0, 18.0, 44.0, unit="dB", group=g,
+              phys_min=22.0, phys_max=38.0, source="行 AFC 保持范围")
+    rf.define("sync_loss_amount", "失锁撕裂强度", 1.0, 0.0, 2.0, unit="0-2", group=g,
               phys_min=0.5, phys_max=1.5)
-    rf.define("adjacent_channel", "邻频干扰", 0.0, 0.0, 1.0, unit="0-1", group=g,
-              phys_max=0.5, source="相邻频道载波差拍",
-              help="与图像载波差拍形成的斜向人字形条纹，会缓慢移动。")
+    rf.define("color_killer_threshold_db", "消色器门限", 21.0, 10.0, 32.0, unit="dB", group=g,
+              phys_min=16.0, phys_max=26.0, source="PAL/NTSC 色同步锁定与自动消色器 (Color Killer)",
+              help="当衰落谷底 C/N 低于此门限时，解码芯片自动切断色度通道以防满屏彩雪，画面短暂退化为黑白。")
+    rf.define("broadcast_noise", "VHF 脉冲点火噪底", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.6, source="VHF 低频段电器火花/摩托车点火脉冲干扰")
 
     # ------------------------------------------------------------------ C
     tpe = s.layer("tape")
@@ -1437,14 +1532,17 @@ def build_schema() -> ParamSchema:
                     "两者都是真实设备；差别正好在磁带很差的时候看得出来。")
     osd.define("enabled", "启用字幕机", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
                phys_min=0.0, phys_max=1.0)
-    osd.define("font", "字体", 0.0, 0.0, 19.0, unit="0-19", group=g, step=1.0,
-               phys_min=0.0, phys_max=19.0,
-               help="字符发生器字库选择（共 20 款点阵/等宽/电视/卡拉OK字体）："
+    osd.define("font", "字体", 0.0, 0.0, 27.0, unit="0-27", group=g, step=1.0,
+               phys_min=0.0, phys_max=27.0,
+               help="字符发生器与光学字幕字库选择（共 28 款点阵/等宽/电视/卡拉OK/80年代纪录片字体）："
                     "0 = VCR OSD Mono、1 = 柳宋、2 = A-POS 点阵、3 = OCR-A、4 = OCR-B、"
                     "5 = Ming-Imperial、6 = OCR-A 扩展、7 = 中易黑体、8 = 中易宋体、"
                     "9 = MS 明朝、10 = MS 哥特、11 = 细明体、12 = Consolas、13 = Courier New、"
                     "14 = Century Gothic、15 = Sony Handycam 窄高体、16 = Panasonic VCR 扁宽点阵、"
-                    "17 = LD/VCD 卡拉OK 大粗宋、18 = LD/VCD 卡拉OK 综艺粗黑、19 = CCTV 监控时间码。")
+                    "17 = LD/VCD 卡拉OK 大粗宋、18 = LD/VCD 卡拉OK 综艺粗黑、19 = CCTV 监控时间码、"
+                    "20 = 80年代纪录片大标宋、21 = 80年代纪录片长宋、22 = 80年代电视专题片粗黑、"
+                    "23 = 80年代新闻片扁黑、24 = 80年代文献片仿宋、25 = 80年代历史片硬楷、"
+                    "26 = 80年代片头魏碑体、27 = 80年代广播级字幕机点阵宋。")
     osd.define("text", "字幕文本", "", 0.0, 1.0, unit="text", kind="text", group=g,
                help="可多行（换行即多行）。**不换行、不重排**——一行超出右边缘的部分直接丢失，"
                     "因为真实字符发生器没有断行逻辑。汉字占两格、西文占一格。")
@@ -1516,11 +1614,40 @@ def build_schema() -> ParamSchema:
     osd.define("outline_blue", "描边色 B", 0.05, 0.0, 1.0, unit="0-1", group=g)
     osd.define("shadow_x", "阴影横向偏移", 2.0, -8.0, 8.0, unit="px", group=g, step=1.0)
     osd.define("shadow_y", "阴影纵向偏移", 2.0, -8.0, 8.0, unit="px", group=g, step=1.0)
-    osd.define("style", "样式模板", 0.0, 0.0, 5.0, unit="0-5", group=g, step=1.0,
-               phys_min=0.0, phys_max=5.0,
+    osd.define("style", "样式模板", 0.0, 0.0, 9.0, unit="0-9", group=g, step=1.0,
+               phys_min=0.0, phys_max=9.0,
                help="一次设好字色、描边色和斜体：**0 自定义**、1 绿字黑边（OSD 经典）、"
-                    "2 红字黑边（REC 经典）、3 白字黑边、4 黄字黑边、5 青字黑边。"
+                    "2 红字黑边（REC 经典）、3 白字黑边、4 黄字黑边、5 青字黑边、"
+                    "6 80年代纪录片·金黄标宋立体字、7 80年代纪录片·象牙白光学叠印字、"
+                    "8 广播级字幕机·琥珀黄滚屏字、9 80年代专题片·深红描金标题字。"
                     "**0 以外的值会覆盖上面那些颜色参数。**")
+    osd.define("edge_softness", "边缘柔化（模拟键控上升沿）", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.65,
+               help="**硬件点阵字符发生器是 1-bit 硬边缘（0.0），而 80 年代光学印片字幕或模拟线性键控器（Chroma/Luma Keyer）具有有限的模拟带宽与上升时间。**"
+                    "横向比纵向略宽的高斯过渡带还原模拟字幕机键控边缘。")
+    osd.define("glow", "光学晕染（字幕漫射辉光）", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.65,
+               help="**光学印片机叠印字幕或高亮度视频键控在摄像管/胶片乳剂上产生的暖色漫射光晕（Halation）。**"
+                    "使高亮字幕周围呈现柔和的胶转磁/模拟电视光感。")
+    osd.define("bevel", "立体浮雕（硬件斜角高光）", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.80,
+               help="**80年代末广播级硬件字幕机与大型专题片片头常见的 3D 斜角立体浮雕效果。**"
+                    "字形左上方受光提亮、右下方背光压暗。")
+    osd.define("anim_mode", "字幕动画模式", 0.0, 0.0, 7.0, unit="0-7", group=g, step=1.0,
+               phys_min=0.0, phys_max=7.0,
+               help="80/90年代硬件字符发生器与光学片头动画：**0 静态常显**、1 逐字打字机显字（电传/纪实解说）、"
+                    "2 逐行顺序显字、3 水平光栅扫描擦除（模拟电子束横向拉幕）、"
+                    "4 百叶窗隔行扫描显字（硬件偶数行/奇数行分步切入）、"
+                    "5 纵向滚屏（片尾演职员表自下而上滚屏）、6 光学叠化淡入淡出、7 横向滑入定格。")
+    osd.define("anim_speed", "动画速度倍率", 1.0, 0.1, 4.0, unit="x", group=g,
+               phys_min=0.4, phys_max=2.5,
+               help="控制打字机显字、扫描擦除、滚屏及淡入淡出的时间速率。")
+    osd.define("anim_in_s", "入场延迟时间", 0.15, 0.0, 5.0, unit="s", group=g,
+               phys_min=0.0, phys_max=2.0,
+               help="字幕动画开始前的画面停留时间（秒）。")
+    osd.define("anim_cycle_s", "动画周期时长", 0.0, 0.0, 30.0, unit="s", group=g,
+               phys_min=0.0, phys_max=15.0,
+               help="0 表示单次播放并保持定格；大于 0 时按该秒数循环演示字幕进出场动画。")
 
     # ------------------------------------------------------------------ G
     # Audio simulation layer: physical analog/digital-tape audio & A/V fault sync
@@ -1529,11 +1656,12 @@ def build_schema() -> ParamSchema:
     aud.define("enabled", "启用音频模拟", 1.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
                phys_min=0.0, phys_max=1.0, source="系统架构",
                help="开启后，导入素材的原声（或无声素材的内置参考音源）会经过与画面完全同源的模拟/磁带音频链路处理。")
-    aud.define("mode", "伴音轨制式", 0.0, 0.0, 6.0, unit="0-6", group=g, step=1.0,
-               phys_min=0.0, phys_max=5.0,
-               source="IEC 60774 (VHS Hi-Fi) / IEC 61834 (DV) / ISO 11172-3",
-               help="0=自动跟随视频制式，1=VHS 纵向线性磁迹，2=VHS Hi-Fi 深层调频立体声（故障自动回退线性轨），"
-                    "3=8mm/Hi8 AFM 调频伴音，4=MiniDV 12-bit PCM 数字伴音，5=VCD MP2 子带量化伴音。")
+    aud.define("mode", "伴音轨制式", 0.0, 0.0, 7.0, unit="0-7", group=g, step=1.0,
+               phys_min=0.0, phys_max=7.0,
+               source="IEC 60774 / IEC 61834 / GB 3174 PAL-D/I Intercarrier FM",
+               help="0=自动跟随视频制式，1=VHS 纵向线性磁迹，2=VHS Hi-Fi 深层调频立体声，"
+                    "3=8mm/Hi8 AFM 调频伴音，4=MiniDV 12-bit PCM 数字伴音，5=VCD MP2 子带量化伴音，"
+                    "6=PAL-D RF 伴音，7=淘宝电视卡 TV-DX 差拍伴音（FM 捕获效应 + QSB 呼吸噪底）。")
     aud.define("synth_type", "无声素材测试音源", 0.0, 0.0, 2.0, unit="0-2", group=g, step=1.0,
                phys_min=0.0, phys_max=2.0, source="内置参考信号发生器",
                help="当使用内置测试图、静帧或无音轨视频时自动生成的测试音源："
@@ -2624,6 +2752,244 @@ CAMERA_PROFILES["clean_digital"] = {
                           "luma_bandwidth": 5.0, "chroma_bandwidth": 1.5,
                           "filter_kind": 0.0},
                "display": {"enabled": 0.0}},
+}
+FACTORY_PRESETS["guangdong_tv_dx_ducting_clear"] = {
+    "label": "广东无线模拟电视接收测试 · TV-DX 大气波导超视距清晰接收（淘宝电视卡录制）",
+    "note": "PAL-D/I + TV-DX 大气波导与电离层 Es 异常传播增益 + 廉价电视卡采集",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sharpness": 1.04, "sensor_noise": 0.01, "dynamic_range": 9.5},
+        "format": {
+            "luma_bandwidth": 4.3, "chroma_bandwidth": 1.15,
+            "chroma_vertical_averaging": 0.35, "edge_boost": 0.28,
+            "color_noise": 0.06, "chroma_gain": 1.06,
+        },
+        "codec": {"dv_enabled": 0.0},
+        "connector": {"rf_present": 0.0},
+        "rf": {
+            "enabled": 1.0, "tv_standard": 0.0, "channel_mhz": 8.0, "carrier_offset_mhz": 1.25,
+            "propagation_mode": 1.0, "distance_km": 185.0,
+            "signal_dbm": -74.0, "dx_duct_gain_db": 24.5,
+            "qsb_depth_db": 3.2, "qsb_rate_hz": 0.28,
+            "multipath_level": 0.14, "multipath_delay_us": 1.45,
+            "multipath_phase_deg": 28.0,
+            "tuner_type": 1.0, "noise_figure_db": 8.5, "tuning_offset_khz": 18.0,
+            "front_end_overload": 0.10,
+            "cochannel_interference": 0.10, "cochannel_offset_khz": 10.5,
+            "adjacent_channel": 0.08, "sync_loss_threshold_db": 26.0,
+            "sync_loss_amount": 0.6, "color_killer_threshold_db": 20.0,
+            "broadcast_noise": 0.06,
+        },
+        "tape": {
+            "tape_stability": 0.98, "line_jitter": 0.02, "walk_amplitude": 0.01,
+            "micro_jitter": 0.01, "vertical_instability": 0.0,
+            "head_switching": 0.0, "head_switch_lines": 0.0,
+            "dropout_rate": 0.0, "wear": 0.0, "crease_rate": 0.0, "noise_floor": 0.01,
+        },
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.96, "tbc_residual": 0.04,
+            "head_wear": 0.0, "frequency_response": 0.05,
+            "cross_color": 0.24, "cross_luma": 0.22, "separation_kind": 0.0,
+        },
+        "display": {"enabled": 0.0},
+        "audio": {"enabled": 1.0, "mode": 7.0, "hiss_floor": 0.08, "head_switch_buzz": 0.12},
+    },
+}
+FACTORY_PRESETS["guangdong_tv_dx_normal_weak"] = {
+    "label": "广东无线模拟电视接收测试 · 常规超视距弱台对照（无大气波导，雪花与消色临界）",
+    "note": "同距离无大气波导时，超视距绕射损耗导致载噪比跌落、雪花剧增且接近消色门限",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sharpness": 1.0, "sensor_noise": 0.01},
+        "format": {
+            "luma_bandwidth": 3.8, "chroma_bandwidth": 1.0,
+            "chroma_vertical_averaging": 0.45, "edge_boost": 0.20,
+            "color_noise": 0.15, "chroma_gain": 1.0,
+        },
+        "codec": {"dv_enabled": 0.0},
+        "connector": {"rf_present": 0.0},
+        "rf": {
+            "enabled": 1.0, "tv_standard": 0.0, "channel_mhz": 8.0, "carrier_offset_mhz": 1.25,
+            "propagation_mode": 0.0, "distance_km": 185.0,
+            "signal_dbm": -74.0, "dx_duct_gain_db": 0.0,
+            "qsb_depth_db": 2.5, "qsb_rate_hz": 0.25,
+            "multipath_level": 0.22, "multipath_delay_us": 2.1,
+            "tuner_type": 1.0, "noise_figure_db": 8.5, "tuning_offset_khz": 18.0,
+            "cochannel_interference": 0.08,
+            "adjacent_channel": 0.15, "sync_loss_threshold_db": 26.0,
+            "sync_loss_amount": 0.85, "color_killer_threshold_db": 20.0,
+            "broadcast_noise": 0.22,
+        },
+        "tape": {
+            "tape_stability": 0.96, "line_jitter": 0.04, "walk_amplitude": 0.02,
+            "micro_jitter": 0.02, "vertical_instability": 0.01,
+            "head_switching": 0.0, "head_switch_lines": 0.0,
+            "dropout_rate": 0.0, "wear": 0.0, "crease_rate": 0.0, "noise_floor": 0.02,
+        },
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.90, "tbc_residual": 0.10,
+            "cross_color": 0.28, "cross_luma": 0.25,
+        },
+        "display": {"enabled": 0.0},
+        "audio": {"enabled": 1.0, "mode": 7.0, "hiss_floor": 0.45, "head_switch_buzz": 0.28},
+    },
+}
+FACTORY_PRESETS["vhs_tv_zalu"] = {
+    "label": "VHS 录像带电视杂录（无线模拟电视 RF 接收 + 家用 VHS 磁带录制）",
+    "note": "先经模拟电视 RF 高频头接收解调（AM 画面带雪花/多径重影，FM 伴音受限幅静噪保护损耗极小），再录入手持/家用 VHS 磁带叠加走带抖晃与磁头切换",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sharpness": 1.0, "sensor_noise": 0.01, "dynamic_range": 9.0},
+        "format": {
+            "luma_bandwidth": 2.9, "chroma_bandwidth": 0.65,
+            "chroma_vertical_averaging": 0.85, "edge_boost": 0.28,
+            "color_noise": 0.22, "chroma_gain": 1.04,
+        },
+        "codec": {"dv_enabled": 0.0},
+        "connector": {"rf_present": 0.0},
+        "rf": {
+            "enabled": 1.0, "tv_standard": 0.0, "channel_mhz": 8.0, "carrier_offset_mhz": 1.25,
+            "propagation_mode": 0.0, "distance_km": 42.0,
+            "signal_dbm": -66.0, "dx_duct_gain_db": 0.0,
+            "multipath_level": 0.18, "multipath_delay_us": 1.35,
+            "multipath_phase_deg": 32.0,
+            "tuner_type": 0.0, "noise_figure_db": 7.0, "tuning_offset_khz": 12.0,
+            "adjacent_channel": 0.12, "sync_loss_threshold_db": 26.0,
+            "sync_loss_amount": 0.35, "color_killer_threshold_db": 18.0,
+            "broadcast_noise": 0.14,
+        },
+        "tape": {
+            "tape_stability": 0.58, "line_jitter": 0.28, "walk_amplitude": 0.22,
+            "micro_jitter": 0.18, "vertical_instability": 0.06,
+            "head_switching": 0.48, "head_switch_lines": 10.0,
+            "dropout_rate": 0.25, "wear": 0.28, "crease_rate": 0.15, "noise_floor": 0.18,
+        },
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.65, "tbc_residual": 0.28,
+            "head_wear": 0.22, "frequency_response": -0.20,
+            "cross_color": 0.28, "cross_luma": 0.24, "separation_kind": 0.0,
+        },
+        "display": {"enabled": 1.0, "scanlines": 0.28, "bloom": 0.25, "overscan": 0.04},
+        "audio": {
+            "enabled": 1.0, "mode": 1.0, "wow_flutter": 0.26,
+            "azimuth_loss": 0.22, "hiss_floor": 0.22,
+            "head_switch_buzz": 0.20, "rf_buzz": 0.15,
+            "linear_bandwidth": 5800.0, "saturation": 0.24,
+        },
+    },
+}
+CAMERA_PROFILES["docu_1989_telecine"] = {
+    "label": "1989 年代广播级专题纪录片 · 胶转磁 / 三管摄像机光影 (16mm Telecine + 3-Tube ENG)",
+    "note": "80年代末电视专题片经典光影：暖调钨丝灯/日光胶片色温偏移、高光暖色漫射光晕（Halation）、厚重暗部趾区（Shadow Depth）与柔和肩部压缩",
+    "values": {
+        "exposure": 0.12, "white_balance_temp": 0.22,
+        "dynamic_range": 7.4, "saturation_stops": 0.0,
+        "halation": 0.42, "halation_source_colour": 0.65,
+        "source_glow": 0.018, "shadow_depth": 0.34,
+        "dsp_gamma": 0.88, "dsp_contrast": 0.28, "dsp_black": 0.018,
+        "nv_highlight_compress": 1.35, "nv_highlight_knee": 0.76, "nv_highlight_shape": 2.2,
+        "color_cast": 0.14, "highlight_tint": 0.22,
+        "field_curvature": 0.16, "chroma_aberration": 0.12, "longitudinal_ca": 0.10,
+        "lens_wear": 0.12, "sensor_noise": 0.035, "noise_grain": 1.6,
+        "ccd_gain": 0.08, "sharpness": 1.08, "motion_blur": 0.18,
+    },
+}
+MEDIA_PROFILES["umatic_sp_1989_pal"] = {
+    "label": "1989 年代 PAL 广播母带 (U-matic SP / Betacam 复合播出带)",
+    "note": "电视台专题纪录片播出母带：亮度带宽 3.8 MHz、色度带宽 1.0 MHz，带轻微模拟孔阑校正过冲与字幕边缘副载波串色",
+    "standard": "pal",
+    "values": {
+        "format": {
+            "luma_bandwidth": 3.8, "chroma_bandwidth": 1.0,
+            "chroma_vertical_averaging": 0.65, "edge_boost": 0.34,
+            "color_noise": 0.14, "chroma_gain": 1.08,
+            "chroma_lag": 0.12, "filter_kind": 1.0, "filter_sections": 3.0,
+        },
+        "codec": {"dv_enabled": 0.0},
+        "tape": {
+            "tape_stability": 0.82, "line_jitter": 0.12, "walk_amplitude": 0.10,
+            "micro_jitter": 0.08, "vertical_instability": 0.02,
+            "head_switching": 0.22, "head_switch_lines": 6.0,
+            "dropout_rate": 0.08, "dropout_len": 0.22,
+            "wear": 0.12, "crease_rate": 0.04, "noise_floor": 0.09,
+        },
+    },
+}
+FACTORY_PRESETS["docu_1989_broadcast"] = {
+    "label": "1989 年代电视专题纪录片 · 胶转磁光影与纪实解说字幕 (PAL 广播母带)",
+    "note": "复现 1989 年代大型电视专题纪录片的胶转磁暖调高反差光影、高光晕染、暗部沉稳层次，以及录在磁带之前（at=1）的象牙白长宋解说字幕与打字机逐字显字动画",
+    "standard": "pal",
+    "layers": {
+        "camera": dict(CAMERA_PROFILES["docu_1989_telecine"]["values"]),
+        "format": dict(MEDIA_PROFILES["umatic_sp_1989_pal"]["values"]["format"]),
+        "codec": {"dv_enabled": 0.0},
+        "connector": {"av_present": 1.0, "av_moisture": 0.04, "av_corrosion": 0.05},
+        "tape": dict(MEDIA_PROFILES["umatic_sp_1989_pal"]["values"]["tape"]),
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.85, "tbc_residual": 0.12,
+            "head_wear": 0.10, "frequency_response": -0.08,
+            "preemphasis": 0.28, "ringing": 0.22,
+            "cross_color": 0.24, "cross_luma": 0.20, "separation_kind": 2.0,
+        },
+        "display": {
+            "enabled": 1.0, "scanlines": 0.22, "bloom": 0.32, "defocus": 0.12,
+            "gamma": 2.30, "color_temp": 0.18, "contrast": 0.58,
+            "brightness": 0.49, "saturation": 0.54, "overscan": 0.03, "vignette": 0.22,
+        },
+        "overlay": {
+            "enabled": 1.0, "at": 1.0, "font": 21.0,
+            "text": "一九八九年 · 专题纪实\n岁月的河床与山川光影",
+            "cell_h": 28.0, "halign": 1.0, "valign": 2.0,
+            "margin": 0.06, "style": 7.0,
+            "outline": 1.0, "shadow": 0.65, "shadow_x": 2.0, "shadow_y": 2.0,
+            "edge_softness": 0.35, "glow": 0.28, "bevel": 0.15,
+            "anim_mode": 1.0, "anim_speed": 1.15, "anim_in_s": 0.10, "anim_cycle_s": 0.0,
+            "letter_gap": 2.0, "line_gap": 6.0,
+        },
+        "audio": {
+            "enabled": 1.0, "mode": 1.0, "wow_flutter": 0.12,
+            "azimuth_loss": 0.10, "hiss_floor": 0.14,
+            "linear_bandwidth": 8500.0, "saturation": 0.18,
+        },
+    },
+}
+FACTORY_PRESETS["docu_1989_title_card"] = {
+    "label": "1989 年代大型纪录片 · 片头大标宋金字立体叠印与光栅扫描字幕",
+    "note": "复现 80 年代末专题纪录片片头：大标宋金黄立体浮雕字（bevel+深褐描边+光学辉光）、水平光栅扫描拉幕显字，以及 PAL 复合信号在金字边缘产生的细腻副载波串色",
+    "standard": "pal",
+    "layers": {
+        "camera": dict(CAMERA_PROFILES["docu_1989_telecine"]["values"]),
+        "format": dict(MEDIA_PROFILES["umatic_sp_1989_pal"]["values"]["format"]),
+        "codec": {"dv_enabled": 0.0},
+        "connector": {"av_present": 1.0, "av_moisture": 0.05, "av_corrosion": 0.06},
+        "tape": dict(MEDIA_PROFILES["umatic_sp_1989_pal"]["values"]["tape"]),
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.82, "tbc_residual": 0.14,
+            "head_wear": 0.12, "frequency_response": -0.10,
+            "preemphasis": 0.32, "ringing": 0.26,
+            "cross_color": 0.28, "cross_luma": 0.22, "separation_kind": 2.0,
+        },
+        "display": {
+            "enabled": 1.0, "scanlines": 0.24, "bloom": 0.36, "defocus": 0.14,
+            "gamma": 2.32, "color_temp": 0.20, "contrast": 0.60,
+            "brightness": 0.49, "saturation": 0.56, "overscan": 0.03, "vignette": 0.25,
+        },
+        "overlay": {
+            "enabled": 1.0, "at": 1.0, "font": 20.0,
+            "text": "第一集  岁月与山河\n专题文献纪录片 · 一九八九",
+            "cell_h": 36.0, "halign": 1.0, "valign": 1.0,
+            "margin": 0.08, "style": 6.0,
+            "outline": 1.0, "shadow": 0.78, "shadow_x": 3.0, "shadow_y": 3.0,
+            "edge_softness": 0.28, "glow": 0.42, "bevel": 0.62,
+            "anim_mode": 3.0, "anim_speed": 1.0, "anim_in_s": 0.10, "anim_cycle_s": 0.0,
+            "letter_gap": 3.0, "line_gap": 10.0,
+        },
+        "audio": {
+            "enabled": 1.0, "mode": 1.0, "wow_flutter": 0.12,
+            "azimuth_loss": 0.10, "hiss_floor": 0.14,
+            "linear_bandwidth": 8500.0, "saturation": 0.18,
+        },
+    },
 }
 CAMCORDER_PRESETS["sony_trv310e"] = CAMCORDER_PRESETS["sony_dcr_trv310e"]
 FACTORY_PRESETS["pro_transfer"] = FACTORY_PRESETS["pro_transfer_svhs"]

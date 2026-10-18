@@ -86,8 +86,24 @@
       <label class="chk"><input id="autoRefresh" type="checkbox" checked> 自动刷新</label>
       <label class="chk"><input id="engineGraph" type="checkbox"> 用节点图渲染</label>
     </div>
+    <div class="wtBar" id="wtBar">
+      <span class="wt-title" title="SONY DCR-TRV310E 电动变焦摇杆 (f=3.6–72mm, f/1.4–2.9)">W–T 光学变焦</span>
+      <button id="btnZoomW" class="ghost wt-btn" title="按住向 W（广角端）缩小，视场变宽、细小发光体融合为光晕">◀ W 广角</button>
+      <input id="wtZoomSlider" type="range" min="0" max="1" value="0" step="0.005" title="拖动或按住 W/T 摇杆连续变焦：放大使原本的光晕解析为具体光源细节">
+      <button id="btnZoomT" class="ghost wt-btn" title="按住向 T（望远端）放大，解析具体光源细节、光圈收缩、景深变浅">T 放大 ▶</button>
+      <span id="wtReadout" class="mono wt-badge">1.00× · f/1.4 · W 端光晕态</span>
+      <select id="wtDynMode" class="qsel" title="自动电动变焦轨迹模式">
+        <option value="0">手动固定 W–T</option>
+        <option value="1">W→T 电动推进放大</option>
+        <option value="2">T→W 电动拉远缩小</option>
+        <option value="3">W↔T 往复变焦</option>
+      </select>
+      <label class="chk" title="在画面左上侧显示索尼 Handycam 原生 W-T 变焦进度条"><input id="wtOsdToggle" type="checkbox"> W–T 指示条</label>
+    </div>
     <div class="audioBar" id="audioBar">
       <button id="btnAudioPlay" class="ghost" title="试听当前时间点附近的模拟伴音与音画同步故障（移动游标联动视频帧）">▶ 试听伴音 (3s)</button>
+      <button id="btnAudioExportWin" class="ghost" title="导出当前 3s 试听窗口 WAV 伴音（与试听完全一致）">⬇ 导出试听段 WAV</button>
+      <button id="btnAudioExportFull" class="ghost" title="导出全片完整模拟伴音 WAV（与导出视频内嵌音轨完全一致）">⬇ 导出全片 WAV</button>
       <label class="chk" title="切换试听经过模拟设备后的伴音 vs 未经模拟的原始伴音"><input id="audioClean" type="checkbox"> 原始伴音对比</label>
       <label class="chk" title="播放伴音时自动同步推进视频帧，直观观察音画同步故障"><input id="audioSyncPlay" type="checkbox" checked> 音画联动</label>
       <canvas id="audioScope" width="520" height="34" title="点击跳转时间点 · 上半部：双声道模拟波形 · 下半部：音画同步故障包络（红=磁带失落/AFM切换，橙=磁头切换脉冲，蓝=走带抖晃，紫=接口/RF干扰）"></canvas>
