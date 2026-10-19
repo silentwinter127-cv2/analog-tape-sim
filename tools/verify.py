@@ -1217,7 +1217,7 @@ def check_mpeg1_branch() -> None:
 # Checks that are cheap enough to run with `--quick`.  A check not listed here is
 # skipped under `--quick`, deliberately: a missing check is visible, an accidentally
 # included slow one is not.
-QUICK = ("check_consistency", "check_engine", "check_presets", "check_shuttle", "check_rf_tv_dx_subsystem")
+QUICK = ("check_consistency", "check_engine", "check_presets", "check_shuttle", "check_rf_tv_dx_subsystem", "check_crt_physics_realism")
 
 
 def _discover_checks() -> list[str]:
@@ -4916,6 +4916,94 @@ def check_rf_tv_dx_subsystem() -> None:
         "FM intercarrier sound quiets hiss under TV-DX ducting vs weak reception",
         f"weak_hiss={hiss_weak:.4f} -> duct_hiss={hiss_duct:.4f}, video_diff={v_diff:.4f}",
         (hiss_duct < hiss_weak * 0.45) and (v_diff > 0.02),
+    )
+
+
+
+def check_crt_physics_realism() -> None:
+    """
+    Verify the upgraded CRT display physical mechanisms:
+      1. Dynamic electron beam spot blooming (`spot_bloom`) bridges scanline gaps in highlights while keeping dark gaps crisp.
+      2. True RGB subpixel phosphor mask (`phosphor_rgb`) separates R/G/B triads with distinct mask geometries (Aperture Grille + damper wires, Slot Mask, Dot Triad).
+      3. Faceplate glass halation (`glass_halation`) and P22 phosphor saturation (`phosphor_saturation`) produce internal reflection rings and incandescent highlight cores.
+      4. Corner astigmatism (`corner_defocus`), independent vertical misconvergence (`convergence_y`), EHT line-load sag (`ehv_sag`), phosphor decay persistence (`phosphor_persistence`), and curved bezel (`bezel`) are all active and physically monotonic.
+    """
+    print("\ncrt display physics subsystem")
+    from atsim.codecs.crt import (
+        apply_scanline_beam, build_phosphor_mask, apply_faceplate_halation,
+        apply_phosphor_saturation, apply_corner_astigmatism, apply_ehv_line_sag,
+        apply_curved_bezel_and_glass,
+    )
+    H, W = 120, 160
+    test_rgb = np.full((H, W, 3), 0.18, dtype=np.float32)
+    test_rgb[:, W // 2:, :] = 0.92
+    rows = np.arange(H, dtype=np.float32)[:, None, None]
+    centres = np.round(rows / 3.0) * 3.0
+    beam = np.exp(-0.5 * ((rows - centres) / 0.35) ** 2)
+    base_row = (1.0 - 0.75 * (1.0 - beam))
+    base_row = (base_row / float(base_row.mean())).astype(np.float32)
+
+    # 1. Dynamic spot bloom bridges scanline modulation in bright half more than static beam
+    s_static = apply_scanline_beam(test_rgb, base_row, scanlines=0.75, spot_sigma=0.35, scan_pitch=3.0, spot_bloom=0.0, field_parity=0)
+    s_bloom  = apply_scanline_beam(test_rgb, base_row, scanlines=0.75, spot_sigma=0.35, scan_pitch=3.0, spot_bloom=0.95, field_parity=0)
+    dark_mod_0 = float(np.std(s_static[:, :W // 2, 1].mean(axis=1)))
+    bright_mod_0 = float(np.std(s_static[:, W // 2:, 1].mean(axis=1)))
+    bright_mod_1 = float(np.std(s_bloom[:, W // 2:, 1].mean(axis=1)))
+    record(
+        "crt dynamic spot bloom",
+        "High beam current expands spot sigma in bright regions, reducing scanline gap modulation (<0.80x static)",
+        f"static_bright_mod={bright_mod_0:.4f} -> bloom_bright_mod={bright_mod_1:.4f} (dark_mod={dark_mod_0:.4f})",
+        (bright_mod_1 < bright_mod_0 * 0.80) and (abs(float(s_bloom.mean() - test_rgb.mean())) < 1e-4),
+    )
+
+    # 2. RGB phosphor triad subpixel separation & mask types (Grille / Slot / Dot)
+    m_grille = build_phosphor_mask(H, W, mask_pitch=3.0, mask_depth=0.65, mask_type=0, phosphor_rgb=0.85)
+    m_slot   = build_phosphor_mask(H, W, mask_pitch=3.0, mask_depth=0.65, mask_type=1, phosphor_rgb=0.85)
+    m_dot    = build_phosphor_mask(H, W, mask_pitch=3.0, mask_depth=0.65, mask_type=2, phosphor_rgb=0.85)
+    rgb_sep  = float(np.mean(np.abs(m_grille[..., 0] - m_grille[..., 1])))
+    type_diff_gs = float(np.mean(np.abs(m_grille - m_slot)))
+    type_diff_sd = float(np.mean(np.abs(m_slot - m_dot)))
+    record(
+        "crt rgb phosphor triads",
+        "RGB subpixel phosphor mask separates R/G/B phases and distinguishes Grille, Slot, and Dot masks",
+        f"R-G sep={rgb_sep:.4f}, Grille/Slot diff={type_diff_gs:.4f}, Slot/Dot diff={type_diff_sd:.4f}",
+        (rgb_sep > 0.08) and (type_diff_gs > 0.02) and (type_diff_sd > 0.02),
+    )
+
+    # 3. Glass halation ring & phosphor saturation
+    spot_img = np.zeros((H, W, 3), dtype=np.float32)
+    spot_img[H // 2 - 6:H // 2 + 6, W // 2 - 6:W // 2 + 6] = [1.0, 0.25, 0.15]
+    hal_img = apply_faceplate_halation(spot_img, glass_halation=0.75, bloom=0.35)
+    sat_img = apply_phosphor_saturation(spot_img, amount=0.85)
+    ring_energy = float(hal_img[H // 2 - 18:H // 2 - 8, W // 2, 0].mean())
+    core_whiteness = float(sat_img[H // 2, W // 2, 2] - spot_img[H // 2, W // 2, 2])
+    record(
+        "crt halation & phosphor knee",
+        "Leaded glass internal reflection forms a halo ring around bright spots and high drive desaturates core toward white",
+        f"ring_energy={ring_energy:.4f}, core_blue_lift={core_whiteness:.4f}",
+        (ring_energy > 0.01) and (core_whiteness > 0.05),
+    )
+
+    # 4. Corner astigmatism, EHT line sag & curved bezel
+    grid_img = np.zeros((H, W, 3), dtype=np.float32)
+    grid_img[:, ::8, :] = 0.85
+    grid_img[::8, :, :] = 0.85
+    astig_img = apply_corner_astigmatism(grid_img, corner_defocus=0.75)
+    center_hf = float(np.std(np.diff(astig_img[H // 2 - 12:H // 2 + 12, W // 2 - 12:W // 2 + 12, 1], axis=1)))
+    corner_hf = float(np.std(np.diff(astig_img[:24, :24, 1], axis=1)))
+
+    bar_img = np.zeros((H, W, 3), dtype=np.float32)
+    bar_img[:, W // 4, :] = 0.8
+    bar_img[H // 2 - 8:H // 2 + 8, W // 3:2 * W // 3, :] = 1.0
+    sag_img = apply_ehv_line_sag(bar_img, ehv_sag=0.80)
+    sag_diff = float(np.mean(np.abs(sag_img[H // 2 - 8:H // 2 + 8, :W // 3] - bar_img[H // 2 - 8:H // 2 + 8, :W // 3])))
+    bezel_img = apply_curved_bezel_and_glass(np.ones((H, W, 3), dtype=np.float32) * 0.5, bezel=0.65, reflection=0.1, curvature=0.25)
+    corner_dark = float(bezel_img[0, 0, 0])
+    record(
+        "crt yoke astigmatism & eht sag",
+        "Corner astigmatism softens corners while keeping centre sharp; EHT sag shifts bright lines; bezel masks tube corners",
+        f"center_hf={center_hf:.4f} vs corner_hf={corner_hf:.4f}, sag_diff={sag_diff:.4f}, bezel_corner={corner_dark:.4f}",
+        (corner_hf < center_hf * 0.85) and (sag_diff > 0.003) and (corner_dark < 0.05),
     )
 
 

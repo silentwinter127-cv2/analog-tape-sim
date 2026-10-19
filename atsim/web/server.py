@@ -366,10 +366,49 @@ class App:
     def apply_preset(self, key: str) -> dict:
         with self.lock:
             self.store.apply_preset(self.current, key)
+            custom_spec = self.store.custom_presets.get(key)
+            if custom_spec and isinstance(custom_spec.get("graph"), dict):
+                try:
+                    from ..graph import Graph
+                    self.graph = Graph.from_dict(custom_spec["graph"])
+                    self._graph_execs.clear()
+                except Exception:
+                    pass
             self.store.drop(self.current.id)
             self.store.save(self.current)
             self._revision += 1
         return self.project_dict()
+
+    def save_custom_preset(self, payload: dict) -> dict:
+        label = str(payload.get("label") or payload.get("name") or "").strip()
+        note = str(payload.get("note") or "").strip()
+        key = payload.get("key")
+        with self.lock:
+            entry = self.store.save_custom_preset(
+                self.current, label=label, note=note, key=key,
+                graph_dict=self.graph.to_dict() if getattr(self, "graph", None) else None,
+            )
+            self.current.preset = entry["key"]
+            self.store.save(self.current)
+        return {
+            "ok": True,
+            "preset": entry,
+            "catalog": self.store.catalog(),
+            "project": self.project_dict(),
+        }
+
+    def delete_custom_preset(self, payload: dict) -> dict:
+        key = str(payload.get("key") or "")
+        with self.lock:
+            removed = self.store.delete_custom_preset(key)
+            if self.current.preset == key:
+                self.current.preset = ""
+                self.store.save(self.current)
+        return {
+            "ok": removed,
+            "catalog": self.store.catalog(),
+            "project": self.project_dict(),
+        }
 
     def set_levels(self, layer: str, values: dict) -> dict:
         return self.set_project({"params": {layer: values}})
@@ -648,16 +687,65 @@ class App:
         return {"ok": True}
 
     def graph_node_params(self, payload: dict) -> dict:
-        """Per-node parameter overrides, so one device can be tuned on its own."""
+        """Per-node parameter overrides and iteration count, so one device can be tuned on its own."""
         with self.lock:
             node = self.graph.nodes.get(str(payload.get("name", "")))
             if node is None:
                 return {"error": "no such node"}
-            node.enabled = bool(payload.get("enabled", node.enabled))
+            if "enabled" in payload:
+                node.enabled = bool(payload.get("enabled", node.enabled))
+            if "iterations" in payload and payload["iterations"] is not None:
+                node.iterations = max(1, min(25, int(round(float(payload["iterations"])))))
             if isinstance(payload.get("params"), dict):
                 for k, v in payload["params"].items():
                     if isinstance(v, (int, float)):
                         node.params[k] = float(v)
+            self._graph_execs.clear()
+        return self.graph_state()
+
+    def graph_chain_duplicate(self, payload: dict) -> dict:
+        """Append a duplicate of an effector node in series right after `name`."""
+        with self.lock:
+            src_name = str(payload.get("name", ""))
+            node = self.graph.nodes.get(src_name)
+            if node is None:
+                return {"error": f"no such node {src_name!r}", **self.graph_state()}
+            if not node.spec.inputs or not node.spec.outputs:
+                return {"error": f"节点 {src_name} 不支持串联复制", **self.graph_state()}
+            base = node.kind
+            n = 2
+            new_name = f"{base}{n}"
+            while new_name in self.graph.nodes:
+                n += 1
+                new_name = f"{base}{n}"
+            nx = float(node.position[0]) + (210.0 if node.px_position else 1.0)
+            ny = float(node.position[1]) + (24.0 if node.px_position else 0.0)
+            dup = self.graph.add(new_name, node.kind, params=dict(node.params or {}),
+                                 position=(nx, ny))
+            dup.px_position = bool(node.px_position)
+            dup.enabled = bool(node.enabled)
+            dup.iterations = int(getattr(node, "iterations", 1))
+
+            # Find compatible output->input port pair
+            out_ports = {p.name: p.type for p in node.spec.outputs}
+            in_ports = {p.name: p.type for p in dup.spec.inputs}
+            matched_out, matched_in = None, None
+            for op_name, op_type in out_ports.items():
+                for ip_name, ip_type in in_ports.items():
+                    if op_type == ip_type:
+                        matched_out, matched_in = op_name, ip_name
+                        break
+                if matched_out:
+                    break
+            if matched_out and matched_in:
+                # Re-route existing downstream edges that left from `src_name.matched_out`
+                downstream = [e for e in list(self.graph.edges)
+                              if e.src == src_name and e.src_port == matched_out]
+                for e in downstream:
+                    self.graph.edges.remove(e)
+                self.graph.connect(src_name, matched_out, new_name, matched_in)
+                for e in downstream:
+                    self.graph.connect(new_name, matched_out, e.dst, e.dst_port)
             self._graph_execs.clear()
         return self.graph_state()
 
@@ -683,12 +771,8 @@ class App:
                                    seed=self.current.seed, scale=1.0)
                 self._graph_execs[key] = ex
             else:
-                ex.params = {k: dict(v) for k, v in params.items()}
-                for node in self.graph.nodes.values():
-                    if node.params:
-                        ex.params.setdefault(node.kind, {}).update(node.params)
                 ex.graph = self.graph
-                ex.hashes = self.graph.node_hashes()
+                ex.sync_params(params)
         idx = max(0, min(idx, max(0, getattr(src, "frame_count", 1) - 1)))
         run = ex.render_frame(idx)
         if run.errors:
@@ -1122,6 +1206,10 @@ def make_handler(app: App):
                 if path == "/api/preset":
                     b = self._body()
                     return self._json(app.apply_preset(str(b.get("key", ""))))
+                if path == "/api/preset/save":
+                    return self._json(app.save_custom_preset(self._body()))
+                if path == "/api/preset/delete":
+                    return self._json(app.delete_custom_preset(self._body()))
                 if path == "/api/upload":
                     n = int(self.headers.get("Content-Length") or 0)
                     raw_name = self.headers.get("X-Filename") or "clip.mp4"
@@ -1176,6 +1264,8 @@ def make_handler(app: App):
                     return self._json(app.graph_move(self._body()))
                 if path == "/api/graph/node":
                     return self._json(app.graph_node_params(self._body()))
+                if path == "/api/graph/chain_duplicate":
+                    return self._json(app.graph_chain_duplicate(self._body()))
                 if path == "/api/import":
                     b = self._body()
                     # accept either the parsed object or the raw text of a file

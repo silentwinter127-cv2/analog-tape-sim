@@ -2,26 +2,26 @@
 Graph executor: run a node graph and produce frames.
 
 This connects `atsim.graph.Graph` to the stage implementations, so the wiring a
-user draws is what actually determines the signal path.  Two things make it more
-than a for-loop over stages:
+user draws is what actually determines the signal path.  Three things make it
+capable of multi-effector and multi-generation iterative simulation:
+
+**Per-node isolated RenderContext and seed.**  Each node receives its own
+`RenderContext` with its per-node parameter overrides applied to its own
+`params_layer` and a deterministic node-specific seed `derive_seed(seed, "node", name)`.
+When a user wires `tape1 -> deck1 -> tape2 -> deck2`, `tape1` and `tape2` keep
+independent wear/jitter/generation parameters and independent random defect
+timelines instead of overwriting one shared layer dict.
+
+**Per-node iterative looping (`node.iterations`).**  Any effector node can run
+`1..25` iterations in a loop (`for it in range(node.iterations)`), feeding pass
+`it`'s output signal into pass `it + 1` with a distinct per-iteration seed so
+each pass compounds bandwidth loss, chroma bleed, ringing, and transport jitter
+physically rather than repeating identical random numbers.
 
 **Per-node frame memory.**  Each node memoises its output frames, keyed by the
-node's own hash (which already includes all its ancestors).  Re-rendering after
-touching one device therefore reuses every node outside that device's subtree.
-In a graph with two parallel branches, only the touched branch runs.
-
-**Node boundaries are format boundaries.**  A node does not receive "the frame";
-it receives the frame *as the signal type of the edge that feeds it*.  That is
-what makes a converter meaningful: `hdmi_to_av` is the node that turns a picture
-into a composite signal, and `rf_modulator` is the node that puts it on a carrier.
-
-The RF pair is a real round trip through `atsim.codecs.rf`: the modulator applies
-channel shaping, and the tuner applies IF noise, adjacent-channel beat and AFC
-sync slip (which corrupts hue as well as position, since both come from the same
-timing error).  The picture degrades monotonically as the received level falls --
-verified across -45 to -80 dBm -- and the tuner's output signal is re-derived from
-the *received* composite rather than inherited from upstream, which is what makes
-the damage actually reach the downstream nodes.
+node's own hash (which already includes all its ancestors, parameters, and
+iteration count).  Re-rendering after touching one device therefore reuses
+every node outside that device's subtree.
 """
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from typing import Callable, Iterator
 import numpy as np
 
 from ..core.pipeline import Chain, FrameBuffer, RenderContext, Stage
+from ..core.rng import derive_seed
 from ..core.signal import SignalFrame, composite_encode
 from ..core.standards import VideoStandard
 from ..render.renderer import (STAGE_ORDER, STAGE_LAYERS, STAGE_LABELS,
@@ -44,6 +45,7 @@ STAGE_FOR_KIND: dict[str, type[Stage] | None] = {
     "encoder": FormatStage,
     "dv_codec": CodecStage,
     "tape": TapeStage,
+    "vhs_gen": TapeStage,
     "deck": PlayerStage,
     "display": DisplayStage,
     "source": None,
@@ -51,6 +53,9 @@ STAGE_FOR_KIND: dict[str, type[Stage] | None] = {
     "hdmi_to_av": None,
     "rf_modulator": None,
     "rf_tuner": None,
+    "vhs_dub_loop": None,
+    "vhs_gen": None,
+    "vhs_iterative_loop": None,
 }
 
 
@@ -84,53 +89,82 @@ class GraphExecutor:
         self.fps = fps
         self.seed = int(seed)
         self.scale = float(scale)
-        # node params override the layer params, so a node can be tuned
-        # individually instead of only through the shared device layer
+        self.base_params = {k: dict(v) for k, v in params.items()}
         self.params = {k: dict(v) for k, v in params.items()}
-        for node in graph.nodes.values():
-            if node.params:
-                self.params.setdefault(node.kind, {}).update(node.params)
 
         self.ctx = RenderContext(std=std, params=self.params, seed=self.seed,
-                                frame_count=0, fps=fps, width=int(width),
-                                height=int(height), preview=False, scale=scale)
-        self.stages: dict[str, Stage] = {}
-        for name, node in graph.nodes.items():
-            cls = STAGE_FOR_KIND.get(node.kind)
-            if cls is not None:
-                self.stages[name] = cls(self.ctx)
-        for st in self.stages.values():
-            st.prepare()
+                                 frame_count=int(getattr(source, "frame_count", 0) or 0),
+                                 fps=fps, width=int(width),
+                                 height=int(height), preview=False, scale=scale,
+                                 source=source)
+        self.stages: dict[str, list[Stage]] = {}
+        self._build_node_stages()
 
         self.order = graph.order()
         self.hashes = graph.node_hashes()
         self._cache: dict[str, dict[int, np.ndarray]] = {n: {} for n in graph.nodes}
-        # which node hash produced each cached frame; a node may be skipped only
-        # when its hash is unchanged AND its ancestors' hashes are unchanged,
-        # which is exactly what the node hash already encodes
         self._cache_key: dict[str, dict[int, str]] = {n: {} for n in graph.nodes}
         self._prev_src: np.ndarray | None = None
         self.node_ms: dict[str, float] = {}
         self.skipped: dict[str, int] = {}
         self.last_rgb: np.ndarray | None = None
 
+    def _node_params(self, node: Node) -> dict:
+        """Build an isolated parameter dictionary for `node`."""
+        np_dict = {k: dict(v) for k, v in self.base_params.items()}
+        layer_name = node.spec.params_layer or node.kind
+        if node.kind == "vhs_gen":
+            # Default vhs_gen to at least 2 generation passes if not overridden
+            np_dict.setdefault("tape", {})
+            if "generation_passes" not in (node.params or {}) and float(np_dict["tape"].get("generation_passes", 1.0)) <= 1.0:
+                np_dict["tape"]["generation_passes"] = 2.0
+        if node.params and layer_name:
+            np_dict.setdefault(layer_name, {}).update(node.params)
+        return np_dict
+
+    def _build_node_stages(self) -> None:
+        """Create isolated Stage instance(s) per node and per iteration pass."""
+        self.stages = {}
+        frame_cnt = int(getattr(self.source, "frame_count", 0) or 0)
+        for name, node in self.graph.nodes.items():
+            cls = STAGE_FOR_KIND.get(node.kind)
+            if cls is None:
+                continue
+            iters = max(1, min(25, int(getattr(node, "iterations", 1) or 1)))
+            pass_stages: list[Stage] = []
+            np_dict = self._node_params(node)
+            for it in range(iters):
+                node_seed = derive_seed(self.seed, "node", name, it)
+                n_ctx = RenderContext(
+                    std=self.std, params={k: dict(v) for k, v in np_dict.items()},
+                    seed=node_seed, frame_count=frame_cnt, fps=self.fps,
+                    width=int(self.width), height=int(self.height),
+                    preview=False, scale=self.scale, source=self.source,
+                )
+                st = cls(n_ctx)
+                st.prepare()
+                pass_stages.append(st)
+            self.stages[name] = pass_stages
+
+    def sync_params(self, params: dict) -> None:
+        """Update base parameters and rebuild node stages if hashes changed."""
+        self.base_params = {k: dict(v) for k, v in params.items()}
+        self.params = {k: dict(v) for k, v in params.items()}
+        new_hashes = self.graph.node_hashes()
+        if new_hashes != self.hashes or set(self.graph.nodes) != set(self._cache):
+            self.order = self.graph.order()
+            for n in self.graph.nodes:
+                self._cache.setdefault(n, {})
+                self._cache_key.setdefault(n, {})
+            self._build_node_stages()
+            self.hashes = new_hashes
+
     # ------------------------------------------------------------------
     def _rf(self):
-        """
-        The RF link, built lazily and shared by the modulator and tuner nodes.
-
-        Shared on purpose: it carries the AFC error, QSB fading, and interference
-        beat, which are continuous processes across frames.  A per-node instance
-        would restart those every frame and the tearing would look like noise.
-        """
         if getattr(self, "_rflink", None) is None:
             from ..codecs.rf import RFLink, RFParams
-            p = dict(self.ctx.layer("rf") or {})
-            for n_kind in ("rf_modulator", "rf_tuner"):
-                if n_kind in self.params:
-                    p.update(self.params[n_kind])
+            p = self.ctx.layer("rf") or {}
             self._rflink = RFLink(self.std, RFParams(
-                enabled=float(p.get("enabled", 1.0)),
                 channel_mhz=float(p.get("channel_mhz", 6.0)),
                 carrier_offset_mhz=float(p.get("carrier_offset_mhz", 1.25)),
                 noise_figure_db=float(p.get("noise_figure_db", 8.0)),
@@ -139,32 +173,10 @@ class GraphExecutor:
                 sync_loss_amount=float(p.get("sync_loss_amount", 1.0)),
                 adjacent_channel=float(p.get("adjacent_channel", 0.0)),
                 broadcast_noise=float(p.get("broadcast_noise", 0.0)),
-                tv_standard=float(p.get("tv_standard", 0.0)),
-                propagation_mode=float(p.get("propagation_mode", 0.0)),
-                distance_km=float(p.get("distance_km", 45.0)),
-                dx_duct_gain_db=float(p.get("dx_duct_gain_db", 24.0)),
-                qsb_depth_db=float(p.get("qsb_depth_db", 0.0)),
-                qsb_rate_hz=float(p.get("qsb_rate_hz", 0.25)),
-                multipath_level=float(p.get("multipath_level", 0.0)),
-                multipath_delay_us=float(p.get("multipath_delay_us", 0.85)),
-                multipath_phase_deg=float(p.get("multipath_phase_deg", 35.0)),
-                cochannel_interference=float(p.get("cochannel_interference", 0.0)),
-                cochannel_offset_khz=float(p.get("cochannel_offset_khz", 10.05)),
-                tuner_type=float(p.get("tuner_type", 0.0)),
-                tuning_offset_khz=float(p.get("tuning_offset_khz", 0.0)),
-                front_end_overload=float(p.get("front_end_overload", 0.0)),
-                color_killer_threshold_db=float(p.get("color_killer_threshold_db", 18.0)),
             ), seed=self.seed)
         return self._rflink
 
     def _decompose_for_rf(self, comp: np.ndarray):
-        """
-        Composite -> (Y, I, Q) after the RF link has damaged it.
-
-        Uses the same wide-window separation as the medium model: the window has
-        to match the recorded chroma width, or luma leaks into chroma and gets
-        re-modulated as false colour.
-        """
         from ..core.signal import demod_chroma, split_composite
         window = float(np.clip(
             float(self.ctx.layer("format").get("chroma_bandwidth", 0.75)) * 1.15e6,
@@ -176,31 +188,47 @@ class GraphExecutor:
         return y_band, i, q
 
     def _format_clone(self) -> FormatStage:
-        """
-        A FormatStage for converter nodes that must encode a picture themselves.
-
-        Kept as a lazily-built singleton so its temporal state (the chroma phase
-        processes) advances with the clip rather than restarting per frame.
-        """
         if getattr(self, "_fmt", None) is None:
             self._fmt = FormatStage(self.ctx)
             self._fmt.prepare()
         return self._fmt
 
+    def _prepare_stage_input(self, kind: str, buf: FrameBuffer) -> FrameBuffer:
+        """Ensure `buf` carries the representation expected by `kind` before a pass."""
+        if kind in ("tape", "vhs_gen", "deck") and buf.composite is None:
+            sig = buf.meta.get("signal")
+            if sig is None:
+                sig = SignalFrame.from_rgb(buf.rgb, self.std)
+                buf.meta["signal"] = sig
+            buf.composite = composite_encode(sig.y, sig.i, sig.q, self.std, chroma_gain=0.63)
+        elif kind in ("encoder", "camera", "display") and buf.meta.get("signal") is not None:
+            buf.rgb = buf.meta["signal"].to_rgb()
+        return buf
+
+    def _picture_from_output(self, kind: str, out: FrameBuffer) -> np.ndarray:
+        """Extract an RGB picture from `out` even when a stage only updates `composite`."""
+        if kind == "display":
+            return out.rgb
+        sig = out.meta.get("signal")
+        if sig is not None and kind not in ("tape", "vhs_gen"):
+            return sig.to_rgb()
+        if out.composite is not None and kind in ("tape", "vhs_gen"):
+            y, i, q = self._decompose_for_rf(out.composite)
+            sig_c = SignalFrame(y.astype(np.float32), i.astype(np.float32), q.astype(np.float32))
+            out.meta["signal"] = sig_c
+            out.rgb = sig_c.to_rgb()
+            return out.rgb
+        if sig is not None:
+            return sig.to_rgb()
+        return out.rgb
+
     def _frame_for(self, name: str, index: int, src_rgb: np.ndarray | None
                    ) -> tuple[FrameBuffer, np.ndarray]:
-        """
-        Produce this node's output for one frame.
-
-        Returns (buffer, output_picture).  The buffer carries the signal state
-        that downstream nodes need; the picture is what gets cached and shown,
-        which is what lets a branch's cache entry be one array.
-        """
+        """Produce this node's output for one frame (including multi-pass iteration)."""
         node = self.graph.nodes[name]
         kind = node.kind
         ins = self.graph.inputs_of(name)
 
-        # --- gather the incoming buffer, respecting the edge type --------
         buf: FrameBuffer | None = None
         if ins:
             edge = next(iter(ins.values()))
@@ -218,126 +246,129 @@ class GraphExecutor:
             return out, out.rgb
 
         if buf is None:
-            # unreachable for a validated graph: `render_frame` refuses
-            # unwired nodes up front.  Kept as a defensive check with a
-            # readable message rather than an assert.
             raise RuntimeError(f"节点 {name} 没有输入，无法渲染")
 
-        stage = self.stages.get(name)
-        if stage is not None:
-            # the stage is given the buffer as produced by its upstream, and
-            # its own config comes from the node's parameter layer
-            out = stage.apply(buf)
-            picture = out.rgb if out.meta.get("signal") is None else \
-                out.meta["signal"].to_rgb()
-            return out, picture
+        # If a node is disabled on the canvas (e.g. CRT display turned off), bypass cleanly
+        if not getattr(node, "enabled", True):
+            sig = buf.meta.get("signal")
+            pic = sig.to_rgb() if sig is not None else buf.rgb
+            return buf, pic
+
+        pass_stages = self.stages.get(name)
+        if pass_stages:
+            cur_buf = buf
+            for st in pass_stages:
+                cur_buf = self._prepare_stage_input(kind, cur_buf)
+                if kind == "camera":
+                    st.set_previous(self._prev_src)
+                cur_buf = st.apply(cur_buf)
+                pic = self._picture_from_output(kind, cur_buf)
+                cur_buf.rgb = pic
+            return cur_buf, pic
 
         # --- converter nodes -------------------------------------------
-        if kind == "hdmi_out":
-            sig = buf.meta.get("signal")
-            if sig is None:
-                sig = SignalFrame.from_rgb(buf.rgb, self.std)
-            out = FrameBuffer(buf.rgb, None, index, buf.time, self.std,
-                              {**buf.meta, "signal": sig, "format": "hdmi"})
-            return out, sig.to_rgb()
-
-        if kind == "hdmi_to_av":
-            sig = buf.meta.get("signal")
-            if sig is None:
-                sig = SignalFrame.from_rgb(buf.rgb, self.std)
-            # A converter box really does encode the picture itself, so the
-            # format layer runs here rather than being borrowed from elsewhere.
-            fmt = self._format_clone()
-            comp = fmt.apply(FrameBuffer(sig.to_rgb(), None, index, buf.time,
-                                         self.std, dict(buf.meta)))
-            return comp, comp.meta["signal"].to_rgb()
-
-        if kind == "rf_modulator":
-            # put the composite onto a carrier: channel shaping applies here
-            sig = buf.meta.get("signal")
-            if sig is None:
-                sig = SignalFrame.from_rgb(buf.rgb, self.std)
-            comp = buf.composite
-            if comp is None:
-                comp = composite_encode(sig.y, sig.i, sig.q, self.std,
-                                        chroma_gain=0.63)
-            tx = self._rf().modulate(comp, index)
-            out = FrameBuffer(sig.to_rgb(), tx, index, buf.time, self.std,
-                              {**buf.meta, "format": "rf"})
-            out.meta["signal"] = sig
-            return out, sig.to_rgb()
-
-        if kind == "rf_tuner":
-            # demodulate: receiver noise, adjacent-channel beat and AFC slip
-            rf = self._rf()
-            comp = buf.composite
-            if comp is None:
-                sig0 = buf.meta.get("signal") or SignalFrame.from_rgb(buf.rgb, self.std)
-                comp = composite_encode(sig0.y, sig0.i, sig0.q, self.std,
-                                        chroma_gain=0.63)
-            base, info = rf.demodulate(
-                comp, index,
-                np.random.default_rng((int(self.seed) * 8191 + index * 131) & 0xFFFFFFFF))
-            # The signal handed downstream must be re-derived from the *received*
-            # composite.  Keeping the upstream (clean) signal here meant the RF
-            # damage was computed and then thrown away -- the picture was
-            # bit-identical across a 35 dB range of received level.
-            y, i, q = self._decompose_for_rf(base)
-            # the same timing slip that moved the lines invalidates the
-            # subcarrier reference too, so colour is corrupted with it
-            ph = rf.chroma_phase_error()
-            if ph is not None:
-                # per-line phase error: reshape to (H, 1) so it broadcasts
-                # against the (H, W) chroma planes
-                ph = np.asarray(ph, dtype=np.float32).reshape(-1, 1)
-                c, s = np.cos(ph), np.sin(ph)
-                i, q = i * c - q * s, i * s + q * c
-            ck_gain = rf.color_killer_gain()
-            if ck_gain < 0.999:
-                i = i * ck_gain
-                q = q * ck_gain
-            sig_rf = SignalFrame(y.astype(np.float32),
-                                 i.astype(np.float32),
-                                 q.astype(np.float32))
-            conn_cfg = self.ctx.layer("connector") or {}
-            rf_m = float(conn_cfg.get("rf_moisture", 0.0))
-            rf_c = float(conn_cfg.get("rf_corrosion", 0.0))
-            rf_sh = float(conn_cfg.get("rf_shielding", 0.0))
-            meta_out = {**buf.meta, "format": "composite"}
-            if rf_m > 1e-4 or rf_c > 1e-4:
-                from ..codecs.connectors import CONNECTORS, degrade_rf_signal
-                rgb_damp, c_info = degrade_rf_signal(
-                    sig_rf.to_rgb(), CONNECTORS["rf"], rf_m, rf_c, rf_sh, index, int(self.seed) + 23)
-                sig_rf = SignalFrame.from_rgb(rgb_damp, self.std)
-                info.update(c_info)
-                sig_rf._rf_direct = True
-            out = FrameBuffer(sig_rf.to_rgb(), base, index, buf.time, self.std, meta_out)
-            out.meta["signal"] = sig_rf
-            out.meta["rf"] = info
-            return out, sig_rf.to_rgb()
-
-        raise RuntimeError(f"no implementation for node kind {kind!r}")
+        iters = max(1, min(25, int(getattr(node, "iterations", 1) or 1)))
+        cur_buf = buf
+        picture = cur_buf.rgb
+        for _it in range(iters):
+            if kind == "hdmi_out":
+                sig = cur_buf.meta.get("signal")
+                if sig is None:
+                    sig = SignalFrame.from_rgb(cur_buf.rgb, self.std)
+                cur_buf = FrameBuffer(cur_buf.rgb, None, index, cur_buf.time, self.std,
+                                      {**cur_buf.meta, "signal": sig, "format": "hdmi"})
+                picture = sig.to_rgb()
+            elif kind == "hdmi_to_av":
+                sig = cur_buf.meta.get("signal")
+                if sig is None:
+                    sig = SignalFrame.from_rgb(cur_buf.rgb, self.std)
+                fmt = self._format_clone()
+                cur_buf = fmt.apply(FrameBuffer(sig.to_rgb(), None, index, cur_buf.time,
+                                                self.std, dict(cur_buf.meta)))
+                picture = cur_buf.meta["signal"].to_rgb()
+            elif kind == "rf_modulator":
+                sig = cur_buf.meta.get("signal")
+                if sig is None:
+                    sig = SignalFrame.from_rgb(cur_buf.rgb, self.std)
+                comp = cur_buf.composite
+                if comp is None:
+                    comp = composite_encode(sig.y, sig.i, sig.q, self.std,
+                                            chroma_gain=0.63)
+                tx = self._rf().modulate(comp, index)
+                cur_buf = FrameBuffer(sig.to_rgb(), tx, index, cur_buf.time, self.std,
+                                      {**cur_buf.meta, "format": "rf", "signal": sig})
+                picture = sig.to_rgb()
+            elif kind == "rf_tuner":
+                rf = self._rf()
+                comp = cur_buf.composite
+                if comp is None:
+                    sig0 = cur_buf.meta.get("signal") or SignalFrame.from_rgb(cur_buf.rgb, self.std)
+                    comp = composite_encode(sig0.y, sig0.i, sig0.q, self.std,
+                                            chroma_gain=0.63)
+                base, info = rf.demodulate(
+                    comp, index,
+                    np.random.default_rng((int(self.seed) * 8191 + index * 131 + _it * 997) & 0xFFFFFFFF))
+                y, i, q = self._decompose_for_rf(base)
+                ph = rf.chroma_phase_error()
+                if ph is not None:
+                    ph = np.asarray(ph, dtype=np.float32).reshape(-1, 1)
+                    c, s = np.cos(ph), np.sin(ph)
+                    i, q = i * c - q * s, i * s + q * c
+                sig_rf = SignalFrame(y.astype(np.float32),
+                                     i.astype(np.float32),
+                                     q.astype(np.float32))
+                conn_cfg = self.ctx.layer("connector") or {}
+                rf_m = float(conn_cfg.get("rf_moisture", 0.0))
+                rf_c = float(conn_cfg.get("rf_corrosion", 0.0))
+                rf_sh = float(conn_cfg.get("rf_shielding", 0.0))
+                meta_out = {**cur_buf.meta, "format": "composite"}
+                if rf_m > 1e-4 or rf_c > 1e-4:
+                    from ..codecs.connectors import CONNECTORS, degrade_rf_signal
+                    rgb_damp, c_info = degrade_rf_signal(
+                        sig_rf.to_rgb(), CONNECTORS["rf"], rf_m, rf_c, rf_sh, index, int(self.seed) + 23 + _it)
+                    sig_rf = SignalFrame.from_rgb(rgb_damp, self.std)
+                    info.update(c_info)
+                    sig_rf._rf_direct = True
+                cur_buf = FrameBuffer(sig_rf.to_rgb(), base, index, cur_buf.time, self.std, meta_out)
+                cur_buf.meta["signal"] = sig_rf
+                cur_buf.meta["rf"] = info
+                picture = sig_rf.to_rgb()
+            elif kind in ("vhs_dub_loop", "vhs_gen", "vhs_iterative_loop"):
+                from ..core.signal import demod_chroma, remod_chroma, split_composite
+                comp = cur_buf.composite
+                if comp is None:
+                    sig0 = cur_buf.meta.get("signal") or SignalFrame.from_rgb(cur_buf.rgb, self.std)
+                    comp = composite_encode(sig0.y, sig0.i, sig0.q, self.std, chroma_gain=0.63)
+                window = float(np.clip(
+                    float(self.ctx.layer("format").get("chroma_bandwidth", 0.75)) * 1.15e6,
+                    0.35e6, 1.2e6))
+                y_b, c_b = split_composite(comp, self.std, comb_depth=0.0, chroma_bandwidth_hz=window)
+                i_b, q_b = demod_chroma(c_b / 0.63, self.std, i_bw_hz=1.5e6, q_bw_hz=1.5e6)
+                if name not in self.stages:
+                    st_t = TapeStage(self.ctx)
+                    st_t.prepare()
+                    self.stages[name] = st_t
+                st_tape = self.stages[name]
+                y_d, i_d, q_d = st_tape._apply_generation_iteration(y_b, i_b, q_b, index, gen_index=int(node.params.get("gen_index", 1)))
+                comp_out = (y_d + remod_chroma(i_d, q_d, self.std, chroma_gain=0.63)).astype(np.float32)
+                sig_out = SignalFrame(y_d, i_d, q_d)
+                cur_buf = FrameBuffer(sig_out.to_rgb(), comp_out, index, cur_buf.time, self.std, dict(cur_buf.meta))
+                cur_buf.meta["signal"] = sig_out
+                picture = cur_buf.rgb
+            else:
+                raise RuntimeError(f"no implementation for node kind {kind!r}")
+        return cur_buf, picture
 
     def _buffer_from_cache(self, upstream: str, index: int,
                            cached: np.ndarray | None,
                            src_rgb: np.ndarray | None) -> FrameBuffer | None:
-        """
-        Rebuild a FrameBuffer from an upstream node's cached picture.
-
-        The cached value is the node's *output picture*.  Because the medium and
-        player stages need a specific signal state (composite carrier, YIQ), the
-        buffer is reconstructed from the picture and the upstream node's kind --
-        the same information the cache key is built from.
-        """
         if cached is None:
             return None
         up = self.graph.nodes[upstream]
         buf = FrameBuffer(np.asarray(cached, dtype=np.float32), None, index,
                           index / max(1e-6, self.fps), self.std,
                           {"field": index % 2})
-        # a picture alone cannot carry a composite carrier, so nodes whose
-        # downstream needs one must be re-derived rather than reconstructed
-        if up.kind in ("encoder", "hdmi_to_av", "rf_tuner"):
+        if up.kind in ("encoder", "hdmi_to_av", "rf_tuner", "tape", "vhs_gen", "deck"):
             sig = SignalFrame.from_rgb(buf.rgb, self.std)
             if up.kind == "rf_tuner":
                 _cc = self.ctx.layer("connector") or {}
@@ -346,40 +377,24 @@ class GraphExecutor:
             buf.composite = composite_encode(sig.y, sig.i, sig.q, self.std,
                                              chroma_gain=0.63)
             buf.meta["signal"] = sig
-        elif up.kind in ("camera", "source", "display", "hdmi_out"):
-            buf.meta["signal"] = SignalFrame.from_rgb(buf.rgb, self.std)
-        elif up.kind in ("deck", "dv_codec", "tape", "rf_modulator"):
+        else:
             buf.meta["signal"] = SignalFrame.from_rgb(buf.rgb, self.std)
         return buf
 
     def invalidate(self) -> list[str]:
-        """
-        Recompute node hashes and report which nodes must re-run.
-
-        Called after any parameter edit.  Because a node's hash covers all of its
-        ancestors, a node is dirty exactly when it or something upstream of it
-        changed -- so this list is the node editor's "what has to be recomputed"
-        indicator, and everything absent from it stays cached.
-        """
         old = self.hashes
         self.hashes = self.graph.node_hashes()
-        return [n for n in self.graph.nodes if old.get(n) != self.hashes[n]]
+        dirty = [n for n in self.graph.nodes if old.get(n) != self.hashes[n]]
+        if dirty:
+            self._build_node_stages()
+        return dirty
 
     def node_is_cached(self, name: str, index: int) -> bool:
-        return (index in self._cache[name]
-                and self._cache_key[name].get(index) == self.hashes[name])
+        return (index in self._cache.get(name, {})
+                and self._cache_key.get(name, {}).get(index) == self.hashes.get(name))
 
     # ------------------------------------------------------------------
     def pending_nodes(self) -> list[str]:
-        """
-        Nodes that declare an input but have nothing connected to them.
-
-        Such a node cannot run: there is no buffer to hand its stage.  The graph's
-        own validator only warns about this ("an input is not connected"), so a graph
-        with an unwired converter passed validation and then died inside the executor
-        on a bare `assert` -- the check said fine and the render said crash, which is
-        the worst combination for anyone trying to work out what is wrong.
-        """
         out: list[str] = []
         for name, node in self.graph.nodes.items():
             if not node.spec.inputs:
@@ -389,21 +404,8 @@ class GraphExecutor:
         return out
 
     def render_frame(self, index: int, use_cache: bool = True) -> GraphRun:
-        """
-        Execute the graph for one frame, node by node.
-
-        Nodes whose hash and frame are already cached are skipped outright and
-        their stored picture is passed downstream.  Because the hash includes the
-        whole ancestor set, this is safe: an unchanged hash means neither this
-        node nor anything feeding it has been touched since the frame was made.
-        This is the payoff of per-node keys -- after a tweak, only the affected
-        subtree runs instead of the whole chain.
-        """
         run = GraphRun(rgb=np.zeros((self.height, self.width, 3), np.float32))
 
-        # Refuse before doing any work, and report *every* unwired node rather than
-        # failing on the first one encountered.  A user with two unconnected
-        # converters should not have to fix them one restart at a time.
         pending = self.pending_nodes()
         if pending:
             names = "、".join(pending)
@@ -414,6 +416,8 @@ class GraphExecutor:
 
         src_rgb = None
         for name in self.order:
+            self._cache.setdefault(name, {})
+            self._cache_key.setdefault(name, {})
             if use_cache and self.node_is_cached(name, index):
                 run.node_frames[name] = self._cache[name][index]
                 run.trace.append(f"{name}(cached)")
@@ -429,7 +433,8 @@ class GraphExecutor:
             self._cache[name][index] = picture
             self._cache_key[name][index] = self.hashes[name]
             run.node_frames[name] = picture
-            run.trace.append(name)
+            iters = max(1, int(getattr(self.graph.nodes[name], "iterations", 1) or 1))
+            run.trace.append(f"{name}×{iters}" if iters > 1 else name)
             self.node_ms[name] = self.node_ms.get(name, 0.0) * 0.7 + \
                 (time.perf_counter() - t0) * 1000.0 * 0.3
         outs = self.graph.output_nodes()
@@ -439,7 +444,6 @@ class GraphExecutor:
 
     def render_frames(self, indices: list[int]
                       ) -> Iterator[tuple[int, np.ndarray]]:
-        """Pump the graph forward, yielding the requested output frames."""
         wanted = sorted({int(i) for i in indices})
         if not wanted:
             return
@@ -447,9 +451,8 @@ class GraphExecutor:
         if not outs:
             return
         sink = outs[0]
-        last = max(self._cache[sink]) if self._cache[sink] else -1
         for index in range(0, max(wanted) + 1):
-            if index in self._cache[sink]:
+            if index in self._cache.get(sink, {}):
                 if index in wanted:
                     yield index, self._cache[sink][index]
                 continue

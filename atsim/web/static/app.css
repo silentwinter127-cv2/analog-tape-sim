@@ -481,3 +481,38 @@ button.kfNav:hover { color: #ffd166; border-color: #ffd166; }
   padding: 2px 8px; border-radius: 3px; background: #1e1b17;
   border: 1px solid var(--line); color: #e8a33d; font-size: 11px; white-space: nowrap;
 }
+
+/* Custom user preset bar & delete button */
+.custom-preset-bar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 0 10px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+.custom-preset-bar input {
+  flex: 1;
+  background: var(--bg2, #181614);
+  color: var(--fg, #e6dccf);
+  border: 1px solid var(--line, #332e28);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.custom-preset-bar button {
+  padding: 4px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.del-preset {
+  background: transparent;
+  border: 1px solid rgba(217, 97, 76, 0.45);
+  color: #d9614c;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.del-preset:hover {
+  background: rgba(217, 97, 76, 0.2);
+}

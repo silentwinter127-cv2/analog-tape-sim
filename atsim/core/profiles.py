@@ -703,6 +703,11 @@ def build_schema() -> ParamSchema:
     cam.define("highlight_tint", "高光染色", 0.0, 0.0, 1.0, unit="0-1", group=g,
                phys_max=0.6, source="CCD 过曝时的通道非线性",
                help="过曝区域向品红/紫偏移——参考素材里灯光边缘的那圈紫边。")
+    cam.define("vcd_color_tone", "港式 VCD 冷暖分色与柔光肩部", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.2, source="90年代末香港 VCD / 胶转磁短片实测色彩科学 (30666916021-1-192.mp4)",
+               help="复现 90 年代末香港 VCD 纪实/MV 短片的标志性色彩曲线：暗部黑位微抬并带冷青灰底色（p05≈0.18）、"
+                    "中间调人物肤色与紫荆铜雕呈暖金琥珀色（R/G≈1.11, B/G≈0.93）、玻璃幕墙与阴影呈翡翠青绿色（B/G≈1.04），"
+                    "同时高光在 0.82 处平滑软肩滚降而不生硬死白。")
     g = "镜头"
     cam.define("lens_wear", "镜头磨损/镀膜老化", 0.0, 0.0, 1.0, unit="0-1", group=g,
                phys_max=0.6, source="镜片镀膜磨损与内部起雾",
@@ -733,6 +738,11 @@ def build_schema() -> ParamSchema:
     cam.define("light_streak_length", "光条延伸长度", 0.55, 0.1, 1.5, unit="0-1", group=g,
                phys_min=0.2, phys_max=1.2,
                help="控制高光光条向画面外侧延伸的衰减尺度。")
+    cam.define("coat_ghost", "变焦镜组镀膜鬼影与彩虹色散弧", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.2, source="单层 MgF2 镀膜双反射鬼影链与广角端色散弧 (30666916021-1-192.mp4 开头 0.5s-1.2s)",
+               help="建模短片开头逆光摇摄时的多层光学细节：1990 年代单层 MgF2 增透膜针对绿光（550nm）优化，"
+                    "内部镜片二次反射会强烈反射红光与蓝紫光，形成中心对称的品红/蓝紫色反转重影（B-G≈+0.11）、"
+                    "穿轴斜向焦散粉紫光带，以及广角端对角象限的青-绿-品红彩虹色散弧（B-R≈+0.10）。")
     cam.define("flare_defocus", "闪光逐通道离焦", 0.5, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.5,
                help="**纵向色差让三个通道聚焦在不同距离上**，所以孔径的**离焦像在蓝通道比红通道更大**。"
@@ -891,6 +901,10 @@ def build_schema() -> ParamSchema:
                group=g, step=50.0, phys_min=1100.0, phys_max=1200.0,
                source="VCD 标准 1150 kbit/s",
                help="参考资料值。当前实现用它设定量化尺度，并未真正做码率控制。")
+    cod.define("vcd_hbi_border", "模拟采集 HBI 边缘振铃与亮边", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0, source="模拟复合母带采集压制 VCD 时的左右行消隐振铃边",
+               help="复现模拟母带经采集卡转压 VCD 时的 4:3 画幅左右边界特征：左侧低通抗混叠滤波器阶跃振铃暗槽与过冲，"
+                    "以及右侧行消隐（HBI）钳位亮白细边。")
     g = "DV / MiniDV 编码"
     cod.define("dv_enabled", "启用 DV 编码分支", 0.0, 0.0, 1.0, unit="bool", group=g,
                phys_min=0.0, phys_max=1.0, step=1.0, source="MiniDV / DVCAM / DVCPRO 机型",
@@ -1062,6 +1076,30 @@ def build_schema() -> ParamSchema:
                help="带基边缘破损、撕裂或接带折痕同时破坏螺旋视频轨与磁带下沿 25 Hz 时间轴控制轨（CTL）。"
                     "夏普 VC-A62DT 的 1 颗时间轴磁头失去 CTL 脉冲后，主导轴伺服瞬间失步，"
                     "在破损横带处产生剧烈的行同步剪切、场跳动与全宽原生 FM 雪花。")
+
+    g = "多世代翻录损耗（VHS 反复迭代标定）"
+    tpe.define("generation_passes", "VHS 世代翻录次数", 1.0, 1.0, 25.0, unit="代", group=g,
+               step=1.0, phys_min=1.0, phys_max=20.0,
+               source="实拍多世代 VHS 翻录测试（录像带的图像耗损.mp4：第 1 代 → 第 20 代）",
+               help="模拟磁带对磁带（VCR → VCR）反复翻录迭代的世代数。1 代为母带直出；"
+                    "随着世代数增加（如 5 代、8 代、15 代、18 代），每次翻录都会累积："
+                    "① 629 kHz 欠载色度低通与 1H 梳状滤波导致的色度向右下方跨界偏移与洇色（每代约 +1.35 px / +1.15 行）；"
+                    "② FM 预加重与去加重失配导致的垂直边缘多级黑白振铃光环（Zebra Ringing）与高光黄绿偏色；"
+                    "③ 行时基抖动按 √N 累积放大、AGC 黑电平抬升、右侧 HBI 钳位噪波边加宽及底部多层磁头切换带堆叠；"
+                    "④ 约第 19–20 代时行同步脉冲圆化跌破 AFC 门限，触发消色器（Color Killer）切入黑白高反差斜纹失锁状态。")
+    tpe.define("gen_chroma_bleed", "世代色度偏移与下垂洇色", 0.85, 0.0, 2.0, unit="0-2", group=g,
+               phys_min=0.3, phys_max=1.5,
+               source="VHS 629 kHz 欠载色度群延迟 + 1H 玻璃延迟线逐代级联",
+               help="控制每经过一代翻录时，色度平面相对亮度的向右群延迟偏移、向下行平均下垂及色度饱和度滚降强度。")
+    tpe.define("gen_ringing", "世代孔径过冲与多级振铃黑边", 0.85, 0.0, 2.0, unit="0-2", group=g,
+               phys_min=0.3, phys_max=1.5,
+               source="VHS 录放高频预加重/孔径补偿级联二阶过冲（实测 Gen 18 边缘 hf_x 升至 2.6 倍）",
+               help="控制每代翻录在人物轮廓、条纹与明暗硬边界两侧激发出的一阶/二阶黑白振铃条纹（Ringing Halo）及右侧 HBI 噪波边强度。")
+    tpe.define("gen_sync_collapse", "世代同步崩溃与消色门限", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0,
+               source="实拍第 19–20 代（60.5s–66.5s）行同步圆化失锁与 Color Killer 动作",
+               help="当世代数达到 19–20 代或手动调高此项时，模拟行同步与色同步彻底崩溃：自动消色器关闭彩色、"
+                    "画面陷入黑白高反差 FM 差拍斜纹与剧烈行撕裂，仅隐约保留人物剪影。")
 
     g = "亮度电平"
     tpe.define("luma_pedestal", "消隐电平偏移", 0.0, -0.5, 0.3, unit="0-1", group=g,
@@ -1414,7 +1452,7 @@ def build_schema() -> ParamSchema:
     # ------------------------------------------------------------------ E
     dsp = s.layer("display")
     g = "显像管"
-    dsp.define("enabled", "显示设备接入", 1.0, 0.0, 1.0, unit="bool", group=g, step=1.0)
+    dsp.define("enabled", "显示设备接入", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0)
     # **The minimum was 1.5, which made the parameter one-sided.**  A gamma is a curve that can go either
     # way, and the stage applies `rgb ** (1/g)`, so a value below 1 darkens the mid-tones.  Measured, asking
     # for 0.50 / 0.80 / 1.00 / 1.25 all left the stage holding **1.5** because the schema raised them, so
@@ -1511,6 +1549,34 @@ def build_schema() -> ParamSchema:
                help="三个阴极各有独立视放、各自老化，所以旧机器受潮时出现**偏向某色**"
                     "而不只是变暗。同一个潮湿房间里，新机器看起来发白、旧机器发绿，"
                     "差别就在这里——这是**显示器**的属性，不是录制里的偏色。")
+    dsp.define("spot_bloom", "束斑动态发散", 0.0, 0.0, 1.5, unit="0-1", group="电子光学与荧光粉",
+               phys_min=0.0, phys_max=1.0,
+               help="强阴极束流下空间电荷排斥使电子束斑变宽，高光处扫描线向黑隙扩张并桥接，"
+                    "暗部仍保持清晰扫描黑缝——这是真实 CRT 与静态正弦条纹滤镜的核心区别。")
+    dsp.define("phosphor_rgb", "RGB 荧光粉分色度", 0.0, 0.0, 1.0, unit="0-1", group="光栅与荫罩",
+               phys_min=0.0, phys_max=1.0,
+               help="0 为亮度荫罩，>0 为真实红/绿/蓝独立亚像素条纹或点阵（含黑矩阵与特丽珑水平阻尼丝阴影）。")
+    dsp.define("glass_halation", "玻壳内反射光晕", 0.0, 0.0, 1.2, unit="0-1", group="电子光学与荧光粉",
+               phys_min=0.0, phys_max=0.8,
+               help="荧光粉发光在厚铅玻璃面板内发生全反射，在强高光周围形成一圈宽广柔和的二次反射光环（Halation Ring）。")
+    dsp.define("phosphor_saturation", "荧光粉发光饱和", 0.0, 0.0, 1.2, unit="0-1", group="电子光学与荧光粉",
+               phys_min=0.0, phys_max=0.8,
+               help="P22 荧光粉在强电子束轰击下发光效率趋于饱和，高光核心向炽白退饱和。")
+    dsp.define("corner_defocus", "边角像散失焦", 0.0, 0.0, 1.2, unit="0-1", group="光栅与荫罩",
+               phys_min=0.0, phys_max=0.8,
+               help="电子束斜射入屏幕四角时偏转线圈产生像散，使边角束斑沿切向/径向拉长失焦，中心仍保持锐利。")
+    dsp.define("convergence_y", "垂直会聚误差", 0.0, -1.0, 1.0, unit="0-1", group="光栅与荫罩",
+               phys_min=-0.5, phys_max=0.5,
+               help="三支电子枪在垂直方向的会聚偏离，随距中心高度增加而在上下边缘产生红/蓝彩色镶边。")
+    dsp.define("ehv_sag", "行高压负载下垂", 0.0, 0.0, 1.2, unit="0-1", group="光栅与荫罩",
+               phys_min=0.0, phys_max=0.8,
+               help="单行扫描遇到大面积高光时行输出高压（EHT）瞬态下垂，阳极电压下降使该行偏转灵敏度升高、向左右两侧外扩。")
+    dsp.define("phosphor_persistence", "荧光粉余辉", 0.0, 0.0, 0.9, unit="0-1", group="电子光学与荧光粉",
+               phys_min=0.0, phys_max=0.65,
+               help="P22 荧光粉各通道衰减时间常数不同（红粉 Y2O2S:Eu 余辉慢于绿/蓝），运动高光拖出微弱暖色余辉。")
+    dsp.define("bezel", "球面框体与边角遮罩", 0.0, 0.0, 1.0, unit="0-1", group="环境与框体",
+               phys_min=0.0, phys_max=0.8,
+               help="显像管超椭圆黑框、内侧暗角阴影与球面玻璃菲涅尔边缘高光。")
 
     # --- 字幕机（字符发生器）----------------------------------------------------
     # **字符发生器不是排版引擎。** OSD 芯片有字模 ROM、每字一个固定字格、一个位置寄存器；
@@ -1832,6 +1898,20 @@ MEDIA_PROFILES = {
         "tape": {"tape_speed": 1.0}}},
     "vhs_ep": {"label": "VHS EP 超长", "note": "走带 1/3，重放输出约 -10 dB", "layers": {
         "tape": {"tape_speed": 2.0}}},
+    "vhs_gen_5": {
+        "label": "VHS 第 5 代翻录带（色度右移下垂 + 初级轮廓振铃）",
+        "note": "5 次磁带迭代翻录：条纹与肤色开始向右下方溢出边界，垂直边缘出现预加重黑白伴影（对照 录像带的图像耗损.mp4 16.5s 标定）",
+        "layers": {
+            "format": {"luma_bandwidth": 2.6, "chroma_bandwidth": 0.55, "edge_boost": 0.35, "color_noise": 0.28},
+            "tape": {"generation_passes": 5.0, "gen_chroma_bleed": 0.85, "gen_ringing": 0.85,
+                     "tape_stability": 0.52, "line_jitter": 0.32, "noise_floor": 0.20, "head_switching": 0.80}}},
+    "vhs_gen_12": {
+        "label": "VHS 第 12 代翻录带（重度振铃黑边 + 色度分层脱节）",
+        "note": "12 次磁带迭代翻录：多级二阶过冲在人物轮廓外拉出粗黑边与白晕，色度大幅下垂右移，黑电平抬升泛绿（对照 42.5s 标定）",
+        "layers": {
+            "format": {"luma_bandwidth": 2.1, "chroma_bandwidth": 0.42, "edge_boost": 0.48, "color_noise": 0.42},
+            "tape": {"generation_passes": 12.0, "gen_chroma_bleed": 0.95, "gen_ringing": 0.95,
+                     "tape_stability": 0.35, "line_jitter": 0.52, "noise_floor": 0.30, "head_switching": 0.92}}},
     "vhs_worn": {"label": "磨损 VHS 带", "note": "多次走带后的磁介质", "layers": {
         "tape": {"wear": 0.55, "dropout_rate": 0.9, "noise_floor": 0.32,
                  "crease_rate": 0.35, "chroma_loss": 0.22}}},
@@ -1968,12 +2048,45 @@ PLAYER_PROFILES = {
 }
 
 DISPLAY_PROFILES = {
-    "crt_consumer": {"label": "家用 CRT 电视", "layers": {"display": {
-        "gamma": 2.35, "scanlines": 0.35, "bloom": 0.35, "overscan": 0.0,
-        "vignette": 0.25, "interlace_flicker": 0.25, "geometry_warp": 0.15}}},
-    "crt_trinitron": {"label": "特丽珑（较锐）", "layers": {"display": {
-        "gamma": 2.2, "scanlines": 0.22, "bloom": 0.22, "overscan": 0.0,
-        "vignette": 0.18, "interlace_flicker": 0.18, "geometry_warp": 0.08}}},
+    "crt_consumer": {
+        "label": "家用球面 CRT 电视（交错槽孔荫罩 Slot Mask）",
+        "note": "90 年代 21 寸球面彩电：交错槽孔荫罩、高光束斑发散、玻壳内反射光晕与边角像散",
+        "layers": {"display": {
+            "enabled": 1.0, "gamma": 2.35, "scanlines": 0.35, "spot_sigma": 0.42, "scan_pitch": 2.0,
+            "spot_bloom": 0.48, "bloom": 0.35, "glass_halation": 0.32, "phosphor_saturation": 0.35,
+            "mask_type": 1.0, "mask_pitch": 3.0, "mask_depth": 0.38, "phosphor_rgb": 0.55,
+            "geometry_warp": 0.15, "curvature": 0.22, "corner_defocus": 0.32,
+            "convergence": 0.22, "convergence_y": 0.12, "ehv_sag": 0.28, "breathing": 0.18,
+            "phosphor_persistence": 0.22, "overscan": 0.0, "vignette": 0.25,
+            "interlace_flicker": 0.25, "reflection": 0.14, "bezel": 0.35,
+        }},
+    },
+    "crt_trinitron": {
+        "label": "Sony 特丽珑 PVM 监视器（单枪三束荫栅 Aperture Grille）",
+        "note": "柱面特丽珑显像管：连续垂直 RGB 荧光条、双水平钨丝阻尼线阴影、高会聚精度与锐利扫描线",
+        "layers": {"display": {
+            "enabled": 1.0, "gamma": 2.2, "scanlines": 0.28, "spot_sigma": 0.36, "scan_pitch": 2.0,
+            "spot_bloom": 0.32, "bloom": 0.22, "glass_halation": 0.20, "phosphor_saturation": 0.25,
+            "mask_type": 0.0, "mask_pitch": 2.5, "mask_depth": 0.32, "phosphor_rgb": 0.65,
+            "geometry_warp": 0.08, "curvature": 0.08, "corner_defocus": 0.12,
+            "convergence": 0.08, "convergence_y": 0.04, "ehv_sag": 0.12, "breathing": 0.08,
+            "phosphor_persistence": 0.16, "overscan": 0.0, "vignette": 0.18,
+            "interlace_flicker": 0.18, "reflection": 0.08, "bezel": 0.22,
+        }},
+    },
+    "crt_arcade_dot": {
+        "label": "80 年代球面点状荫罩彩电（Delta 三角点阵 Dot Mask）",
+        "note": "早期球面荧光屏：交错圆孔 RGB 三角点阵、明显球面曲率、边角会聚偏离与高压呼吸效应",
+        "layers": {"display": {
+            "enabled": 1.0, "gamma": 2.45, "scanlines": 0.42, "spot_sigma": 0.40, "scan_pitch": 2.2,
+            "spot_bloom": 0.62, "bloom": 0.45, "glass_halation": 0.45, "phosphor_saturation": 0.42,
+            "mask_type": 2.0, "mask_pitch": 3.4, "mask_depth": 0.48, "phosphor_rgb": 0.72,
+            "geometry_warp": 0.22, "curvature": 0.38, "corner_defocus": 0.48,
+            "convergence": 0.38, "convergence_y": 0.24, "ehv_sag": 0.45, "breathing": 0.32,
+            "phosphor_persistence": 0.32, "overscan": 0.02, "vignette": 0.32,
+            "interlace_flicker": 0.28, "reflection": 0.20, "bezel": 0.55,
+        }},
+    },
     "capture_card": {"label": "采集卡直入", "note": "不经显像管，几何与扫描线不参与",
                      "layers": {"display": {"enabled": 0.0}}},
     "tc_ub530_obs_mkv": {
@@ -2084,7 +2197,7 @@ FACTORY_PRESETS = {
                      "head_switch_lines": 16.0, "tracking_error": 0.45},
             "player": {"transport_jitter": 0.45, "tbc_enabled": 0.0, "head_wear": 0.30,
                        "frequency_response": 0.15},
-            "display": {"gamma": 2.35, "scanlines": 0.35, "bloom": 0.35, "overscan": 0.0,
+            "display": {"enabled": 0.0, "gamma": 2.35, "scanlines": 0.35, "bloom": 0.35, "overscan": 0.0,
                         "vignette": 0.25, "interlace_flicker": 0.25, "geometry_warp": 0.15},
         }},
     "rental_tape_worn": {
@@ -2100,7 +2213,7 @@ FACTORY_PRESETS = {
                      "head_switching": 0.95, "tracking_error": 0.6},
             "player": {"transport_jitter": 0.7, "tbc_enabled": 0.0, "head_wear": 0.55,
                        "frequency_response": 0.30},
-            "display": {"gamma": 2.35, "scanlines": 0.4, "bloom": 0.32, "overscan": 0.0,
+            "display": {"enabled": 0.0, "gamma": 2.35, "scanlines": 0.4, "bloom": 0.32, "overscan": 0.0,
                         "vignette": 0.30, "interlace_flicker": 0.30},
         }},
     "pro_transfer_svhs": {
@@ -2185,7 +2298,7 @@ FACTORY_PRESETS = {
             "tape": {"tape_speed": 0.0, "tape_stability": 0.92, "wear": 0.0,
                      "dropout_rate": 0.0, "noise_floor": 0.02, "head_switching": 0.0},
             "player": {"tbc_enabled": 1.0, "transport_jitter": 0.05, "head_wear": 0.05},
-            "display": {"enabled": 1.0, "gamma": 1.05, "contrast": 0.52, "brightness": 0.48,
+            "display": {"enabled": 0.0, "gamma": 1.05, "contrast": 0.52, "brightness": 0.48,
                         "saturation": 0.60, "scanlines": 0.04, "spot_sigma": 0.95,
                         "bloom": 0.22, "curvature": 0.18, "trapezoid_x": 0.03,
                         "vignette": 0.16, "interlace_flicker": 0.02, "reflection": 0.03},
@@ -2664,7 +2777,7 @@ FACTORY_PRESETS = {
             # where its per-unit spread lives
             "tape": {"dropout_rate": 0.9, "tracking_error": 0.16},
             "player": {"head_wear": 0.34, "burst_phase_error": 1.4, "frequency_response": 0.85},
-            "display": {"bloom": 0.4, "scanlines": 0.35, "brightness": 0.46, "contrast": 1.05},
+            "display": {"enabled": 0.0, "bloom": 0.4, "scanlines": 0.35, "brightness": 0.46, "contrast": 1.05},
         },
         # the machine's condition and the timeline that moves it, together
         "environment": {"warmth": 0.0, "age": 0.65, "humidity": 0.2},
@@ -2700,7 +2813,7 @@ FACTORY_PRESETS = {
             # where its per-unit spread lives
             "tape": {"dropout_rate": 0.9, "tracking_error": 0.16},
             "player": {"head_wear": 0.34, "burst_phase_error": 1.4, "frequency_response": 0.85},
-            "display": {"bloom": 0.4, "scanlines": 0.35, "brightness": 0.46, "contrast": 1.05},
+            "display": {"enabled": 0.0, "bloom": 0.4, "scanlines": 0.35, "brightness": 0.46, "contrast": 1.05},
         },
         "environment": {"warmth": 1.0, "age": 0.65, "humidity": 0.2},
         "timeline": [],
@@ -2869,7 +2982,7 @@ FACTORY_PRESETS["vhs_tv_zalu"] = {
             "head_wear": 0.22, "frequency_response": -0.20,
             "cross_color": 0.28, "cross_luma": 0.24, "separation_kind": 0.0,
         },
-        "display": {"enabled": 1.0, "scanlines": 0.28, "bloom": 0.25, "overscan": 0.04},
+        "display": {"enabled": 0.0, "scanlines": 0.28, "bloom": 0.25, "overscan": 0.04},
         "audio": {
             "enabled": 1.0, "mode": 1.0, "wow_flutter": 0.26,
             "azimuth_loss": 0.22, "hiss_floor": 0.22,
@@ -2932,7 +3045,7 @@ FACTORY_PRESETS["docu_1989_broadcast"] = {
             "cross_color": 0.24, "cross_luma": 0.20, "separation_kind": 2.0,
         },
         "display": {
-            "enabled": 1.0, "scanlines": 0.22, "bloom": 0.32, "defocus": 0.12,
+            "enabled": 0.0, "scanlines": 0.22, "bloom": 0.32, "defocus": 0.12,
             "gamma": 2.30, "color_temp": 0.18, "contrast": 0.58,
             "brightness": 0.49, "saturation": 0.54, "overscan": 0.03, "vignette": 0.22,
         },
@@ -2970,7 +3083,7 @@ FACTORY_PRESETS["docu_1989_title_card"] = {
             "cross_color": 0.28, "cross_luma": 0.22, "separation_kind": 2.0,
         },
         "display": {
-            "enabled": 1.0, "scanlines": 0.24, "bloom": 0.36, "defocus": 0.14,
+            "enabled": 0.0, "scanlines": 0.24, "bloom": 0.36, "defocus": 0.14,
             "gamma": 2.32, "color_temp": 0.20, "contrast": 0.60,
             "brightness": 0.49, "saturation": 0.56, "overscan": 0.03, "vignette": 0.25,
         },
@@ -2991,6 +3104,140 @@ FACTORY_PRESETS["docu_1989_title_card"] = {
         },
     },
 }
+
+CAMERA_PROFILES["hk_mv_zoom_1999"] = {
+    "label": "1999 香港纪实/MV 广角变焦摄像机（逆光镀膜鬼影 + 冷暖分色）",
+    "note": "单层 MgF2 镀膜蓝紫/品红双反射鬼影链、左下彩虹色散弧、CCD 垂直溢光与港式金琥珀/翡翠青分色",
+    "values": {
+        "sensor_noise": 0.12, "noise_grain": 1.3, "dynamic_range": 7.5,
+        "sharpness": 0.92, "chroma_aberration": 0.42, "longitudinal_ca": 0.35,
+        "field_curvature": 0.28, "coma": 0.25, "astigmatism": 0.18,
+        "spherical_aberration": 0.32, "lens_wear": 0.36, "lens_flare": 0.58,
+        "flare_blades": 6.0, "spike_spread": 0.72, "flare_defocus": 0.55,
+        "coat_ghost": 0.85, "ccd_smear": 0.32, "halation": 0.38,
+        "halation_source_colour": 0.65, "vcd_color_tone": 0.90,
+        "ae_enabled": 1.0, "ae_tau_s": 0.85,
+    },
+}
+
+MEDIA_PROFILES["vcd_pal_mpeg1_1999"] = {
+    "label": "Video CD（PAL 352×288 · 1150 kbps · 模拟复合母带转压）",
+    "note": "经模拟复合视频采集后压制的 MPEG-1 VCD：单场垂直抽样、4:2:0 8×8 离散余弦块伪影与左右 HBI 采集振铃边",
+    "values": {
+        "format": {
+            "luma_bandwidth": 3.2, "chroma_bandwidth": 0.85,
+            "chroma_vertical_averaging": 0.65, "comb_depth": 0.45,
+            "cross_color": 0.28, "cross_luma": 0.22, "edge_boost": 0.32,
+            "color_noise": 0.16, "burst_phase_error": 3.0,
+        },
+        "codec": {
+            "codec_kind": 2.0, "vcd_quality": 0.95,
+            "vcd_width": 352.0, "vcd_height": 288.0,
+            "vcd_motion_comp": 1.0, "vcd_bitrate_kbps": 1150.0,
+            "vcd_hbi_border": 0.85,
+        },
+        "tape": {
+            "tape_stability": 0.88, "line_jitter": 0.08, "walk_amplitude": 0.05,
+            "micro_jitter": 0.05, "vertical_instability": 0.02,
+            "head_switching": 0.0, "dropout_rate": 0.0, "wear": 0.08,
+            "crease_rate": 0.0, "noise_floor": 0.06,
+        },
+    },
+}
+
+FACTORY_PRESETS["hk_vcd_bauhinia_1999"] = {
+    "label": "1999 香港风光/MV 实拍 VCD（逆光镀膜鬼影 · 琥珀青分色 · MPEG-1）",
+    "standard": "pal",
+    "layers": {
+        "camera": dict(CAMERA_PROFILES["hk_mv_zoom_1999"]["values"]),
+        "format": dict(MEDIA_PROFILES["vcd_pal_mpeg1_1999"]["values"]["format"]),
+        "codec": dict(MEDIA_PROFILES["vcd_pal_mpeg1_1999"]["values"]["codec"]),
+        "connector": {"av_present": 1.0, "av_moisture": 0.04, "av_corrosion": 0.04},
+        "tape": dict(MEDIA_PROFILES["vcd_pal_mpeg1_1999"]["values"]["tape"]),
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.90, "tbc_residual": 0.08,
+            "head_wear": 0.06, "frequency_response": -0.08,
+            "preemphasis": 0.22, "ringing": 0.24,
+            "cross_color": 0.22, "cross_luma": 0.18, "separation_kind": 2.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+
+FACTORY_PRESETS["vhs_gen_1_master"] = {
+    "label": "VHS 迭代翻录实验 · 第 1 代母带（清晰基准 · 对照 2.5s 实拍）",
+    "note": "首代 VHS 录制直采（关闭 CRT 显示）：保留 3.0 MHz 柔和亮度、轻微 629 kHz 色度水平柔和度与底部单层磁头切换带",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.03, "sharpness": 0.95, "dynamic_range": 8.5, "halation": 0.08, "ccd_smear": 0.0},
+        "format": {"luma_bandwidth": 3.1, "chroma_bandwidth": 0.72, "chroma_vertical_averaging": 0.75,
+                   "comb_depth": 0.55, "cross_color": 0.25, "cross_luma": 0.18, "edge_boost": 0.22,
+                   "color_noise": 0.16, "chroma_gain": 1.0},
+        "tape": {"generation_passes": 1.0, "gen_chroma_bleed": 0.85, "gen_ringing": 0.85, "gen_sync_collapse": 0.0,
+                 "tape_speed": 0.0, "tape_stability": 0.72, "line_jitter": 0.18, "walk_amplitude": 0.14,
+                 "dropout_rate": 0.12, "noise_floor": 0.12, "head_switching": 0.65, "head_switch_lines": 10.0,
+                 "tracking_error": 0.22},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.20, "head_wear": 0.12, "preemphasis": 0.18,
+                   "ringing": 0.12, "luma_bandwidth": 3.1, "chroma_bandwidth": 0.72},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["vhs_gen_8_dub"] = {
+    "label": "VHS 迭代翻录实验 · 第 8 代翻录（色度下垂洇色 + 边缘振铃显现 · 对照 28.5s 实拍）",
+    "note": "经过 8 代 VCR→VCR 反复翻录：红蓝条纹衫与面部色块向右下跨界漂移约 10 px，人物头发与衣领右侧浮现明显黑白预加重振铃伴影，黑位抬升、高光偏黄绿",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.04, "sharpness": 0.92, "dynamic_range": 8.0, "halation": 0.12, "ccd_smear": 0.0},
+        "format": {"luma_bandwidth": 2.4, "chroma_bandwidth": 0.50, "chroma_vertical_averaging": 0.88,
+                   "comb_depth": 0.65, "cross_color": 0.38, "cross_luma": 0.28, "edge_boost": 0.38,
+                   "color_noise": 0.32, "chroma_gain": 0.88},
+        "tape": {"generation_passes": 8.0, "gen_chroma_bleed": 0.90, "gen_ringing": 0.90, "gen_sync_collapse": 0.0,
+                 "tape_speed": 0.0, "tape_stability": 0.46, "line_jitter": 0.38, "walk_amplitude": 0.30,
+                 "dropout_rate": 0.45, "noise_floor": 0.22, "head_switching": 0.82, "head_switch_lines": 14.0,
+                 "tracking_error": 0.38},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.38, "head_wear": 0.26, "preemphasis": 0.32,
+                   "ringing": 0.28, "luma_bandwidth": 2.5, "chroma_bandwidth": 0.52},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["vhs_gen_18_heavy"] = {
+    "label": "VHS 迭代翻录实验 · 第 18 代重度损耗（多重斑马振铃 + 色彩坍塌 · 对照 54.5s 实拍）",
+    "note": "经过 18 代反复翻录：多级 FM 孔径过冲形成强烈的多重黑白斑马纹轮廓光环，色度严重脱节下垂且粉紫/黄绿偏色，右侧 HBI 钳位白噪带加宽，行同步剧烈蛇形摆动",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.05, "sharpness": 0.88, "dynamic_range": 7.5, "halation": 0.18, "ccd_smear": 0.0},
+        "format": {"luma_bandwidth": 1.8, "chroma_bandwidth": 0.36, "chroma_vertical_averaging": 0.95,
+                   "comb_depth": 0.75, "cross_color": 0.52, "cross_luma": 0.42, "edge_boost": 0.55,
+                   "color_noise": 0.48, "chroma_gain": 0.65},
+        "tape": {"generation_passes": 18.0, "gen_chroma_bleed": 1.05, "gen_ringing": 1.10, "gen_sync_collapse": 0.0,
+                 "tape_speed": 0.0, "tape_stability": 0.25, "line_jitter": 0.68, "walk_amplitude": 0.55,
+                 "dropout_rate": 1.10, "noise_floor": 0.35, "head_switching": 0.95, "head_switch_lines": 20.0,
+                 "tracking_error": 0.58},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.62, "head_wear": 0.45, "preemphasis": 0.48,
+                   "ringing": 0.45, "luma_bandwidth": 1.9, "chroma_bandwidth": 0.38},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["vhs_gen_20_sync_collapse"] = {
+    "label": "VHS 迭代翻录实验 · 第 20 代同步崩溃与消色（黑白斜纹失锁 · 对照 60.5s–66.5s 实拍）",
+    "note": "第 20 代极限翻录：行同步脉冲圆化跌破 AFC 锁相门限，自动消色器（Color Killer）切断色度变为黑白，全屏爆发高反差 FM 差拍斜纹与水平行撕裂，仅隐约可见人物剪影",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.06, "sharpness": 0.85, "dynamic_range": 7.0, "halation": 0.20, "ccd_smear": 0.0},
+        "format": {"luma_bandwidth": 1.5, "chroma_bandwidth": 0.30, "chroma_vertical_averaging": 0.95,
+                   "comb_depth": 0.80, "cross_color": 0.60, "cross_luma": 0.50, "edge_boost": 0.65,
+                   "color_noise": 0.55, "chroma_gain": 0.20},
+        "tape": {"generation_passes": 20.0, "gen_chroma_bleed": 1.15, "gen_ringing": 1.25, "gen_sync_collapse": 0.92,
+                 "tape_speed": 0.0, "tape_stability": 0.12, "line_jitter": 0.95, "walk_amplitude": 0.80,
+                 "dropout_rate": 1.80, "noise_floor": 0.48, "head_switching": 1.0, "head_switch_lines": 24.0,
+                 "tracking_error": 0.78},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.85, "head_wear": 0.58, "preemphasis": 0.55,
+                   "ringing": 0.52, "luma_bandwidth": 1.6, "chroma_bandwidth": 0.32},
+        "display": {"enabled": 0.0},
+    },
+}
+
 CAMCORDER_PRESETS["sony_trv310e"] = CAMCORDER_PRESETS["sony_dcr_trv310e"]
 FACTORY_PRESETS["pro_transfer"] = FACTORY_PRESETS["pro_transfer_svhs"]
 FACTORY_PRESETS["rental_tape_horror"] = FACTORY_PRESETS["rental_tape_worn"]

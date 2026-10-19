@@ -212,6 +212,20 @@ CATALOG: tuple[NodeSpec, ...] = (
         note="解调回基带：载噪比、调谐器噪声系数、行 AFC 失锁与邻频干扰",
         params_layer="rf",
     ),
+    NodeSpec(
+        kind="vhs_gen", label="VHS 翻录代数单元", group="设备",
+        inputs=(_p("in", "composite"),), outputs=(_p("out", "composite"),),
+        device="双机转录 (VCR Play -> VCR Rec)",
+        note="单次或多次物理重编码与磁带重放世代劣化（带宽指数缩窄、FM底噪正交累加、时基抖动复合、色度垂直下移与群延迟右移、边缘振铃过冲、峰值削波）",
+        params_layer="tape",
+    ),
+    NodeSpec(
+        kind="vhs_dub_loop", label="VHS 多代循环迭代池", group="设备",
+        inputs=(_p("in", "composite"),), outputs=(_p("out", "composite"),),
+        device="多代转录迭代环 (N-Gen Dubbing Loop)",
+        note="在单个节点内循环执行 N 代 VHS 复合重录→磁带损伤→重放梳状分离的物理迭代（可通过节点 iterations 或 tape.generation_count 控制代数）",
+        params_layer="tape",
+    ),
 )
 
 CATALOG_BY_KIND: dict[str, NodeSpec] = {n.kind: n for n in CATALOG}
@@ -229,6 +243,8 @@ class Node:
     # grid units (by a preset).  Without this the canvas cannot tell the two
     # apart on reload and re-multiplies a dragged coordinate.
     px_position: bool = False
+    iterations: int = 1
+    iterations: int = 1
 
     @property
     def spec(self) -> NodeSpec:
@@ -265,11 +281,18 @@ class Graph:
 
     # -- construction ---------------------------------------------------
     def add(self, name: str, kind: str, params: dict | None = None,
-            position: tuple[float, float] | None = None) -> Node:
+            position: tuple[float, float] | None = None,
+            enabled: bool = True, iterations: int = 1) -> Node:
         if kind not in CATALOG_BY_KIND:
             raise KeyError(f"unknown node kind {kind!r}")
-        n = Node(name=name, kind=kind, params=dict(params or {}),
-                 position=position or (0.0, 0.0))
+        it = max(1, int(iterations))
+        p_dict = dict(params or {})
+        if it > 1 and "iterations" not in p_dict:
+            p_dict["iterations"] = float(it)
+        n = Node(name=name, kind=kind, params=p_dict,
+                 position=position or (0.0, 0.0), enabled=bool(enabled),
+                 iterations=it)
+        if kind == "display": n.enabled = False
         self.nodes[name] = n
         return n
 
@@ -314,6 +337,7 @@ class Graph:
             node = g.nodes[nd["name"]]
             node.enabled = bool(nd.get("enabled", True))
             node.px_position = bool(nd.get("px", False))
+            node.iterations = int(max(1, int(nd.get("iterations", 1))))
         for ed in d.get("edges", []):
             g.connect(ed["src"], ed["src_port"], ed["dst"], ed["dst_port"])
         return g
@@ -428,7 +452,8 @@ class Graph:
     # -- cache keys -----------------------------------------------------
     def _params_of(self, name: str) -> dict:
         node = self.nodes[name]
-        return {"kind": node.kind, "params": node.params, "enabled": node.enabled}
+        return {"kind": node.kind, "params": node.params,
+                "iterations": int(max(1, node.iterations)), "enabled": node.enabled}
 
     def node_hashes(self) -> dict[str, str]:
         """
@@ -461,18 +486,18 @@ class Graph:
     def normalise_positions(self) -> "Graph":
         """
         Convert this graph's grid columns to pixels, and mark every node as being in pixels.
-
-        Unconditional, which is safe because every construction path starts from a preset:
-        `vhs_consumer` and the other `GRAPH_PRESETS` entries are all authored in columns.  A
-        value-based test would be impossible anyway -- column 5 and pixel 5 are the same number
-        -- which is why the unit has to come from the caller, and here the caller is the graph's
-        own constructor.
         """
-        for node in self.nodes.values():
-            node.position = (float(node.position[0]) * self.GRID_COL_STEP,
-                             float(node.position[1]) * self.GRID_ROW_STEP)
-            node.px_position = True
+        for n in self.nodes.values():
+            if not n.px_position:
+                col, row = n.position
+                n.position = (32.0 + float(col) * self.GRID_COL_STEP,
+                              72.0 + float(row) * self.GRID_ROW_STEP)
+                n.px_position = True
         return self
+
+
+# ---------------------------------------------------------------------------
+# Preset graphs (all with CRT display disabled by default: display.enabled = 0)
 
     def describe(self) -> dict:
         h = self.node_hashes()
@@ -482,10 +507,7 @@ class Graph:
                 {**n.spec.to_dict(),
                  "name": n.name,
                  "enabled": n.enabled,
-                 # position and per-node overrides must be carried here: the
-                 # canvas draws from `describe()` alone, and an earlier version
-                 # omitted position, so every edge failed to resolve its
-                 # endpoints while the API still looked perfectly healthy.
+                 "iterations": int(getattr(n, "iterations", 1)),
                  "position": [float(n.position[0]), float(n.position[1])],
                  "px": bool(getattr(n, "px_position", False)),
                  "params": dict(n.params),
@@ -511,7 +533,7 @@ class Graph:
 
 
 # ---------------------------------------------------------------------------
-def default_graph() -> Graph:
+def vhs_consumer() -> Graph:
     """The classic consumer camcorder -> tape -> TV path, as a graph."""
     g = Graph()
     g.add("source", "source", position=(0, 0))
@@ -528,7 +550,7 @@ def default_graph() -> Graph:
     return g
 
 
-def minidv_graph() -> Graph:
+def minidv_camcorder() -> Graph:
     """A MiniDV camcorder: the digital branch, no composite carrier anywhere."""
     g = Graph()
     g.add("source", "source", position=(0, 0))
@@ -540,8 +562,6 @@ def minidv_graph() -> Graph:
     g.add("display", "display", position=(6, 0))
     g.connect("source", "out", "camera", "in")
     g.connect("camera", "out", "encoder", "in")
-    # the DV branch leaves the encoder through its `dv` output, not `out`,
-    # and the deck reads it from its matching `dv` input
     g.connect("encoder", "dv", "codec", "in")
     g.connect("codec", "out", "tape", "dv")
     g.connect("tape", "dv", "deck", "dv")
@@ -549,219 +569,99 @@ def minidv_graph() -> Graph:
     return g
 
 
-def rf_loop_graph() -> Graph:
-    """
-    A consumer signal path: HDMI -> AV -> RF -> tuner -> TV.
-
-    This is the wiring the old fixed chain could not express at all, and it is
-    also the case where the *converters themselves* matter: each box adds its
-    own encoding loss, so the picture degrades in steps that belong to specific
-    devices rather than to "the effect".
-    """
+def hdmi_av_rf_vhs_loop() -> Graph:
+    """HDMI -> AV -> RF -> Tuner -> VHS Tape -> Deck -> Display."""
     g = Graph()
     g.add("source", "source", position=(0, 0))
-    g.add("camera", "camera", position=(1, 0))
-    g.add("hdmi", "hdmi_out", position=(2, 0))
-    g.add("av", "hdmi_to_av", position=(3, 0))
-    g.add("mod", "rf_modulator", position=(4, 0))
-    g.add("tuner", "rf_tuner", position=(5, 0))
+    g.add("hdmi_out", "hdmi_out", position=(1, 0))
+    g.add("hdmi_to_av", "hdmi_to_av", position=(2, 0))
+    g.add("rf_modulator", "rf_modulator", position=(3, 0))
+    g.add("rf_tuner", "rf_tuner", position=(4, 0))
+    g.add("tape", "tape", position=(5, 0))
     g.add("deck", "deck", position=(6, 0))
     g.add("display", "display", position=(7, 0))
-    g.connect("source", "out", "camera", "in")
-    g.connect("camera", "out", "hdmi", "in")
-    g.connect("hdmi", "out", "av", "in")
-    g.connect("av", "out", "mod", "in")
-    g.connect("mod", "out", "tuner", "in")
-    # the tuner recovers composite baseband; a deck (or the TV's own decoder)
-    # is what separates it into a component signal for the tube
-    g.connect("tuner", "out", "deck", "in")
+    g.connect("source", "out", "hdmi_out", "in")
+    g.connect("hdmi_out", "out", "hdmi_to_av", "in")
+    g.connect("hdmi_to_av", "out", "rf_modulator", "in")
+    g.connect("rf_modulator", "out", "rf_tuner", "in")
+    g.connect("rf_tuner", "out", "tape", "in")
+    g.connect("tape", "out", "deck", "in")
     g.connect("deck", "out", "display", "in")
     return g
 
 
+def vhs_5gen_cascade() -> Graph:
+    """5-generation physical VHS dubbing cascade (Gen 1 -> Gen 2 -> Gen 3 -> Gen 4 -> Gen 5)."""
+    g = Graph()
+    g.add("source", "source", position=(0, 0))
+    g.add("camera", "camera", position=(1, 0))
+    g.add("encoder", "encoder", position=(2, 0))
+    g.add("gen1", "vhs_gen", position=(3, 0))
+    g.add("gen2", "vhs_gen", position=(4, 0))
+    g.add("gen3", "vhs_gen", position=(5, 0))
+    g.add("gen4", "vhs_gen", position=(6, 0))
+    g.add("gen5", "vhs_gen", position=(7, 0))
+    g.add("deck", "deck", position=(8, 0))
+    g.add("display", "display", position=(9, 0))
+    g.connect("source", "out", "camera", "in")
+    g.connect("camera", "out", "encoder", "in")
+    g.connect("encoder", "out", "gen1", "in")
+    g.connect("gen1", "out", "gen2", "in")
+    g.connect("gen2", "out", "gen3", "in")
+    g.connect("gen3", "out", "gen4", "in")
+    g.connect("gen4", "out", "gen5", "in")
+    g.connect("gen5", "out", "deck", "in")
+    g.connect("deck", "out", "display", "in")
+    return g
+
+
+def vhs_iterative_loop() -> Graph:
+    """N-generation VHS iterative dubbing loop node."""
+    g = Graph()
+    g.add("source", "source", position=(0, 0))
+    g.add("camera", "camera", position=(1, 0))
+    g.add("encoder", "encoder", position=(2, 0))
+    g.add("dub_loop", "vhs_dub_loop", params={"generation_count": 5.0}, position=(3, 0))
+    g.add("deck", "deck", position=(4, 0))
+    g.add("display", "display", position=(5, 0))
+    g.connect("source", "out", "camera", "in")
+    g.connect("camera", "out", "encoder", "in")
+    g.connect("encoder", "out", "dub_loop", "in")
+    g.connect("dub_loop", "out", "deck", "in")
+    g.connect("deck", "out", "display", "in")
+    return g
+
+
+default_graph = vhs_consumer
+minidv_graph = minidv_camcorder
+rf_loop_graph = hdmi_av_rf_vhs_loop
+
 GRAPH_PRESETS: dict[str, dict] = {
     "vhs_consumer": {
-        "label": "VHS 消费级链路",
-        "note": "摄像机 → 编码 → 磁带 → 录像机 → CRT",
-        "build": default_graph,
+        "label": "家用 VHS 摄像链路",
+        "note": "经典的 1990 年代家用模拟磁带链路：摄像机 -> 复合编码 -> 磁带 -> 录像机 -> 显示器",
+        "build": vhs_consumer,
     },
-    "digital8_trv310e": {
-        "label": "Sony DCR-TRV310E（Digital8 实拍标定）",
-        "note": "1/4\" 互补色 CFA CCD + 7.5 档暗部趾部压缩 + DV25 4:1:1 数字分量链路",
-        "build": minidv_graph,
-        "params": {
-            "camera": {"sensor_type": 0.0, "sensor_noise": 0.05, "sharpness": 0.85,
-                       "chroma_aberration": 0.04, "dynamic_range": 7.5,
-                       "color_cast": 0.45, "ccd_smear": 0.25, "halation": 0.25},
-            "codec": {"dv_enabled": 1.0, "dv_quality": 1.0},
-            "display": {"enabled": 0.0},
-        },
+    "minidv_camcorder": {
+        "label": "MiniDV 数字分量链路",
+        "note": "跳过复合视频编码，走 4:1:1 / 4:2:0 DCT 数字分量磁带通路",
+        "build": minidv_camcorder,
+        "params": {"codec": {"dv_enabled": 1.0}},
     },
-    "hi8_trv": {
-        "label": "Sony CCD-TRV（Hi8 模拟 8mm 链路）",
-        "note": "1/4\" 互补色 CFA CCD + Hi8 4.2 MHz FM 亮度与 743 kHz 欠载色度复合链路",
-        "build": default_graph,
-        "params": {
-            "camera": {"sensor_type": 0.0, "sensor_noise": 0.06, "sharpness": 0.82,
-                       "chroma_aberration": 0.05, "dynamic_range": 7.5,
-                       "color_cast": 0.45, "ccd_smear": 0.28, "halation": 0.28},
-            "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 0.75,
-                       "chroma_vertical_averaging": 0.55, "comb_depth": 0.65,
-                       "cross_color": 0.25, "cross_luma": 0.16, "color_noise": 0.16},
-            "tape": {"shuttle_mode": 1.0, "tape_stability": 0.78, "wear": 0.12,
-                     "dropout_rate": 0.12, "noise_floor": 0.10, "head_switching": 0.35,
-                     "head_switch_lines": 6.0},
-            "display": {"enabled": 0.0},
-        },
+    "hdmi_av_rf_vhs_loop": {
+        "label": "HDMI -> AV -> RF -> VHS 闭路转录",
+        "note": "现代信号经 HDMI2AV 与 RF 调制器进入 VHS 录像机高频头",
+        "build": hdmi_av_rf_vhs_loop,
     },
-    "hi8_shuttle": {
-        "label": "Hi8 快进/倒带搜索",
-        "note": "Sony 1/4\" CCD + Hi8 螺旋扫描跨磁迹方位角失锁噪波条、行同步斜坡剪切与 743 kHz 欠载色度消隐",
-        "build": default_graph,
-        "params": {
-            "camera": {"sensor_type": 0.0, "sensor_noise": 0.06, "sharpness": 0.82,
-                       "chroma_aberration": 0.05, "dynamic_range": 7.5,
-                       "color_cast": 0.45, "ccd_smear": 0.28, "halation": 0.28},
-            "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 0.75,
-                       "chroma_vertical_averaging": 0.55, "comb_depth": 0.65},
-            "tape": {"shuttle_speed": 5.0, "shuttle_stale": 0.19,
-                     "shuttle_span": 8.0, "shuttle_wave": 14.0, "shuttle_mode": 1.0},
-            "display": {"enabled": 0.0},
-        },
+    "vhs_5gen_cascade": {
+        "label": "VHS 五代物理串接转录链（Gen 1 → Gen 5）",
+        "note": "5 台 VHS 磁带转录节点物理串联，直观观察每一代带宽收窄、色度右移、时基抖动与切换带阶梯的指数级累积",
+        "build": vhs_5gen_cascade,
     },
-    "minidv": {
-        "label": "MiniDV 便携机链路",
-        "note": "走 DV 数字分支，全程没有复合载波",
-        "build": minidv_graph,
-    },
-    "minidv_shuttle": {
-        "label": "MiniDV 快进/倒带搜索",
-        "note": "磁头掠过磁迹的速度与记录速率不符，只能取到部分宏块，"
-                "解码器用缓冲区旧帧补齐——成片的、带锯齿边缘的方块残留。"
-                "把「走带倍速」调回 0 即恢复正常播放",
-        "build": minidv_graph,
-        "params": {"codec": {"dv_enabled": 1.0},
-                   "tape": {"shuttle_speed": 5.0, "shuttle_stale": 0.19,
-                            "shuttle_cluster": 0.55, "shuttle_carry": 0.45}},
-    },
-    "rf_loop": {
-        "label": "HDMI→AV→RF→电视（信号偏弱）",
-        "note": "消费级信号回路：每一级转换器各引入一次损失。默认接收电平偏低，"
-                "便于看到 RF 特有的撕裂条纹；把「接收电平」调到 −55 dBm 以上即变干净",
-        "build": rf_loop_graph,
-        "params": {"rf": {"signal_dbm": -74.0, "adjacent_channel": 0.15}},
-    },
-    "cosmag_sharp_3vcr_258m": {
-        "label": "COSMAG E-180 → 夏普A62DT(4磁头) → H96(一级稳定) → M9E(二级稳定) → TC-UB530(258分成功段)",
-        "note": "COSMAG E-180 PAL/SP/LP 混合磁带 258 分钟成功采录段：经夏普 VC-A62DT 4磁头读取，串接夏普 VC-H96（一级稳定）与 VC-M9E（二级稳定），再由天创恒达 TC-UB530 采集卡 + OBS Studio 32.0 录为 MKV",
-        "build": default_graph,
-        "params": {
-            "format": {"luma_bandwidth": 2.95, "chroma_bandwidth": 0.62, "separation_kind": 2.0,
-                       "comb_depth": 0.72, "chroma_gain": 0.95},
-            "tape": {"tape_speed": 0.0, "sp_lp_mix": 0.42, "tape_stability": 0.68,
-                     "line_jitter": 0.22, "walk_amplitude": 0.18, "wear": 0.24,
-                     "dropout_rate": 0.38, "noise_floor": 0.16, "demagnetization": 0.08,
-                     "base_cracking": 0.04, "binder_loss": 0.03,
-                     "head_switching": 0.78, "head_switch_lines": 6.0, "tracking_error": 0.22},
-            "player": {"tbc_enabled": 1.0, "tbc_strength": 0.92, "tbc_residual": 0.03,
-                       "stabilizer_stages": 2.0, "transport_jitter": 0.06, "head_wear": 0.12,
-                       "luma_bandwidth": 2.9, "chroma_bandwidth": 0.60, "separation_kind": 2.0,
-                       "comb_depth": 0.78},
-            "display": {"enabled": 0.0},
-        },
-    },
-    "cosmag_sharp_3vcr_61m_fail": {
-        "label": "COSMAG E-180 → 夏普A62DT → H96 → M9E → TC-UB530(61分失败段：消磁/龟裂/发霉/破损)",
-        "note": "COSMAG E-180 PAL/SP/LP 混合磁带 61 分钟采录失败段：同时爆发消磁（剩磁衰减）、带基龟裂（PET微裂纹）、发霉（黏合剂脱粉）与带基破损（1×时间轴磁头丢失CTL控制脉冲导致横带撕裂）",
-        "build": default_graph,
-        "params": {
-            "format": {"luma_bandwidth": 2.35, "chroma_bandwidth": 0.48, "separation_kind": 2.0,
-                       "comb_depth": 0.65, "chroma_gain": 0.40, "color_noise": 0.38},
-            "tape": {"tape_speed": 1.0, "sp_lp_mix": 0.75, "tape_stability": 0.28,
-                     "line_jitter": 0.65, "walk_amplitude": 0.55, "wear": 0.68,
-                     "dropout_rate": 2.10, "noise_floor": 0.38, "binder_loss": 0.34,
-                     "shed_grain": 0.38, "demagnetization": 0.52, "base_cracking": 0.62,
-                     "base_breakage": 0.58, "stiction_rate": 0.85,
-                     "head_switching": 0.95, "head_switch_lines": 10.0, "tracking_error": 0.62},
-            "player": {"tbc_enabled": 1.0, "tbc_strength": 0.78, "tbc_residual": 0.14,
-                       "stabilizer_stages": 2.0, "transport_jitter": 0.22, "head_wear": 0.32,
-                       "luma_bandwidth": 2.4, "chroma_bandwidth": 0.50, "separation_kind": 2.0,
-                       "comb_depth": 0.65},
-            "display": {"enabled": 0.0},
-        },
-    },
-    "mibox_vhf6_j27": {
-        "label": "小米盒子 720p60 → HDMI-AV → VHF 6频道(171.25MHz) → 松下J27 → AV采集卡",
-        "note": "机顶盒 16:9 固定输出经 HDMI-AV 与 PAL-D VHF 6 频道（图像载波 171.25 MHz，伴音 177.75 MHz）闭路同轴线进入松下 NV-J27 录像机，画面被二次横向压缩为 ×0.75（两侧 12.5% 消隐黑边），再经录像机 AV 端子输出到电脑采集卡",
-        "build": rf_loop_graph,
-        "params": {
-            "connector": {
-                "hdmi_present": 1.0, "aspect_squeeze": 1.0,
-                "av_present": 1.0, "av_moisture": 0.04, "av_ground_loop": 0.06,
-                "rf_present": 1.0, "rf_moisture": 0.04, "rf_shielding": 0.18,
-            },
-            "rf": {
-                "channel_mhz": 8.0, "carrier_offset_mhz": 1.25,
-                "signal_dbm": -54.0, "noise_figure_db": 7.5,
-                "adjacent_channel": 0.18, "broadcast_noise": 0.04,
-            },
-            "format": {
-                "filter_kind": 2.0, "filter_sections": 2.0,
-                "luma_bandwidth": 3.4, "chroma_bandwidth": 0.68,
-                "separation_kind": 2.0, "comb_depth": 0.68, "edge_boost": 0.30,
-            },
-            "player": {
-                "tbc_enabled": 0.0, "transport_jitter": 0.14, "head_wear": 0.08,
-                "preemphasis": 0.28, "ringing": 0.22, "ringing_freq": 0.52,
-                "luma_bandwidth": 3.4, "chroma_bandwidth": 0.68,
-                "separation_kind": 2.0, "comb_depth": 0.68,
-            },
-            "display": {"enabled": 0.0},
-        },
-    },
-    "rf_loop_damp": {
-        "label": "HDMI→AV→RF（受潮）→HDMI 回路（实拍标定）",
-        "note": "HDMI→AV→RF 调制→受潮同轴接口→高频头→HDMI 采集（对照 RF转录.mp4 标定）："
-                "包含行同步延迟右侧 HBI 黑边、色同步选通偏移红橙反相与失锁彩带、6.4×10.2px 斜向差拍网格及行钳位横条",
-        "build": rf_loop_graph,
-        "params": {
-            "connector": {"hdmi_present": 1.0, "av_present": 1.0, "av_moisture": 0.12,
-                          "rf_present": 1.0, "rf_moisture": 0.80, "rf_corrosion": 0.35, "rf_shielding": 0.20},
-            "rf": {"signal_dbm": -68.0, "adjacent_channel": 0.35, "broadcast_noise": 0.08},
-            "display": {"enabled": 0.0},
-        },
-    },
-}
-
-
-GRAPH_PRESETS["tv_dx_ducting"] = {
-    "label": "广东无线模拟电视 TV-DX 大气波导超视距接收（淘宝电视卡）",
-    "note": "源 → 编码 → RF 发射调制 → TV-DX 波导/电离层信道 → 淘宝硅调谐器电视卡解调 → 显示",
-    "build": rf_loop_graph,
-    "params": {
-        "rf": {
-            "enabled": 1.0,
-            "tv_standard": 0.0,
-            "propagation_mode": 2.0,
-            "distance_km": 210.0,
-            "signal_dbm": -74.0,
-            "dx_duct_gain_db": 26.0,
-            "qsb_depth_db": 5.5,
-            "qsb_rate_hz": 0.35,
-            "multipath_level": 0.22,
-            "multipath_delay_us": 1.15,
-            "multipath_phase_deg": 42.0,
-            "multipath_drift_hz": 0.22,
-            "tuner_type": 1.0,
-            "noise_figure_db": 9.5,
-            "if_saw_ringing": 0.42,
-            "tuning_offset_khz": 35.0,
-            "adjacent_channel": 0.14,
-            "cochannel_interference": 0.16,
-            "cochannel_offset_khz": 10.5,
-            "front_end_overload": 0.08,
-            "color_killer_threshold_db": 15.0,
-        },
-        "display": {"enabled": 0.0},
+    "vhs_iterative_loop": {
+        "label": "VHS 多代循环迭代转录机（N 代闭环）",
+        "note": "使用「VHS N代循环转录」节点在单节点内执行 1~20 代真实的 VCR 播放→AV线→VCR 录制迭代回路",
+        "build": vhs_iterative_loop,
+        "params": {"tape": {"generation_count": 5.0}},
     },
 }

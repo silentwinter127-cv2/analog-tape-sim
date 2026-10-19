@@ -57,6 +57,7 @@ class CodecStage(Stage):
                 width=int(round(float(cfg.get("vcd_width", 352.0)))),
                 height=int(round(float(cfg.get("vcd_height", 240.0)))),
                 bitrate_kbps=float(cfg.get("vcd_bitrate_kbps", 1150.0)),
+                hbi_border=float(np.clip(cfg.get("vcd_hbi_border", 0.0), 0.0, 1.0)),
             )
             if self.mpeg1 is None:
                 self.mpeg1 = MPEG1Codec(p)

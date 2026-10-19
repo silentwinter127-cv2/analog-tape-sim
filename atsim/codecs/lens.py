@@ -53,6 +53,7 @@ class LensSpec:
     #: `halation`, whose tint is fixed and cool, and from `lens_flare`, whose tint is the coating's.
     source_glow: float = 0.0
     halation: float = 0.0
+    coat_ghost: float = 0.0
     blades: int = 6
     light_streak_amount: float = 0.0
     light_streak_angle: float = 0.0
@@ -77,6 +78,7 @@ class LensSpec:
             lens_flare=float(cfg.get("lens_flare", 0.0)),
             source_glow=float(cfg.get("source_glow", 0.0)),
             halation=float(cfg.get("halation", 0.0)),
+            coat_ghost=float(cfg.get("coat_ghost", 0.0)),
             blades=int(round(float(cfg.get("flare_blades", 6.0)))),
             light_streak_amount=float(cfg.get("light_streak_amount", 0.0)),
             light_streak_angle=float(cfg.get("light_streak_angle", 0.0)),
@@ -734,3 +736,90 @@ def draw_trv310e_zoom_osd(rgb: np.ndarray, zoom_pos: float) -> np.ndarray:
     kx = int(round(x0 + border + z * max(1, (x1 - x0 - 2 * border - knob_w))))
     out[y0 + border:y1 - border, kx:min(x1 - border, kx + knob_w)] = np.array([0.96, 0.96, 0.96], dtype=np.float32)
     return out
+
+
+
+def coating_ghost_dispersion(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
+    """
+    Multi-element zoom lens double-reflection ghost chain & wide-angle chromatic dispersion arc
+    (calibrated against the opening sequence `0.50s-1.25s` of `30666916021-1-192.mp4`).
+
+    Physical mechanisms:
+      1. **Off-Axis Mie Veiling Glare & Auto-Iris Bleach**:
+         Intense off-axis backlighting floods the front element with a warm-amber/silver forward-scatter
+         veil along the source direction while lifting the black floor.
+      2. **Single-Layer `MgF2` Coating Spectral Selectivity (Green-Null / Magenta-Violet Reflection)**:
+         A 1990s single-layer `MgF2` quarter-wave coating is tuned to $\lambda_0 \approx 550\,\text{nm}$ (green).
+         Internal reflections between lens elements therefore suppress green while reflecting Red ($650\,\text{nm}$)
+         and Blue-Violet ($440\,\text{nm}$), forming:
+           * A centrosymmetric inverted ghost image (`rgb[::-1, ::-1]`) with a violet-magenta coating cast
+             (upper-left violet veil $B - G \approx +0.108$ and sculpture contour ghost $B - G \approx +0.054$);
+           * A diagonal tangential caustic streak cutting across the optical axis ($R - G \approx +0.065$).
+      3. **Wide-Angle Ghost Chromatic Magnification Dispersion (Lower-Left Rainbow Arc)**:
+         Because refractive index $n(\lambda)$ varies across the ghost path, the secondary pupil ghost images
+         at $-k_c \cdot \mathbf{x}_s$ expand with different radial magnifications for Red, Green, and Blue,
+         splitting into a cyan-green-magenta rainbow dispersion arc in the opposite quadrant (`B - R = +0.097`).
+    """
+    cg = float(getattr(spec, "coat_ghost", 0.0))
+    if cg <= 1e-4:
+        return rgb
+
+    h, w = rgb.shape[:2]
+    scale_w = w / 720.0
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    nx = (xx / max(1, w - 1)) * 2.0 - 1.0
+    ny = (yy / max(1, h - 1)) * 2.0 - 1.0
+
+    lum = rgb @ LUMA
+    hot = np.clip((lum - 0.58) / 0.32, 0.0, 1.0)
+    mass = float(hot.sum())
+    if mass > 1e-3:
+        sx = float((hot * nx).sum() / mass)
+        sy = float((hot * ny).sum() / mass)
+        if sx * sx + sy * sy < 0.04:
+            sx, sy = 0.64, -0.72
+    else:
+        sx, sy = 0.64, -0.72
+
+    out = rgb.astype(np.float32, copy=True)
+
+    # 1. Forward Mie scatter veil around the off-axis light source
+    d_src2 = (nx - sx) ** 2 + (ny - sy) ** 2
+    src_veil = np.exp(-d_src2 / 0.85).astype(np.float32)
+    veil_tint = np.array([1.02, 1.03, 0.99], dtype=np.float32)[None, None, :]
+    out = out + (0.22 * cg) * src_veil[..., None] * veil_tint
+
+    # 2. Centrosymmetric inverted ghost (paraxial magnification m = -1) with MgF2 green-null tint
+    inv_rgb = rgb[::-1, ::-1]
+    inv_lum = inv_rgb @ LUMA
+    inv_hot = lowpass(np.clip((inv_lum - 0.42) / 0.45, 0.0, 1.0), max(1.5, 5.5 * scale_w))
+    mgf2_violet = np.array([0.82, 0.76, 1.18], dtype=np.float32)[None, None, :]
+    out = out + (0.28 * cg) * inv_hot[..., None] * mgf2_violet
+
+    # 3. Diagonal tangential caustic streak across the optical axis (magenta-amber coating reflection)
+    ax_len = max(float(np.hypot(sx, sy)), 1e-3)
+    ux, uy = sx / ax_len, sy / ax_len
+    along = nx * ux + ny * uy
+    perp = -nx * uy + ny * ux
+    caustic = (
+        np.exp(-0.5 * (perp / 0.24) ** 2)
+        * np.exp(-0.5 * ((along - 0.05) / 0.68) ** 2)
+    ).astype(np.float32)
+    caustic_tint = np.array([1.14, 0.94, 0.86], dtype=np.float32)[None, None, :]
+    out = out + (0.20 * cg) * caustic[..., None] * caustic_tint
+
+    # 4. Opposite-quadrant wide-angle rainbow dispersion arc (chromatic pupil ghost)
+    gx, gy = -0.62 * sx, -0.62 * sy
+    rg = np.hypot(nx - gx, ny - gy)
+    arc_gate = np.clip(1.0 - np.hypot(nx - (-0.45 * sx), ny - (-0.45 * sy)) / 1.15, 0.0, 1.0)
+    r_band = np.exp(-0.5 * ((rg - 0.34) / 0.11) ** 2) * arc_gate
+    g_band = np.exp(-0.5 * ((rg - 0.42) / 0.12) ** 2) * arc_gate
+    b_band = np.exp(-0.5 * ((rg - 0.50) / 0.13) ** 2) * arc_gate
+    rainbow = np.stack([
+        0.72 * r_band + 0.18 * b_band,
+        0.95 * g_band + 0.22 * b_band,
+        1.18 * b_band + 0.30 * g_band,
+    ], axis=-1).astype(np.float32)
+    out = out + (0.26 * cg) * rainbow
+
+    return np.clip(out, 0.0, 1.5).astype(np.float32)

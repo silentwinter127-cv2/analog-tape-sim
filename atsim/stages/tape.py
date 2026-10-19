@@ -286,6 +286,11 @@ class TapeStage(Stage):
         # removes a *fraction of the picture* and kills chroma before luma.
         self.binder_loss = float(cfg.get("binder_loss", 0.0))
         self._binder_last = 0.0
+        # --- multi-generation VHS iterative dubbing (generation loss) -------
+        self.generation_passes = int(round(float(np.clip(cfg.get("generation_passes", 1.0), 1.0, 25.0))))
+        self.gen_chroma_bleed = float(np.clip(cfg.get("gen_chroma_bleed", 0.85), 0.0, 2.0))
+        self.gen_ringing = float(np.clip(cfg.get("gen_ringing", 0.85), 0.0, 2.0))
+        self.gen_sync_collapse = float(np.clip(cfg.get("gen_sync_collapse", 0.0), 0.0, 1.5))
         # COSMAG E-180 PAL/SP/LP mixed archival tape failure mechanisms:
         # 1) `demagnetization` (消磁): loss of remanent magnetization M_r, causing FM luma carrier drop into
         #    limiter snow, high-frequency rolloff, and 629 kHz colour-under killer/desaturation;
@@ -2212,6 +2217,196 @@ class TapeStage(Stage):
 
         return y.astype(np.float32), i.astype(np.float32), q.astype(np.float32)
 
+    def _apply_generation_iteration(self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
+                                    frame_index: int, gen_index: int = 1
+                                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Single-generation dubbing iteration helper used by GraphExecutor (`vhs_dub_loop` / `vhs_gen`)."""
+        saved_gen = getattr(self, "generation_passes", 1)
+        try:
+            self.generation_passes = 2
+            self.generation_count = 2
+            f_idx = int(frame_index) + int(gen_index) * 19
+            rng = np.random.default_rng(derive_seed(self.ctx.seed, "tape/gen_iter", f_idx))
+            return self._apply_generation_loss(y, i, q, f_idx, rng)
+        finally:
+            self.generation_passes = saved_gen
+            self.generation_count = saved_gen
+
+    def _apply_generation_loss(self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
+                               frame_index: int, rng: np.random.Generator
+                               ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Multi-generation VHS dubbing (Generation Loss), calibrated against the blogger's
+        20-generation VHS dubbing experiment (`录像带的图像耗损(上个时代的影像损失).37741528802.mp4`).
+
+        When a VHS tape is dubbed from one VCR to another repeatedly over N generations:
+          1. **Cumulative Colour-Under Delay & 1H Comb Downward Bleed**:
+             Each generation's 629 kHz heterodyne filter and 1H glass delay-line comb filter
+             shifts chroma rightward (~1.35 px/gen) and downward (~1.15 lines/gen) while
+             recursively smearing vertical colour and narrowing horizontal chroma bandwidth.
+          2. **Cascaded FM Pre-Emphasis / De-Emphasis Overshoot & Dark Ringing Halos**:
+             Each record/playback pass applies high-frequency aperture boost and non-linear
+             FM clipping, creating dark undershoot trenches and bright overshoot halos on the
+             right side of vertical transitions (measured `hf_x` rising from 0.0049 at Gen 1
+             to 0.0128 at Gen 18 even as fine resolution collapses).
+          3. **AGC Pedestal Lift & Highlight Yellow-Green Compression**:
+             Repeated AGC clamping on degraded sync tips lifts the black pedestal (`p05` rises
+             from 0.160 to 0.175) while compressing highlight saturation and shifting highlights
+             toward yellow-green (`R/G` rises from 0.472 to 0.623).
+          4. **Compounded Timebase Walk, Stacked Head-Switching & Right HBI Clamp Bar**:
+             Each deck adds its own capstan/drum phase walk, stacks another slightly offset
+             bottom head-switching tear, and widens the right-hand HBI blanking noise bar (`x > 0.98W`).
+          5. **Sync-Threshold Collapse & Colour-Killer Mute (~Gen 19-20, `t=60.5s`)**:
+             Once cumulative sync-tip rounding and timebase jitter cross the AFC/burst-gate
+             lock threshold, the colour-killer mutes chroma (`sat -> 0.015`) and the picture
+             breaks into high-contrast diagonal FM herringbones and horizontal sync tearing
+             with the subject's silhouette faintly visible underneath.
+        """
+        passes = int(getattr(self, "generation_passes", 1))
+        collapse_override = float(getattr(self, "gen_sync_collapse", 0.0))
+        if passes <= 1 and collapse_override <= 1e-4:
+            return y, i, q
+
+        H, W = y.shape[:2]
+        scale_w = W / 720.0
+        scale_h = H / 480.0
+        extra_gens = max(0, passes - 1)
+        bleed_k = float(getattr(self, "gen_chroma_bleed", 0.85))
+        ring_k = float(getattr(self, "gen_ringing", 0.85))
+
+        y_out = y.astype(np.float32, copy=True)
+        i_out = i.astype(np.float32, copy=True)
+        q_out = q.astype(np.float32, copy=True)
+
+        if extra_gens > 0:
+            # --- 1. Cumulative Chroma Right-Shift, Downward 1H Comb Bleed & Bandwidth Loss ---
+            eff_n = float(extra_gens)
+            dx_chroma = eff_n * 1.25 * bleed_k * scale_w
+            dy_chroma = eff_n * 1.05 * bleed_k * scale_h
+            if abs(dx_chroma) > 1e-3:
+                sh_c = np.full(H, dx_chroma, dtype=np.float32)
+                i_out = horizontal_shift(i_out, sh_c)
+                q_out = horizontal_shift(q_out, sh_c)
+            if abs(dy_chroma) > 1e-3:
+                i_out = vertical_shift(i_out, dy_chroma)
+                q_out = vertical_shift(q_out, dy_chroma)
+
+            # Recursive vertical 1H delay-line IIR bleed + horizontal colour-under narrowing
+            c_sigma_x = max(0.8, (1.4 + 0.65 * np.sqrt(eff_n) * bleed_k) * scale_w)
+            c_sigma_y = max(0.5, (0.6 + 0.45 * np.sqrt(eff_n) * bleed_k) * scale_h)
+            i_out = lowpass(lowpass(i_out, c_sigma_x, axis=1), c_sigma_y, axis=0)
+            q_out = lowpass(lowpass(q_out, c_sigma_x, axis=1), c_sigma_y, axis=0)
+
+            # ACC saturation decay + slight warm-yellow phase drift over generations
+            sat_decay = float((0.945 ** (eff_n * max(0.3, bleed_k))))
+            phi_drift = float(np.deg2rad(min(28.0, eff_n * 1.15 * bleed_k)))
+            cs, sn = np.cos(phi_drift), np.sin(phi_drift)
+            i_rot = (i_out * cs - q_out * sn) * sat_decay
+            q_rot = (i_out * sn + q_out * cs) * sat_decay
+            # Subtle yellow-green highlight/midtone bias measured in Gen 4 -> Gen 18
+            warm_bias = min(0.055, 0.0032 * eff_n * bleed_k)
+            i_out = (i_rot + warm_bias * 0.45).astype(np.float32)
+            q_out = (q_rot - warm_bias * 0.65).astype(np.float32)
+
+            # --- 2. Cascaded FM Luma Bandwidth Loss + Multi-Generation Aperture Ringing ---
+            luma_blur_sig = max(0.45, (0.55 + 0.24 * np.sqrt(eff_n)) * scale_w)
+            y_base = lowpass(y_out, luma_blur_sig, axis=1)
+            if ring_k > 1e-4:
+                # Delayed second-derivative ringing (dark undershoot + bright overshoot on right of edges)
+                d1 = y_base - np.roll(y_base, 2, axis=1)
+                d1[:, :2] = 0.0
+                d2 = np.roll(d1, 2, axis=1) - 0.65 * np.roll(d1, 5, axis=1)
+                d2[:, :5] = 0.0
+                ring_amp = min(0.48, (0.045 * np.sqrt(eff_n) + 0.012 * eff_n) * ring_k)
+                y_base = y_base + ring_amp * d1 - (0.72 * ring_amp) * d2
+
+            # --- 3. AGC Black-Pedestal Lift & Highlight Soft Clipping ---
+            ped_lift = min(0.085, 0.0042 * eff_n * max(0.4, ring_k))
+            hi_comp = max(0.76, 1.0 - 0.011 * eff_n)
+            y_out = np.clip(ped_lift + y_base * hi_comp, 0.0, 1.05).astype(np.float32)
+
+            # --- 4. Compounded Timebase S-Curve Walk, Stacked Head-Switching & Right HBI Bar ---
+            rows = np.arange(H, dtype=np.float32)
+            yn = rows / max(1.0, H - 1.0)
+            s_walk = (
+                np.sin(2.0 * np.pi * yn * 1.5 + frame_index * 0.31)
+                + 0.6 * np.sin(2.0 * np.pi * yn * 3.7 - frame_index * 0.53)
+            )
+            gen_jitter = (
+                s_walk * (0.38 * np.sqrt(eff_n) * scale_w)
+                + rng.standard_normal(H).astype(np.float32) * (0.22 * np.sqrt(eff_n) * scale_w)
+            ).astype(np.float32)
+            y_out = horizontal_shift(y_out, gen_jitter)
+            i_out = horizontal_shift(i_out, gen_jitter)
+            q_out = horizontal_shift(q_out, gen_jitter)
+
+            # Stacked multi-generation head-switching band at bottom (~2% to 5% height)
+            hs_rows = min(int(round((8 + min(22, extra_gens * 1.2)) * scale_h)), H // 5)
+            if hs_rows > 1:
+                hs_slice = slice(H - hs_rows, H)
+                hs_ramp = np.linspace(0.2, 1.0, hs_rows, dtype=np.float32)[:, None]
+                hs_noise = rng.standard_normal((hs_rows, W)).astype(np.float32) * 0.14
+                y_out[hs_slice] = np.clip(
+                    y_out[hs_slice] * (1.0 - 0.45 * hs_ramp) + (0.62 + hs_noise) * (0.45 * hs_ramp),
+                    0.0, 1.0,
+                )
+                hs_shift = (hs_ramp[:, 0] * (2.5 + 0.9 * min(12.0, eff_n)) * scale_w).astype(np.float32)
+                y_out[hs_slice] = horizontal_shift(y_out[hs_slice], hs_shift)
+
+            # Compounded right-edge HBI blanking/clamp bar (x > 0.98W, measured in video frames)
+            bar_w = max(2, int(round((6 + min(14, extra_gens * 0.7)) * scale_w)))
+            if bar_w < W // 6:
+                xx_b = np.linspace(0.0, 1.0, bar_w, dtype=np.float32)[None, :]
+                bar_noise = rng.standard_normal((H, bar_w)).astype(np.float32) * 0.08
+                bar_luma = np.clip(0.58 + 0.22 * xx_b + bar_noise, 0.15, 0.96).astype(np.float32)
+                mix_b = np.clip(xx_b * min(0.95, 0.25 + 0.05 * eff_n), 0.0, 0.95)
+                y_out[:, -bar_w:] = y_out[:, -bar_w:] * (1.0 - mix_b) + bar_luma * mix_b
+                i_out[:, -bar_w:] *= (1.0 - mix_b)
+                q_out[:, -bar_w:] *= (1.0 - mix_b)
+
+            # Compounded FM tape snow & generational chroma speckle
+            gen_snow = (0.008 * np.sqrt(eff_n) + 0.0022 * eff_n) * self._luma_band_noise(rng, (H, W))
+            y_out = np.clip(y_out + gen_snow, 0.0, 1.05).astype(np.float32)
+
+        # --- 5. Sync-Threshold Collapse & Colour-Killer Mute (~Gen 19+, t=60.5s in video) ---
+        auto_collapse = float(np.clip((passes - 18.0) / 3.0, 0.0, 1.0)) if passes >= 19 else 0.0
+        collapse = float(np.clip(max(collapse_override, auto_collapse), 0.0, 1.5))
+        if collapse > 1e-4:
+            c_amt = min(1.0, collapse)
+            # Colour-killer engages: chroma is muted almost to monochrome (sat ~ 0.015 in video)
+            ck_keep = max(0.03, 1.0 - 0.95 * c_amt)
+            i_out = (i_out * ck_keep).astype(np.float32)
+            q_out = (q_out * ck_keep).astype(np.float32)
+
+            # Severe horizontal AFC sync tearing + ghost silhouette of the underlying scene
+            tear_rows = (
+                rng.standard_normal(H).astype(np.float32) * (28.0 * collapse * scale_w)
+                + np.sin(np.arange(H, dtype=np.float32) * 0.19 + frame_index * 1.7) * (22.0 * collapse * scale_w)
+            ).astype(np.float32)
+            y_ghost = horizontal_shift(lowpass(y_out, max(1.2, 3.0 * scale_w), axis=1), tear_rows)
+
+            # High-contrast diagonal FM demodulator herringbone + horizontal sync-bar snow
+            yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+            px_p = max(2.2, 5.2 * scale_w)
+            py_p = max(2.0, 3.8 * scale_h)
+            row_ph = rng.uniform(-np.pi, np.pi, size=(H, 1)).astype(np.float32) * (0.65 * collapse)
+            herring = np.cos(2.0 * np.pi * (xx / px_p - yy / py_p) + frame_index * 1.9 + row_ph)
+            herring2 = np.cos(2.0 * np.pi * (xx / (px_p * 0.62) + yy / (py_p * 1.35)) - frame_index * 1.3)
+            fm_snow = self._luma_band_noise(rng, (H, W))
+            # Horizontal sync-loss black/white tearing bars
+            sync_bars = np.sin(yy / max(3.0, 9.5 * scale_h) + frame_index * 0.9 + rng.standard_normal((H, 1)).astype(np.float32) * 0.4)
+            jam_pattern = np.clip(
+                0.50 + 0.24 * herring + 0.14 * herring2 + 0.22 * fm_snow + 0.16 * sync_bars,
+                0.02, 0.98,
+            ).astype(np.float32)
+
+            # Keep ~22% underlying torn silhouette so the speaker's outline remains faintly recognizable
+            ghost_keep = max(0.18, 1.0 - 0.78 * c_amt)
+            y_out = np.clip(y_ghost * ghost_keep + jam_pattern * (1.0 - ghost_keep), 0.0, 1.0).astype(np.float32)
+
+        return y_out, i_out, q_out
+
+
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
         if self.digital:
             frame_index = int(buf.index)
@@ -2331,6 +2526,10 @@ class TapeStage(Stage):
             y = vertical_shift(y, dy)
             i = vertical_shift(i, dy)
             q = vertical_shift(q, dy)
+
+
+        # 7. multi-generation VHS iterative dubbing loss (colour-under shift, ringing, sync collapse)
+        y, i, q = self._apply_generation_loss(y, i, q, frame_index, rng)
 
         comp_out = self._recompose(y, i, q)
         out = FrameBuffer(buf.rgb, comp_out, buf.index, buf.time, buf.std, dict(buf.meta))

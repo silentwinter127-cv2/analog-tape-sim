@@ -12,6 +12,9 @@ live Renderer and its caches, so the preview can reuse upstream stages.
 """
 from __future__ import annotations
 
+from ..core.profiles import CAMCORDER_PRESETS, FACTORY_PRESETS, LAYER_LABELS, PROFILE_LIBRARY, SCHEMA
+from ..core.profiles import CAMCORDER_PRESETS
+
 import json
 import shutil
 import time
@@ -280,6 +283,9 @@ class SessionStore:
 
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir)
+        self.custom_presets_file = self.data_dir / "custom_presets.json"
+        self.custom_presets: dict[str, dict] = {}
+        self._load_custom_presets()
         self.uploads = self.data_dir / "uploads"
         self.projects_dir = self.data_dir / "projects"
         self.renders = self.data_dir / "renders"
@@ -404,74 +410,121 @@ class SessionStore:
             self._sources.pop(key, None)
 
     # ------------------------------------------------------------------
+    def _load_custom_presets(self) -> None:
+        if self.custom_presets_file.exists():
+            try:
+                data = json.loads(self.custom_presets_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self.custom_presets = data
+            except Exception:
+                self.custom_presets = {}
+
+    def _save_custom_presets_disk(self) -> None:
+        self.custom_presets_file.write_text(
+            json.dumps(self.custom_presets, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def save_custom_preset(self, project: Project, label: str, note: str = "",
+                           key: str | None = None, graph_dict: dict | None = None) -> dict:
+        import re as _re
+        clean_label = (label or "").strip() or "用户自定义预设"
+        if not key:
+            slug = _re.sub(r"[^a-zA-Z0-9_\u4e00-\u9fa5]+", "_", clean_label).strip("_")
+            key = f"user_{slug}_{int(time.time()) % 100000}"
+        layers_copy = {lay: dict(vals) for lay, vals in (project.params or {}).items() if isinstance(vals, dict)}
+        layers_copy.setdefault("display", {})
+        if "enabled" not in layers_copy["display"]:
+            layers_copy["display"]["enabled"] = 0.0
+        entry = {
+            "label": clean_label,
+            "note": (note or "").strip() or f"保存自工程「{project.name}」({project.standard.upper()})",
+            "standard": project.standard,
+            "layers": layers_copy,
+            "environment": dict(project.environment or {}),
+            "timeline": list(project.keyframes or []),
+            "created": time.time(),
+        }
+        self.custom_presets[key] = entry
+        self._save_custom_presets_disk()
+        return {"key": key, **entry}
+
+    def delete_custom_preset(self, key: str) -> bool:
+        if key in self.custom_presets:
+            del self.custom_presets[key]
+            self._save_custom_presets_disk()
+            return True
+        return False
+
     def preset_layers(self, key: str) -> dict:
+        if key in self.custom_presets:
+            return self.custom_presets[key].get("layers", {})
         if key in FACTORY_PRESETS:
             return FACTORY_PRESETS[key]["layers"]
+        if key in CAMCORDER_PRESETS:
+            return CAMCORDER_PRESETS[key]["layers"]
         for group in PROFILE_LIBRARY.values():
             if key in group:
                 return group[key]["layers"]
         return {}
 
-    def _preset_spec(self, key: str) -> dict:
-        """
-        The preset's own dict, whatever it declares.
-
-        Kept separate from `preset_layers` so that a preset can carry fields beyond `layers` without
-        `preset_layers` having to know about them.
-        """
-        spec = FACTORY_PRESETS.get(key) or {}
-        if not spec:
-            # device profiles and the like are resolved through the same path
-            try:
-                from ..core.profiles import resolve_preset
-                spec = resolve_preset(key) or {}
-            except Exception:
-                spec = {}
-        return spec if isinstance(spec, dict) else {}
+    def _preset_spec(self, key: str) -> tuple[dict | None, bool]:
+        if key in self.custom_presets:
+            return self.custom_presets[key], True
+        if key in FACTORY_PRESETS:
+            return FACTORY_PRESETS[key], True
+        if key in CAMCORDER_PRESETS:
+            return CAMCORDER_PRESETS[key], True
+        for group in PROFILE_LIBRARY.values():
+            if key in group:
+                return group[key], False
+        return None, False
 
     def apply_preset(self, project: Project, key: str) -> Project:
-        """
-        Apply a preset as a complete state, not as an adjustment to the screen.
-
-        Expanding over `_preset_baseline()` rather than over `project.params` is the
-        whole point: a partial preset (one that defines only the parameters it is
-        about) then produces the same result every time, instead of inheriting the
-        previous selection's unmentioned layers.  Applying "Hi8 shuttle" after "worn
-        rental tape" used to give the rental tape's camera, format, player and
-        display settings plus Hi8 shuttle residue -- and clicking the same preset
-        twice in a different order gave a different picture.
-        """
-        layers = self.preset_layers(key)
-        if layers:
-            project.params = merge_values(_preset_baseline(), layers)
+        spec, is_full_preset = self._preset_spec(key)
+        if spec is None:
+            return project
+        layers = spec.get("layers") or spec.get("values") or {}
+        if not layers:
+            return project
+        if is_full_preset:
+            base = {lay: dict(vals) for lay, vals in _PRESET_BASELINE_LAYERS.items()}
+            project.params = merge_values(base, layers)
             project.preset = key
-            # A preset may also name the machine's condition and its timeline.  Both are *cleared* when
-            # the preset does not mention them, because a preset is a complete state: inheriting the
-            # previous one would make the picture depend on the order the presets were clicked, which is
-            # the fault the docstring above describes.
-            spec = self._preset_spec(key)
+            if spec.get("standard"):
+                project.standard = str(spec["standard"])
+        else:
+            project.params = merge_values(project.params or {}, layers)
+        if "environment" in spec:
             project.environment = dict(spec.get("environment") or {})
+        elif is_full_preset:
+            project.environment = {}
+        if "timeline" in spec:
             project.keyframes = list(spec.get("timeline") or [])
+        elif is_full_preset:
+            project.keyframes = []
         return project
 
     def catalog(self) -> dict:
         return {
-            "factory": {k: {"label": v["label"]} for k, v in FACTORY_PRESETS.items()},
+            "factory": {k: {"label": v["label"], "layers": v["layers"]}
+                        for k, v in FACTORY_PRESETS.items()},
+            "camcorders": {k: {"label": v["label"], "layers": v["layers"]}
+                           for k, v in CAMCORDER_PRESETS.items()},
             "profiles": {
-                group: {k: {"label": v["label"], "note": v.get("note", "")}
-                        for k, v in items.items()}
-                for group, items in PROFILE_LIBRARY.items()
+                g: {k: {"label": v["label"], "note": v.get("note", ""),
+                        "layers": v.get("layers") or v.get("values") or {}}
+                    for k, v in items.items()}
+                for g, items in PROFILE_LIBRARY.items()
             },
-            "fonts": __import__("atsim.codecs.fonts", fromlist=["font_catalogue"]).font_catalogue(),
-            "layers": {
-                "camera": "01 成像系统（摄像机）",
-                "format": "02 信号编码（格式）",
-                "codec": "02b DV 编解码",
-                "connector": "02c 链路接口（受潮/氧化）",
-                "rf": "02r RF 射频链路",
-                "tape": "03 记录介质（磁带）",
-                "player": "04 读取解码（播放设备）",
-                "display": "05 显示设备（CRT）",
-                "overlay": "06 字幕机（字符发生器）",
+            "custom": {
+                k: {
+                    "label": v.get("label", k),
+                    "note": v.get("note", ""),
+                    "standard": v.get("standard", "ntsc"),
+                    "layers": v.get("layers", {}),
+                }
+                for k, v in self.custom_presets.items()
             },
+            "layers": LAYER_LABELS,
         }

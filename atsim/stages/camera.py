@@ -27,7 +27,8 @@ from ..core.signal import gaussian_kernel, lowpass
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 from ..codecs.lens import (LensSpec, field_curvature, longitudinal_ca, chromatic_aberration,
                            coma, astigmatism, spherical, distortion, source_glow,
-                           optical_wt_zoom, light_streaks, draw_trv310e_zoom_osd)
+                           optical_wt_zoom, light_streaks, draw_trv310e_zoom_osd,
+                           coating_ghost_dispersion)
 
 
 def _subpixel_shift(rgb: np.ndarray, dx: float, dy: float) -> np.ndarray:
@@ -295,6 +296,7 @@ class CameraStage(Stage):
         self.gain = float(cfg.get("ccd_gain", 0.0))
         self.color_cast = float(cfg.get("color_cast", 0.0))
         self.highlight_tint = float(cfg.get("highlight_tint", 0.0))
+        self.vcd_color_tone = float(cfg.get("vcd_color_tone", 0.0))
         # --- lens and sensor type -------------------------------------
         self.lens_wear = float(cfg.get("lens_wear", 0.0))
         self.lens_flare = float(cfg.get("lens_flare", 0.0))
@@ -1786,6 +1788,7 @@ class CameraStage(Stage):
             rgb = blooming(rgb, self.bloom_threshold, self.bloom_amount)
         rgb = self._lens_flare(rgb)
         rgb = self._flare(rgb)
+        rgb = coating_ghost_dispersion(rgb, self.lens)
         # **Lens aberrations, before the camera's own sharpening.**  Aperture correction is applied by
         # the camera *after* the lens has done its work, so sharpening first would let it undo the
         # corner softening -- which is the one thing field curvature is supposed to leave visible.

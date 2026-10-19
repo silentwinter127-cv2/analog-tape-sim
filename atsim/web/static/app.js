@@ -349,7 +349,7 @@ function buildLayerTabs() {
 }
 
 function buildPresetTabs() {
-  const tabs = [["factory", "整套配置"], ["media", "记录媒介"],
+  const tabs = [["factory", "整套配置"], ["custom", "自定义预设"], ["media", "记录媒介"],
                 ["player", "播放设备"], ["display", "显示设备"], ["camera", "摄像机"]];
   $("presetTabs").innerHTML = "";
   tabs.forEach(([k, label]) => {
@@ -363,21 +363,86 @@ function buildPresetTabs() {
 
 function presetEntries() {
   if (S.presetTab === "factory") {
-    return Object.entries(S.catalog.factory).map(([k, v]) => [k, v.label, "整套：摄像机+格式+介质+播放+显示"]);
+    return Object.entries(S.catalog.factory || {}).map(([k, v]) => [k, v.label, v.note || "整套：摄像机+格式+介质+播放（默认无CRT）"]);
   }
-  const g = S.catalog.profiles[S.presetTab] || {};
+  if (S.presetTab === "custom") {
+    return Object.entries(S.catalog.custom || {}).map(([k, v]) => [k, v.label, v.note || "用户自定义保存预设"]);
+  }
+  const g = (S.catalog.profiles || {})[S.presetTab] || {};
   return Object.entries(g).map(([k, v]) => [k, v.label, v.note || ""]);
+}
+
+async function saveCustomPreset(labelInput, noteInput) {
+  const label = (labelInput ? labelInput.value : "").trim() || prompt("请输入自定义预设名称：", S.project?.name || "我的 VHS 预设");
+  if (!label) return;
+  const note = (noteInput ? noteInput.value : "").trim();
+  try {
+    const res = await api("/api/preset/save", jsonPost({ label, note }));
+    if (res.catalog) S.catalog = res.catalog;
+    if (res.project) applyProject(res.project);
+    S.presetTab = "custom";
+    buildPresetTabs();
+    renderPresetList();
+    toast(`已保存自定义预设「${label}」`);
+  } catch (e) {
+    toast("保存预设失败：" + e.message);
+  }
+}
+
+async function deleteCustomPreset(key, label, ev) {
+  if (ev) ev.stopPropagation();
+  try {
+    const res = await api("/api/preset/delete", jsonPost({ key }));
+    if (res.catalog) S.catalog = res.catalog;
+    if (res.project) applyProject(res.project);
+    renderPresetList();
+    toast(`已删除预设「${label}」`);
+  } catch (e) {
+    toast("删除预设失败：" + e.message);
+  }
 }
 
 function renderPresetList() {
   const box = $("presetList");
   box.innerHTML = "";
-  presetEntries().forEach(([key, label, note]) => {
+
+  // Inline bar to save current parameters + node graph as a user custom preset
+  const saveBar = document.createElement("div");
+  saveBar.className = "custom-preset-bar";
+  saveBar.innerHTML = `
+    <input type="text" id="customPresetName" class="cp-input" placeholder="输入名称保存当前参数为预设…" />
+    <button type="button" id="btnSaveCustomPreset" class="cp-btn">+ 保存预设</button>
+  `;
+  const nameIn = saveBar.querySelector("#customPresetName");
+  const saveBtn = saveBar.querySelector("#btnSaveCustomPreset");
+  saveBtn.onclick = () => saveCustomPreset(nameIn, null);
+  nameIn.onkeydown = (e) => { if (e.key === "Enter") saveCustomPreset(nameIn, null); };
+  box.appendChild(saveBar);
+
+  const entries = presetEntries();
+  if (!entries.length && S.presetTab === "custom") {
+    const empty = document.createElement("div");
+    empty.className = "phelp";
+    empty.style.padding = "8px 4px";
+    empty.textContent = "暂无自定义预设。调节任意参数或节点连线后，在上方输入名称点击「+ 保存预设」即可永久保存。";
+    box.appendChild(empty);
+    return;
+  }
+
+  entries.forEach(([key, label, note]) => {
     const d = document.createElement("div");
     d.className = "card" + (S.project.preset === key ? " on" : "");
-    d.innerHTML = `<div class="t"></div><div class="n"></div>`;
+    d.innerHTML = `<div class="card-head"><div class="t"></div></div><div class="n"></div>`;
     d.querySelector(".t").textContent = label;
     d.querySelector(".n").textContent = note;
+    if (key.startsWith("custom_") || S.presetTab === "custom") {
+      const del = document.createElement("button");
+      del.className = "cp-del";
+      del.title = "删除此自定义预设";
+      del.textContent = "×";
+      del.onclick = (ev) => deleteCustomPreset(key, label, ev);
+      d.querySelector(".card-head").appendChild(del);
+    }
     d.onclick = () => applyPreset(key);
     box.appendChild(d);
   });
@@ -416,6 +481,11 @@ const SELECTORS = {
     [1, "NightShot（红外 + 绿单色）"],
     [2, "Super NightShot（帧积累）"],
     [3, "Color Slow Shutter（慢快门保留彩色）"],
+  ],
+  "display.mask_type": [
+    [0, "荫栅 Aperture Grille（特丽珑连续竖条 + 阻尼丝）"],
+    [1, "槽孔荫罩 Slot Mask（家用彩电交错砖形槽）"],
+    [2, "点状荫罩 Dot Triad（球面管三角圆点阵）"],
   ],
   "rf.tv_standard": [
     [0, "PAL-D/K（中国大陆 8MHz / +6.5MHz 伴音）"],

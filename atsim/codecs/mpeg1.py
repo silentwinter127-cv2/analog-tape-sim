@@ -74,13 +74,14 @@ class MPEG1CodecParams:
 
     def __init__(self, quality: float = 1.0, motion_compensation: float = 1.0,
                  chroma_mode: str = "420", width: int = 352, height: int = 240,
-                 bitrate_kbps: float = 1150.0):
+                 bitrate_kbps: float = 1150.0, hbi_border: float = 0.0):
         self.quality = float(quality)
         self.motion_compensation = float(motion_compensation)
         self.chroma_mode = chroma_mode
         self.width = int(width)
         self.height = int(height)
         self.bitrate_kbps = float(bitrate_kbps)
+        self.hbi_border = float(hbi_border)
 
 
 def _quant_step(matrix: np.ndarray, quality: float) -> np.ndarray:
@@ -209,6 +210,9 @@ class MPEG1Codec:
         need_resample = (orig_w > target_w or orig_h > target_h) and (orig_h, orig_w) != (176, 288)
         if need_resample:
             from ..stages.display import _resample_to
+            from ..core.signal import lowpass
+            # Single-field vertical decimation lowpass characteristic of CIF VCD encoders (hf_x/hf_y ~ 1.55)
+            cur = lowpass(cur, 0.55, axis=0)
             cur = _resample_to(cur, min(orig_h, target_h), min(orig_w, target_w))
         if self._prev_luma is not None and self._prev_luma.shape != cur.shape[:2]:
             self._prev_luma = None
@@ -240,4 +244,20 @@ class MPEG1Codec:
         if need_resample:
             from ..stages.display import _resample_to
             out = _resample_to(out, orig_h, orig_w)
+        hbi = float(np.clip(getattr(self.p, "hbi_border", 0.0), 0.0, 1.0))
+        if hbi > 1e-4 and out.shape[1] >= 32:
+            # Analog composite capture -> VCD active window edge ringing & right HBI white clamp bar
+            # (calibrated against x=159..172 and right border of 30666916021-1-192.mp4)
+            w_out = out.shape[1]
+            sc_x = max(1.0, w_out / 720.0)
+            lw = max(4, int(round(10 * sc_x)))
+            xs = np.arange(lw, dtype=np.float32) / max(1.0, float(lw - 1))
+            # Composite anti-aliasing filter step response: dark porch -> dip -> overshoot peak -> settle
+            env_l = np.clip(0.08 + 0.92 * xs + 0.24 * np.sin(xs * 2.5 * np.pi) * np.exp(-xs * 1.4), 0.0, 1.25)
+            out[:, :lw, :] = np.clip(out[:, :lw, :] * ((1.0 - hbi) + hbi * env_l[None, :, None]), 0.0, 1.0)
+            rw = max(3, int(round(6 * sc_x)))
+            xs_r = np.arange(rw, dtype=np.float32) / max(1.0, float(rw - 1))
+            clamp_r = (0.35 + 0.55 * (xs_r ** 1.5))[None, :, None] * hbi
+            clamp_rgb = np.array([0.84, 0.87, 0.89], dtype=np.float32)[None, None, :]
+            out[:, -rw:, :] = np.clip(out[:, -rw:, :] * (1.0 - 0.75 * clamp_r) + clamp_rgb * (0.75 * clamp_r), 0.0, 1.0)
         return out
