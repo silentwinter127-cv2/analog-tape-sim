@@ -461,6 +461,26 @@ def load_font(key: str) -> FontSpec:
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
         ])
+        #: **Windows, which is where this model is actually run.**  Without these the chain reaches
+        #: `raise FileNotFoundError` on any machine whose fonts are not in the author's personal download folder, and
+        #: the suite dies at `check_osd_multiline` rather than reporting a failure.
+        #:
+        #: **The list is chosen by the declared script on purpose.**  `osd` is `('latin',)` only and the suite asserts
+        #: that it cannot draw Chinese; a CJK fallback there would satisfy the loader and falsify the check.
+        _windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\WINDOWS"
+        _wfonts = os.path.join(_windir, "Fonts")
+        if "cjk" in spec.scripts:
+            cands.extend([
+                os.path.join(_wfonts, "simhei.ttf"),
+                os.path.join(_wfonts, "msyh.ttc"),
+                os.path.join(_wfonts, "msgothic.ttc"),
+                os.path.join(_wfonts, "simsun.ttc"),
+            ])
+        cands.extend([
+            os.path.join(_wfonts, "consola.ttf"),
+            os.path.join(_wfonts, "cour.ttf"),
+            os.path.join(_wfonts, "arial.ttf"),
+        ])
         for cand in cands:
             if os.path.exists(cand):
                 spec.path = cand
