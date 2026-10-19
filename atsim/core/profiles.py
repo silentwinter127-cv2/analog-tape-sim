@@ -1000,8 +1000,6 @@ def build_schema() -> ParamSchema:
     rf.define("color_killer_threshold_db", "消色器门限", 21.0, 10.0, 32.0, unit="dB", group=g,
               phys_min=16.0, phys_max=26.0, source="PAL/NTSC 色同步锁定与自动消色器 (Color Killer)",
               help="当衰落谷底 C/N 低于此门限时，解码芯片自动切断色度通道以防满屏彩雪，画面短暂退化为黑白。")
-    rf.define("broadcast_noise", "VHF 脉冲点火噪底", 0.0, 0.0, 1.0, unit="0-1", group=g,
-              phys_min=0.0, phys_max=0.6, source="VHF 低频段电器火花/摩托车点火脉冲干扰")
 
     # ------------------------------------------------------------------ C
     tpe = s.layer("tape")

@@ -1602,14 +1602,25 @@ def check_connectors() -> None:
 
     # --- 16:9 STB -> HDMI-AV -> 4:3 VCR double aspect-ratio squeeze (Panasonic NV-J27 VHF Ch 6)
     from atsim.stages.connector import ConnectorStage
-    test_f = np.ones((120, 160, 3), dtype=np.float32) * 0.8
-    sq_out, sq_meta = ConnectorStage._apply_aspect_squeeze(test_f, 1.0)
-    act_cols = np.nonzero(sq_out.mean(axis=(0, 2)) > 0.10)[0]
-    w_rat = float(act_cols[-1] - act_cols[0] + 1) / 160.0 if act_cols.size else 0.0
-    record("16:9 STB to 4:3 VCR aspect squeeze",
-           "squeezes horizontal width by 3/4 (0.75) with 12.5% pillarbox blanking on each side",
-           f"width_ratio={w_rat:.4f} (want ~0.75), pillarbox_px={sq_meta.get('pillarbox_px')}",
-           abs(w_rat - 0.75) < 0.025 and sq_meta.get("pillarbox_px") == 20)
+    #: **A missing method must fail this assertion, not end the run.**  `ConnectorStage._apply_aspect_squeeze` was
+    #: removed while the `aspect_squeeze` parameter stayed declared, so this raised `AttributeError` and the suite
+    #: stopped here **with no summary line**, hiding every later result.
+    if not hasattr(ConnectorStage, "_apply_aspect_squeeze"):
+        record("16:9 STB to 4:3 VCR aspect squeeze",
+               "squeezes horizontal width by 3/4 (0.75) with 12.5% pillarbox blanking on each side",
+               "ConnectorStage has no `_apply_aspect_squeeze`; the `aspect_squeeze` parameter is still declared in "
+               "profiles.py but nothing reads it",
+               False,
+               "a declared parameter with no reader is the defect class this project audits for")
+    else:
+        test_f = np.ones((120, 160, 3), dtype=np.float32) * 0.8
+        sq_out, sq_meta = ConnectorStage._apply_aspect_squeeze(test_f, 1.0)
+        act_cols = np.nonzero(sq_out.mean(axis=(0, 2)) > 0.10)[0]
+        w_rat = float(act_cols[-1] - act_cols[0] + 1) / 160.0 if act_cols.size else 0.0
+        record("16:9 STB to 4:3 VCR aspect squeeze",
+               "squeezes horizontal width by 3/4 (0.75) with 12.5% pillarbox blanking on each side",
+               f"width_ratio={w_rat:.4f} (want ~0.75), pillarbox_px={sq_meta.get('pillarbox_px')}",
+               abs(w_rat - 0.75) < 0.025 and sq_meta.get("pillarbox_px") == 20)
 
     # --- and the digital one must be able to fail the link outright
     from atsim.codecs.connectors import degrade_digital
@@ -3934,7 +3945,7 @@ def check_lens_reachable_and_ordered() -> None:
 
     # --- ordered: the relative order of the mechanisms that existed before must be unchanged
     cam_src = open(os.path.join("atsim", "stages", "camera.py"), encoding="utf-8").read()
-    order = [m.group(1) for m in re.finditer(r"^\s+rgb = (\w+)\(rgb, self\.lens\)\s*$", cam_src, re.M)]
+    order = [m.group(1) for m in re.finditer(r"^\s+rgb = (\w+)\(rgb, (?:self\.lens|eff_lens)\)\s*$", cam_src, re.M)]
     # the old sequence was: chromatic (= _aberration), field_curvature, longitudinal_ca
     pre = ["chromatic_aberration", "field_curvature", "longitudinal_ca"]
     pos = {n: (order.index(n) if n in order else -1) for n in pre}
