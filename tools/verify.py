@@ -3959,12 +3959,19 @@ def check_lens_reachable_and_ordered() -> None:
            "original relative order restored, thirty frames across three presets are byte-identical")
 
     every_once = all(order.count(n) == 1 for n in order)
+    #: **A lower bound, not an equality.**  `len(order) == 8` was a snapshot that grows with every new mechanism --
+    #: it was 7 before `source_glow`, and adding `coating_ghost_dispersion` made it 9, at which point this check failed
+    #: while **every mechanism was still called exactly once and in the right order**.  The note below already said
+    #: which assertion matters; the equality was not it.
+    #:
+    #: The bound still catches the failure this check cannot otherwise see: a broken pattern made `order` empty and
+    #: this reported **"0 calls"**, which reads as a catastrophic mechanism failure rather than a textual miss.
     record("the camera calls each lens mechanism exactly once",
            "a duplicated call is a mechanism applied twice, which no parameter can correct",
            "the sequence has %d calls: %s" % (len(order), order),
-           every_once and len(order) == 8,
-           "the count is the number of mechanisms and it was 7 before source_glow was added; the "
-           "assertion that matters is that no mechanism is called twice")
+           every_once and len(order) >= 8,
+           "no mechanism may appear twice, and the list must not be empty or truncated -- the exact count grows "
+           "as mechanisms are added, so it is a lower bound rather than an equality")
 def check_digital_component_chroma() -> None:
     """
     A digital component codec must not inherit the composite subcarrier's chroma bandwidth.
