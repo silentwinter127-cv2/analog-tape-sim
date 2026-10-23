@@ -1,4 +1,4 @@
-/* analog-tape-sim WebUI — a Blender-like workspace
+/* Virtual Media Lab (虚拟媒介实验室) WebUI — a Blender-like workspace
  *
  * Blender's workspaces are not extra features; they are **the same editors, arranged and shown differently**,
  * switched by a row of tabs, with each workspace remembering its own arrangement. That is what this does, and

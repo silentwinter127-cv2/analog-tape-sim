@@ -116,6 +116,16 @@ class PlayerStage(Stage):
         self.chroma_bw = float(p.get("chroma_bandwidth", 0.75)) * 1e6
         self.luma_bw_hz = float(p.get("luma_bandwidth", 3.0)) * 1e6
         self.color_noise = float(f.get("color_noise", 0.25))
+        # Module 2: Sync & Clock System parameters
+        self.sync_clip = float(p.get("sync_clip", 0.0))
+        self.h_hold = float(p.get("h_hold", 0.0))
+        self.v_hold = float(p.get("v_hold", 0.0))
+        self.clock_drift_ppm = float(p.get("clock_drift_ppm", 0.0))
+        self.clock_jitter = float(p.get("clock_jitter", 0.0))
+        self.std_mismatch = int(round(float(p.get("std_mismatch", 0.0))))
+        self.pulse_cross = float(p.get("pulse_cross", 0.0)) > 0.5
+        from ..codecs.transfer_workstation import TransferWorkstationSpec
+        self.transfer_spec = TransferWorkstationSpec.from_params(p)
 
     def on_params_changed(self) -> None:
         self._read_params()
@@ -492,7 +502,161 @@ class PlayerStage(Stage):
         # original buffer there silently discarded every luma/chroma change the
         # format and medium stages had made.
         rgb_out = sig.to_rgb()
+
+        # --- Module 2: Sync & Clock System + Module 3 Power-Bus Sync Slicer Coupling ---
+        from ..codecs.sync_clock import SyncClockSpec, apply_sync_and_clock
+        from ..codecs.power_bus import evaluate_power_bus
+        pstate = buf.meta["power_bus"] if "power_bus" in buf.meta else None
+        if pstate is None:
+            pstate = evaluate_power_bus(
+                self.ctx.params, int(buf.index), self.ctx.fps,
+                rgb_out.shape[0], rgb_out.shape[1], self.ctx.seed,
+                row_luma=np.clip(y, 0.0, 1.0).mean(axis=1),
+            )
+        p_sync_shift = float(pstate.sync_thresh_shift) if (pstate is not None and pstate.active) else 0.0
+        da_meta = (buf.meta["patchbay_da"] if "patchbay_da" in buf.meta else None) or {}
+        eff_sync_clip = float(np.clip(self.sync_clip + float((da_meta["induced_sync_clip"] if "induced_sync_clip" in da_meta else 0.0)), 0.0, 1.0))
+        sc_spec = SyncClockSpec(
+            sync_clip=eff_sync_clip,
+            h_hold=self.h_hold,
+            v_hold=self.v_hold,
+            clock_drift_ppm=self.clock_drift_ppm,
+            clock_jitter=self.clock_jitter,
+            std_mismatch=self.std_mismatch,
+            pulse_cross=self.pulse_cross,
+        )
+        sync_info = None
+        if sc_spec.is_active(p_sync_shift):
+            rgb_out, sync_info = apply_sync_and_clock(
+                rgb_out, sc_spec, self.std, int(buf.index), self.ctx.fps,
+                seed=self.ctx.seed, power_sync_shift=p_sync_shift,
+                tbc_on=self.tbc_enabled, tbc_strength=self.tbc_strength,
+            )
+            sig = SignalFrame.from_rgb(rgb_out, self.std)
+
         out = FrameBuffer(rgb_out, comp, buf.index, buf.time, buf.std, dict(buf.meta))
+        if pstate is not None and pstate.active:
+            out.meta["power_bus"] = pstate
+        if sync_info is not None:
+            out.meta["sync_clock"] = sync_info
         out.meta["signal"] = sig
+        out.meta["tap_player_rgb"] = rgb_out
         out.meta["stage_done"] = out.meta.get("stage_done", []) + ["player"]
+
+        # --- Option J: Multi-Generation Transfer, Dubbing & Transcode Workstation Lab ---
+        if self.transfer_spec.is_active():
+            from ..codecs.transfer_workstation import apply_transfer_workstation
+            cur_sig_tr = out.meta.get("signal")
+            rgb_for_tr = cur_sig_tr.to_rgb() if cur_sig_tr is not None else np.clip(out.rgb, 0.0, 1.0).astype(np.float32)
+            tr_rgb, tr_info = apply_transfer_workstation(
+                rgb_for_tr,
+                self.transfer_spec,
+                std=buf.std,
+                frame_index=int(buf.index),
+                seed=int(self.ctx.seed) + 61,
+            )
+            out.rgb = tr_rgb
+            out.meta["signal"] = SignalFrame.from_rgb(tr_rgb, buf.std)
+            out.meta["transfer_workstation"] = tr_info
+
+        # --- Option O: Parameter Inversion, 3-Tier Audit & FADGI Error Budget Lab ---
+        from ..codecs.inversion_calibration_lab import InversionCalibrationSpec, apply_inversion_calibration_lab
+        inv_spec = InversionCalibrationSpec.from_params(self.cfg_of("player"))
+        if inv_spec.enabled:
+            cur_sig = out.meta.get("signal")
+            rgb_for_inv = cur_sig.to_rgb() if cur_sig is not None else np.clip(out.rgb, 0.0, 1.0).astype(np.float32)
+            ref_src = None
+            if getattr(self.ctx, "source", None) is not None:
+                try:
+                    ref_src = np.clip(self.ctx.source.frame(int(buf.index)), 0.0, 1.0).astype(np.float32)
+                except Exception:
+                    ref_src = None
+            inv_rgb, inv_info = apply_inversion_calibration_lab(
+                rgb_for_inv,
+                inv_spec,
+                params=self.ctx.params,
+                reference_rgb=ref_src,
+                prev_rgb=getattr(self, "_prev_inv_rgb", None),
+                fps=self.ctx.fps,
+            )
+            self._prev_inv_rgb = rgb_for_inv.copy()
+            out.rgb = inv_rgb
+            out.meta["signal"] = SignalFrame.from_rgb(inv_rgb, buf.std)
+            out.meta["inversion_lab"] = inv_info
+
+        # --- Option Q: Archival Preservation Lifecycle, Significant Properties & Lineage Tree ---
+        from ..codecs.archival_archaeology import ArchivalVaultSpec, apply_archival_archaeology
+        arch_spec = ArchivalVaultSpec.from_params(self.cfg_of("player"))
+        if arch_spec.is_active():
+            cur_sig_a = out.meta.get("signal")
+            rgb_for_arch = cur_sig_a.to_rgb() if cur_sig_a is not None else np.clip(out.rgb, 0.0, 1.0).astype(np.float32)
+            arch_rgb, arch_info = apply_archival_archaeology(
+                rgb_for_arch,
+                arch_spec,
+                frame_index=int(buf.index),
+                seed=int(self.ctx.seed) + 73,
+            )
+            out.rgb = arch_rgb
+            out.meta["signal"] = SignalFrame.from_rgb(arch_rgb, buf.std)
+            out.meta["archival_archaeology"] = arch_info
+        return out
+
+
+class SyncTBCStage(Stage):
+    """Standalone Sync, Blanking (HBI/VBI), Clock Drift/Jitter & Pulse-Cross node stage (`sync_tbc`)."""
+    name = "sync_tbc"
+    layers = ("player",)
+
+    def __init__(self, ctx: RenderContext):
+        super().__init__(ctx)
+        self.std: VideoStandard = ctx.std
+        self._read_params()
+
+    def _read_params(self) -> None:
+        p = self.cfg_of("player")
+        self.tbc_enabled = float(p.get("tbc_enabled", 0.0)) > 0.5
+        self.tbc_strength = float(p.get("tbc_strength", 0.85))
+        self.sync_clip = float(p.get("sync_clip", 0.0))
+        self.h_hold = float(p.get("h_hold", 0.0))
+        self.v_hold = float(p.get("v_hold", 0.0))
+        self.clock_drift_ppm = float(p.get("clock_drift_ppm", 0.0))
+        self.clock_jitter = float(p.get("clock_jitter", 0.0))
+        self.std_mismatch = int(round(float(p.get("std_mismatch", 0.0))))
+        self.pulse_cross = float(p.get("pulse_cross", 0.0)) > 0.5
+
+    def on_params_changed(self) -> None:
+        self._read_params()
+
+    def apply(self, buf: FrameBuffer) -> FrameBuffer:
+        from ..codecs.sync_clock import SyncClockSpec, apply_sync_and_clock
+        from ..codecs.power_bus import evaluate_power_bus
+        sig = buf.meta["signal"] if "signal" in buf.meta else None
+        rgb_in = sig.to_rgb() if sig is not None else np.clip(buf.rgb, 0.0, 1.0).astype(np.float32)
+        pstate = buf.meta["power_bus"] if "power_bus" in buf.meta else None
+        if pstate is None:
+            pstate = evaluate_power_bus(
+                self.ctx.params, int(buf.index), self.ctx.fps,
+                rgb_in.shape[0], rgb_in.shape[1], self.ctx.seed,
+            )
+        p_sync_shift = float(pstate.sync_thresh_shift) if (pstate is not None and pstate.active) else 0.0
+        da_meta = (buf.meta["patchbay_da"] if "patchbay_da" in buf.meta else None) or {}
+        eff_sync_clip = float(np.clip(self.sync_clip + float((da_meta["induced_sync_clip"] if "induced_sync_clip" in da_meta else 0.0)), 0.0, 1.0))
+        sc_spec = SyncClockSpec(
+            sync_clip=eff_sync_clip,
+            h_hold=self.h_hold,
+            v_hold=self.v_hold,
+            clock_drift_ppm=self.clock_drift_ppm,
+            clock_jitter=self.clock_jitter,
+            std_mismatch=self.std_mismatch,
+            pulse_cross=self.pulse_cross,
+        )
+        rgb_out, sync_info = apply_sync_and_clock(
+            rgb_in, sc_spec, self.std, int(buf.index), self.ctx.fps,
+            seed=self.ctx.seed, power_sync_shift=p_sync_shift,
+            tbc_on=self.tbc_enabled, tbc_strength=self.tbc_strength,
+        )
+        sig_out = SignalFrame.from_rgb(rgb_out, self.std)
+        out = FrameBuffer(rgb_out, buf.composite, buf.index, buf.time, self.std, dict(buf.meta))
+        out.meta["signal"] = sig_out
+        out.meta["sync_clock"] = sync_info
         return out

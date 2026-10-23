@@ -235,7 +235,7 @@ class VideoReader:
     # -- command -------------------------------------------------------
     def _cmd(self) -> list[str]:
         vf = [f"scale={self.out_w}:{self.out_h}:flags=lanczos"]
-        cmd = [resolve_tool("ffmpeg", FFMPEG), "-v", "error", "-nostdin", "-threads", "0"]
+        cmd = [resolve_tool("ffmpeg", FFMPEG), "-v", "error", "-nostdin", "-threads", "2"]
         if self.start > 0:
             ss = self.start / max(1e-6, self.info.fps)
             cmd += ["-ss", f"{ss:.6f}"]
@@ -429,7 +429,7 @@ class VideoWriter:
             #: evidence.  The trailing `?` makes the map *conditional*: audio is carried when it exists and silently
             #: omitted when it does not, which is what "keep the audio if there is any" was supposed to mean.
             cmd += ["-map", "1:a:0?", "-c:a", audio_codec, "-shortest"]
-        cmd += ["-c:v", self.codec, "-crf", str(self.crf), "-preset", self.preset,
+        cmd += ["-c:v", self.codec, "-threads", "2", "-crf", str(self.crf), "-preset", self.preset,
                 "-pix_fmt", self.pix_fmt]
         cmd += self.extra
         cmd += [self.out_path]

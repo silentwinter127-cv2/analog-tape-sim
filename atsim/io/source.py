@@ -31,6 +31,7 @@ class ClipSource:
         self.fps = self.info.fps or 25.0
         self.frame_count = self.info.frame_count
         self._cache: OrderedDict[int, np.ndarray] = OrderedDict()
+        self._last_frame: np.ndarray | None = None
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -41,16 +42,56 @@ class ClipSource:
             if hit is not None:
                 self._cache.move_to_end(index)
                 return hit
-        with VideoReader(self.path, self.info, self.scale, start=index, count=1,
+        # Decode a small contiguous chunk per FFmpeg invocation so linear renders
+        # spawn 16x fewer subprocesses while keeping memory strictly bounded.
+        chunk = min(16, max(1, self.cache_frames // 2))
+        if self.frame_count > 0:
+            chunk = max(1, min(chunk, self.frame_count - index))
+        decoded: list[tuple[int, np.ndarray]] = []
+        with VideoReader(self.path, self.info, self.scale, start=index, count=chunk,
                          width=self.width, height=self.height) as r:
-            got = None
-            for f in r.frames():
-                got = f
-                break
-        if got is None:
-            raise IndexError(f"frame {index} beyond end of {self.path}")
+            for offset, f in enumerate(r.frames()):
+                decoded.append((index + offset, f))
+                if len(decoded) >= chunk:
+                    break
+        if not decoded:
+            # MP4 containers (especially AI-generated clips or VFR streams) often report
+            # slightly more frames in metadata than FFmpeg `-ss` can seek to at the tail.
+            # Gracefully clamp `frame_count` and hold the last decoded frame instead of crashing.
+            with self._lock:
+                if self._cache:
+                    last_idx = max(self._cache)
+                    fallback = self._cache[last_idx]
+                    self._last_frame = fallback
+                    self._cache[index] = fallback
+                    self.frame_count = min(self.frame_count, max(1, last_idx + 1))
+                    return fallback
+                if self._last_frame is not None:
+                    self._cache[index] = self._last_frame
+                    self.frame_count = min(self.frame_count, max(1, index))
+                    return self._last_frame
+            # If the user scrubbed directly to the end before any frame was cached,
+            # step back to decode the final available frame in the stream.
+            for back_start in (max(0, index - 16), max(0, index - 48), 0):
+                back_frames: list[np.ndarray] = []
+                with VideoReader(self.path, self.info, self.scale, start=back_start, count=24,
+                                 width=self.width, height=self.height) as r:
+                    for f in r.frames():
+                        back_frames.append(f)
+                if back_frames:
+                    fallback = back_frames[-1]
+                    with self._lock:
+                        self._last_frame = fallback
+                        self._cache[index] = fallback
+                    return fallback
+            return np.zeros((self.height, self.width, 3), dtype=np.float32)
+
+        got = decoded[0][1]
         with self._lock:
-            self._cache[index] = got
+            self._last_frame = decoded[-1][1]
+            for f_idx, f_arr in decoded:
+                self._cache[f_idx] = f_arr
+                self._cache.move_to_end(f_idx)
             while len(self._cache) > self.cache_frames:
                 self._cache.popitem(last=False)
         return got

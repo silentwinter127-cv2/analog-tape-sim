@@ -96,6 +96,7 @@ def _neutral_params(params: dict) -> dict:
                    "white_balance_temp": 0.0, "ccd_smear": 0.0, "halation": 0.0,
                    "ccd_gain": 0.0, "color_cast": 0.0, "highlight_tint": 0.0,
                    "lens_wear": 0.0, "lens_flare": 0.0, "sensor_type": 0.0},
+        "film": {"enabled": 0.0, "stock": 0.0},
         "format": {"edge_boost": 0.0, "cross_color": 0.0, "cross_luma": 0.0,
                    "color_noise": 0.0, "burst_phase_error": 0.0,
                    "luma_bandwidth": 5.0, "chroma_bandwidth": 1.5,
@@ -105,12 +106,19 @@ def _neutral_params(params: dict) -> dict:
                  "micro_jitter": 0.0, "vertical_instability": 0.0, "head_switching": 0.0,
                  "dropout_rate": 0.0, "wear": 0.0, "crease_rate": 0.0,
                  "noise_floor": 0.0, "head_clog": 0.0, "debris": 0.0,
-                 "surface_damage": 0.0, "chroma_loss": 0.0},
+                 "surface_damage": 0.0, "chroma_loss": 0.0,
+                 "transport_state": 0.0, "reel_progress": 0.50, "tension_ripple": 0.0,
+                 "belt_slip": 0.0, "roller_eccentricity": 0.0, "servo_hunt": 0.0},
+        "connector": {"psu_ripple": 0.0, "battery_level": 1.0, "battery_sag": 0.0,
+                      "load_coupling": 0.0, "startup_surge": 0.0, "emi_crosstalk": 0.0, "switcher_mode": 0.0},
         "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "tbc_residual": 0.0,
                    "transport_jitter": 0.0, "head_wear": 0.0, "frequency_response": 0.0,
                    "line_delay": 0.0, "output_gain": 0.0, "output_bias": 0.0,
-                   "cross_color": 0.0, "cross_luma": 0.0},
-        "display": {"enabled": 0.0},
+                   "cross_color": 0.0, "cross_luma": 0.0,
+                   "sync_clip": 0.0, "h_hold": 0.0, "v_hold": 0.0,
+                   "clock_drift_ppm": 0.0, "clock_jitter": 0.0,
+                   "std_mismatch": 0.0, "pulse_cross": 0.0},
+        "display": {"enabled": 0.0, "reshoot_enabled": 0.0, "reshoot_moire": 0.0, "reshoot_tilt_deg": 0.0, "reshoot_perspective": 0.0, "reshoot_ambient_glare": 0.0, "reshoot_wb_shift": 0.0},
     })
 
 
@@ -264,6 +272,31 @@ class App:
                     p.source_info = None
             if payload.get("reset_params"):
                 p.params = {}
+            # Sync modified layer keys to any top-level graph node that already overrides that key
+            if getattr(self, "graph", None) is not None:
+                touched_layers = {}
+                if "params" in payload and isinstance(payload["params"], dict):
+                    touched_layers = payload["params"]
+                elif _bare:
+                    touched_layers = {k: payload[k] for k in _bare if isinstance(payload[k], dict)}
+                from ..graph import CATALOG_BY_KIND
+                for node in self.graph.nodes.values():
+                    lay = node.spec.params_layer
+                    if lay and lay in touched_layers and isinstance(touched_layers[lay], dict) and node.params:
+                        for k, v in touched_layers[lay].items():
+                            if k in node.params:
+                                node.params[k] = v
+                    if node.kind == "node_group" and isinstance(node.subgraph, dict):
+                        for sub in (node.subgraph.get("nodes") or []):
+                            if not isinstance(sub, dict) or not isinstance(sub.get("params"), dict):
+                                continue
+                            sub_spec = CATALOG_BY_KIND.get(str(sub.get("kind") or ""))
+                            sub_lay = sub_spec.params_layer if sub_spec else None
+                            if sub_lay and sub_lay in touched_layers and isinstance(touched_layers[sub_lay], dict):
+                                for k, v in touched_layers[sub_lay].items():
+                                    if k in sub["params"]:
+                                        sub["params"][k] = v
+                self._graph_execs.clear()
             self.store.drop(p.id)
             self.store.save(p)
             self._revision += 1
@@ -371,13 +404,23 @@ class App:
                 try:
                     from ..graph import Graph
                     self.graph = Graph.from_dict(custom_spec["graph"])
-                    self._graph_execs.clear()
                 except Exception:
                     pass
+            elif getattr(self, "graph", None) is not None:
+                preset_layers = self.store.preset_layers(key) or {}
+                for node in self.graph.nodes.values():
+                    lay = node.spec.params_layer
+                    if lay and (lay in preset_layers or not preset_layers):
+                        node.params.clear()
+                    if node.kind == "display" and "display" in (self.current.params or {}):
+                        node.enabled = float(self.current.params["display"].get("enabled", 0.0)) > 0.5
+            self._graph_execs.clear()
             self.store.drop(self.current.id)
             self.store.save(self.current)
             self._revision += 1
-        return self.project_dict()
+        out = self.project_dict()
+        out["graph_state"] = self.graph_state()
+        return out
 
     def save_custom_preset(self, payload: dict) -> dict:
         label = str(payload.get("label") or payload.get("name") or "").strip()
@@ -439,6 +482,489 @@ class App:
         except Exception:                                             # noqa: BLE001
             pass
         return _jpeg(rgb, quality) if quality < 100 else _png(rgb)
+
+
+    def _has_active_graph_node(self, kind: str) -> bool:
+        """Check whether an enabled node of `kind` exists in `self.graph` (including inside `node_group`s)."""
+        if getattr(self, "graph", None) is None:
+            return False
+        for node in self.graph.nodes.values():
+            if not getattr(node, "enabled", True):
+                continue
+            if node.kind == kind:
+                return True
+            if node.kind == "node_group" and isinstance(node.subgraph, dict):
+                for sub in (node.subgraph.get("nodes") or []):
+                    if isinstance(sub, dict) and sub.get("enabled", True) is not False and sub.get("kind") == kind:
+                        return True
+        return False
+
+    def _detect_quad_lab_and_override(
+        self,
+        base_params: dict,
+        corner: int | None = None,
+        border: int | None = None,
+        text: int | None = None,
+        force_quad_if_none: bool = False,
+        use_graph: bool = False,
+    ) -> tuple[dict, str, dict[int, tuple[str, str]]]:
+        """
+        Detect which 2x2 Quad Lab is active in `base_params` (or in `self.graph` when `use_graph=True`,
+        or activate Multiview Wall if `force_quad_if_none` is True on a single-screen preset) and return
+        `(overridden_params, lab_kind, corner_meta_map)`.
+        """
+        from ..core.params import merge_values
+        p = {k: dict(v) for k, v in (base_params or {}).items()}
+        rf = p.get("rf") or {}
+        ply = p.get("player") or {}
+        cam = p.get("camera") or {}
+        dsp = p.get("display") or {}
+        cn = p.get("connector") or {}
+        flm = p.get("film") or {}
+        cod = p.get("codec") or {}
+        ov = p.get("overlay") or {}
+
+        g_has = (lambda k: self._has_active_graph_node(k)) if use_graph else (lambda _k: False)
+
+        if float(rf.get("tx_chain_mode", 0.0)) >= 0.5 or g_has("tv_exciter_pa"):
+            lab = "tx_chain"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_baseband_ref", "左上1 · 主控直通基带参考"),
+                2: ("2_top_right_tx_hpa_probe", "右上2 · 发射机高功放监测"),
+                3: ("3_bottom_left_analog_offair", "左下3 · 模拟开路接收终端"),
+                4: ("4_bottom_right_digital_dtt", "右下4 · 数字地面DTT接收"),
+            }
+        elif float(rf.get("sat_ird_mode", 0.0)) >= 0.5 or g_has("sat_ird_receiver"):
+            lab = "sat_ird"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_clear_sky_ref", "左上1 · 晴空卫星参考"),
+                2: ("2_top_right_analog_fm_sparkles", "右上2 · 模拟C波段FM打火噪点"),
+                3: ("3_bottom_left_digital_dvbs_cliff", "左下3 · 数字DVB-S悬崖解码"),
+                4: ("4_bottom_right_cn_cliff_curve", "右下4 · 载噪比悬崖响应图"),
+            }
+        elif float(ply.get("transfer_station_mode", 0.0)) >= 0.5 or g_has("transfer_station"):
+            lab = "transfer"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_gen0_master", "左上1 · Gen-0母带基准"),
+                2: ("2_top_right_multi_gen_no_tbc", "右上2 · 无TBC多代模拟复制"),
+                3: ("3_bottom_left_multi_gen_with_tbc", "左下3 · 带TBC多代模拟复制"),
+                4: ("4_bottom_right_digital_transcode", "右下4 · 4:1:1→4:2:0数字转码"),
+            }
+        elif (float(flm.get("enabled", 0.0)) >= 0.5 or g_has("photochemical_film")) and int(round(float(flm.get("bloom_veil_mode", 0.0)))) == 5:
+            lab = "lomo_opt"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_trioplan_bubble_split_veil", "左上1 · 肥皂泡散景与双色温光雾"),
+                2: ("2_top_right_golden_hour_solar_bloom", "右上2 · 黄金时刻逆光太阳耀斑洪流"),
+                3: ("3_bottom_left_uncoated_pastel_milk_veil", "左下3 · 无镀膜老镜头奶油白雾柔焦"),
+                4: ("4_bottom_right_tilt_shift_warm_corona", "右下4 · 移轴微距浅景深与暖金日冕"),
+            }
+        elif (float(flm.get("enabled", 0.0)) >= 0.5 and int(round(float(flm.get("process_mode", 0.0)))) == 5) or g_has("photochemical_film"):
+            lab = "lomo_darkroom"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_e6_in_c41_xpro", "左上1 · E-6正冲负青绿暖金"),
+                2: ("2_top_right_c41_in_e6_heart", "右上2 · C-41负冲正玫瑰桃心散景"),
+                3: ("3_bottom_left_expired_svema_fog", "左下3 · 过期胶卷高底雾粉彩"),
+                4: ("4_bottom_right_polaroid_sx70_leak", "右下4 · 宝丽来浓暗角与暖阳漏光"),
+            }
+        elif float(flm.get("enabled", 0.0)) >= 0.5 or float(cam.get("film_enabled", 0.0)) >= 0.5 or float(cam.get("telecine_pulldown", 0.0)) >= 0.5 or g_has("film_scanner_telecine"):
+            lab = "telecine"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_16mm_film_stock", "左上1 · 16mm胶片原片"),
+                2: ("2_top_right_rank_cintel_telecine", "右上2 · 电视飞点胶转磁"),
+                3: ("3_bottom_left_home_vhs_dub", "左下3 · 家用VHS电视录屏"),
+                4: ("4_bottom_right_web_stream_reencode", "右下4 · 网络流媒体重压"),
+            }
+        elif float(ply.get("inv_lab_enabled", 0.0)) >= 0.5 or g_has("inversion_analyzer"):
+            lab = "inversion"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_degraded_obs", "左上1 · 退化观测画面"),
+                2: ("2_top_right_residual_heatmap", "右上2 · 反演残差热力图"),
+                3: ("3_bottom_left_hypothesis_ranking", "左下3 · 多解竞争假设排序"),
+                4: ("4_bottom_right_fadgi_scorecard", "右下4 · FADGI三级审计评分"),
+            }
+        elif float(ply.get("archival_enabled", 0.0)) >= 0.5 or float(ply.get("archival_mode", 0.0)) >= 0.5 or g_has("archival_vault"):
+            lab = "archival"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_original_carrier", "左上1 · 原始载体残件"),
+                2: ("2_top_right_preservation_master", "右上2 · 档案保存母版"),
+                3: ("3_bottom_left_overcleaned_dnr", "左下3 · 过度清洗商业修复版"),
+                4: ("4_bottom_right_web_lineage_audit", "右下4 · 流媒体版与重要属性损耗"),
+            }
+        elif float(cn.get("env_field_enabled", 0.0)) >= 0.5 or float(cn.get("env_field_mode", 0.0)) >= 0.5 or g_has("env_chamber"):
+            lab = "env_field"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_thermal_dew_map", "左上1 · 温湿度露点场与结露画面"),
+                2: ("2_top_right_emi_ground_map", "右上2 · 电磁干扰场与地环路画面"),
+                3: ("3_bottom_left_optical_acoustic", "左下3 · 光学与声学空间场耦合"),
+                4: ("4_bottom_right_device_telemetry", "右下4 · 设备局域坐标物理遥测"),
+            }
+        elif float(cod.get("stream_enabled", 0.0)) >= 0.5 or float(cod.get("stream_mode", 0.0)) >= 0.5 or g_has("stream_cdn_client"):
+            lab = "streaming"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_ingest_source", "左上1 · 采集源与TBC母本"),
+                2: ("2_top_right_realvideo_1999", "右上2 · 1999拨号RealVideo流媒体"),
+                3: ("3_bottom_left_web20_reencode", "左下3 · Web2.0平台多代转码"),
+                4: ("4_bottom_right_abr_net_telemetry", "右下4 · 现代ABR与网络缓冲遥测"),
+            }
+        elif float(dsp.get("percept_enabled", 0.0)) >= 0.5 or float(dsp.get("percept_mode", 0.0)) >= 0.5 or g_has("human_operator"):
+            lab = "perception"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_raw_hardware", "左上1 · 未干预物理故障输出"),
+                2: ("2_top_right_viewer_csf", "右上2 · 观众视网膜CSF感知画面"),
+                3: ("3_bottom_left_operator_closed_loop", "左下3 · 机房操作者闭环矫正画面"),
+                4: ("4_bottom_right_jnd_operator_panel", "右下4 · JND显著度与操作轨迹面板"),
+            }
+        elif float(ov.get("eco_enabled", 0.0)) >= 0.5 or float(ov.get("eco_mode", 0.0)) >= 0.5 or g_has("ecosystem_simulator"):
+            lab = "ecosystem"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_1992_golden_era", "左上1 · 1992模拟黄金期基准"),
+                2: ("2_top_right_selected_year_actual", "右上2 · 所选年份真实生态状态"),
+                3: ("3_bottom_left_counterfactual_scenario", "左下3 · 反事实情景推演状态"),
+                4: ("4_bottom_right_ecosystem_trajectories", "右下4 · 1975-2035七维演化曲线"),
+            }
+        elif int(round(float(dsp.get("crt_magnet_mode", 0.0)))) == 5 or g_has("crt_magnet_env"):
+            lab = "crt_magnet"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_strong_magnet_faceplate", "左上1 · 强钕铁硼磁铁贴面黑洞与彩虹环"),
+                2: ("2_top_right_rotating_vortex", "右上2 · 强磁极旋转洛伦兹涡流"),
+                3: ("3_bottom_left_shadow_mask_remanence", "左下3 · 撤磁后铁磁荫罩永久剩磁色斑"),
+                4: ("4_bottom_right_ptc_degauss_coil", "右下4 · 内置PTC消磁线圈衰减振荡净化"),
+            }
+        elif float(dsp.get("mv_enabled", 0.0)) >= 0.5 or g_has("multiview_wall") or force_quad_if_none:
+            lab = "multiview"
+            c_map = {
+                0: ("0_quad_2x2", "2×2 四分屏对照"),
+                1: ("1_top_left_ch1_cam_src", "左上1 · CH1摄像机源"),
+                2: ("2_top_right_ch2_vtr_raw", "右上2 · CH2磁带直出"),
+                3: ("3_bottom_left_ch3_tbc_out", "左下3 · CH3时基校正输出"),
+                4: ("4_bottom_right_ch4_pgm_air", "右下4 · CH4主播出PGM"),
+            }
+        else:
+            lab = "single"
+            c_map = {
+                0: ("still", "单画面静帧"),
+                1: ("1_top_left", "左上1"),
+                2: ("2_top_right", "右上2"),
+                3: ("3_bottom_left", "左下3"),
+                4: ("4_bottom_right", "右下4"),
+            }
+
+        patch: dict[str, dict[str, float]] = {}
+        if lab == "tx_chain":
+            patch["rf"] = {"tx_chain_mode": 3.0}
+            if corner is not None:
+                patch["rf"]["tx_quad_corner"] = float(corner)
+            if border is not None:
+                patch["rf"]["tx_show_border"] = float(border)
+            if text is not None:
+                patch["rf"]["tx_show_text"] = float(text)
+        elif lab == "sat_ird":
+            patch["rf"] = {"sat_ird_mode": 3.0}
+            if corner is not None:
+                patch["rf"]["sat_quad_corner"] = float(corner)
+            if border is not None:
+                patch["rf"]["sat_show_border"] = float(border)
+            if text is not None:
+                patch["rf"]["sat_ird_osd"] = float(text)
+        elif lab == "transfer":
+            patch["player"] = {"transfer_station_mode": 4.0}
+            if corner is not None:
+                patch["player"]["transfer_quad_corner"] = float(corner)
+            if border is not None:
+                patch["player"]["transfer_show_border"] = float(border)
+            if text is not None:
+                patch["player"]["transfer_show_text"] = float(text)
+        elif lab == "lomo_opt":
+            patch["film"] = {"enabled": 1.0, "bloom_veil_mode": 5.0}
+            if corner is not None:
+                patch["film"]["quad_corner"] = float(corner)
+            if border is not None:
+                patch["film"]["show_border"] = float(border)
+            if text is not None:
+                patch["film"]["show_text"] = float(text)
+        elif lab == "lomo_darkroom":
+            patch["film"] = {"enabled": 1.0, "process_mode": 5.0}
+            if corner is not None:
+                patch["film"]["quad_corner"] = float(corner)
+            if border is not None:
+                patch["film"]["show_border"] = float(border)
+            if text is not None:
+                patch["film"]["show_text"] = float(text)
+        elif lab == "telecine":
+            if float(flm.get("enabled", 0.0)) >= 0.5 and float(flm.get("telecine_pulldown", 0.0)) >= 0.5:
+                patch["film"] = {"enabled": 1.0, "telecine_pulldown": 3.0}
+                if corner is not None:
+                    patch["film"]["quad_corner"] = float(corner)
+                if border is not None:
+                    patch["film"]["show_border"] = float(border)
+                if text is not None:
+                    patch["film"]["show_text"] = float(text)
+            else:
+                patch["camera"] = {"film_enabled": 1.0, "telecine_pulldown": 3.0}
+                if corner is not None:
+                    patch["camera"]["telecine_quad_corner"] = float(corner)
+                if border is not None:
+                    patch["camera"]["telecine_show_border"] = float(border)
+                if text is not None:
+                    patch["camera"]["telecine_show_text"] = float(text)
+        elif lab == "inversion":
+            patch["player"] = {"inv_lab_enabled": 1.0, "inv_lab_mode": 3.0}
+            if corner is not None:
+                patch["player"]["inv_quad_corner"] = float(corner)
+            if border is not None:
+                patch["player"]["inv_show_border"] = float(border)
+            if text is not None:
+                patch["player"]["inv_show_text"] = float(text)
+        elif lab == "archival":
+            patch["player"] = {"archival_enabled": 1.0, "archival_mode": 4.0}
+            if corner is not None:
+                patch["player"]["archival_quad_corner"] = float(corner)
+            if border is not None:
+                patch["player"]["archival_show_border"] = float(border)
+            if text is not None:
+                patch["player"]["archival_show_text"] = float(text)
+        elif lab == "env_field":
+            patch["connector"] = {"env_field_enabled": 1.0, "env_field_mode": 5.0}
+            if corner is not None:
+                patch["connector"]["env_quad_corner"] = float(corner)
+            if border is not None:
+                patch["connector"]["env_show_border"] = float(border)
+            if text is not None:
+                patch["connector"]["env_show_text"] = float(text)
+        elif lab == "streaming":
+            patch["codec"] = {"stream_enabled": 1.0, "stream_mode": 5.0}
+            if corner is not None:
+                patch["codec"]["stream_quad_corner"] = float(corner)
+            if border is not None:
+                patch["codec"]["stream_show_border"] = float(border)
+            if text is not None:
+                patch["codec"]["stream_show_text"] = float(text)
+        elif lab == "perception":
+            patch["display"] = {"percept_enabled": 1.0, "percept_mode": 4.0}
+            if corner is not None:
+                patch["display"]["percept_quad_corner"] = float(corner)
+            if border is not None:
+                patch["display"]["percept_show_border"] = float(border)
+            if text is not None:
+                patch["display"]["percept_show_text"] = float(text)
+        elif lab == "ecosystem":
+            patch["overlay"] = {"eco_enabled": 1.0, "eco_mode": 4.0}
+            if corner is not None:
+                patch["overlay"]["eco_quad_corner"] = float(corner)
+            if border is not None:
+                patch["overlay"]["eco_show_border"] = float(border)
+            if text is not None:
+                patch["overlay"]["eco_show_text"] = float(text)
+        elif lab == "crt_magnet":
+            patch["display"] = {"crt_magnet_mode": 5.0}
+            if corner is not None:
+                patch["display"]["crt_magnet_quad_corner"] = float(corner)
+            if border is not None:
+                patch["display"]["crt_magnet_show_border"] = float(border)
+            if text is not None:
+                patch["display"]["crt_magnet_show_text"] = float(text)
+        elif lab == "multiview":
+            patch["display"] = {"mv_enabled": 1.0, "mv_layout": 0.0}
+            if corner is not None:
+                patch["display"]["mv_quad_corner"] = float(corner)
+            if border is not None:
+                patch["display"]["mv_show_border"] = float(border)
+            if text is not None:
+                patch["display"]["mv_tally_umd"] = float(text)
+
+        merged = merge_values(p, patch) if patch else p
+        return merged, lab, c_map
+
+    def _render_frame_via_graph_with_params(self, idx: int, scale: float, params: dict) -> np.ndarray:
+        """Render frame `idx` through `self.graph` using `params` as `base_params`."""
+        from ..graph import GraphExecutor
+        from ..core.standards import get_standard
+        src = self.store.source_for((self.current.id, round(float(scale), 3)), self.current)
+        idx = max(0, min(idx, max(0, getattr(src, "frame_count", 1) - 1)))
+        ex = GraphExecutor(
+            self.graph,
+            get_standard(self.current.standard),
+            params,
+            src,
+            int(getattr(src, "width", 720)),
+            int(getattr(src, "height", 480)),
+            self.current.fps,
+            seed=self.current.seed,
+            scale=1.0,
+        )
+        run = ex.render_frame(idx)
+        if run.errors:
+            raise RuntimeError("; ".join(run.errors))
+        return np.clip(run.rgb, 0.0, 1.0).astype(np.float32)
+
+    def render_still_with_quad(
+        self,
+        t: float,
+        scale: float,
+        want: str = "sim",
+        corner: int | None = None,
+        border: int | None = None,
+        text: int | None = None,
+        use_graph: bool = False,
+    ) -> tuple[np.ndarray, str, str]:
+        """
+        Render a still frame at `(t, scale)` with optional `(corner, border, text)` overrides.
+        Returns `(rgb_frame, file_slug, label_zh)`.
+        """
+        r, src = self.renderer(True, scale)
+        idx = int(round(t * self.current.fps))
+        idx = max(0, min(idx, max(0, getattr(src, "frame_count", 1) - 1)))
+        if want == "source":
+            frame = np.clip(src.frame(idx), 0.0, 1.0).astype(np.float32)
+            return frame, "source", "原始素材"
+
+        base_params = self.current.resolved_params()
+        has_override = (corner is not None) or (border is not None) or (text is not None)
+        merged, lab, c_map = self._detect_quad_lab_and_override(
+            base_params,
+            corner=corner,
+            border=border,
+            text=text,
+            force_quad_if_none=bool(corner is not None and corner > 0),
+            use_graph=use_graph,
+        )
+        eff_corner = int(corner) if corner is not None else 0
+        if not has_override:
+            rf = base_params.get("rf") or {}
+            ply = base_params.get("player") or {}
+            cam = base_params.get("camera") or {}
+            dsp = base_params.get("display") or {}
+            flm = base_params.get("film") or {}
+            cn = base_params.get("connector") or {}
+            cod = base_params.get("codec") or {}
+            ov = base_params.get("overlay") or {}
+            if lab == "tx_chain":
+                eff_corner = int(round(float(rf.get("tx_quad_corner", 0.0))))
+            elif lab == "sat_ird":
+                eff_corner = int(round(float(rf.get("sat_quad_corner", 0.0))))
+            elif lab == "transfer":
+                eff_corner = int(round(float(ply.get("transfer_quad_corner", 0.0))))
+            elif lab in ("lomo_opt", "lomo_darkroom"):
+                eff_corner = int(round(float(flm.get("quad_corner", 0.0))))
+            elif lab == "telecine":
+                eff_corner = int(round(float(cam.get("telecine_quad_corner", flm.get("quad_corner", 0.0)))))
+            elif lab == "inversion":
+                eff_corner = int(round(float(ply.get("inv_quad_corner", 0.0))))
+            elif lab == "archival":
+                eff_corner = int(round(float(ply.get("archival_quad_corner", 0.0))))
+            elif lab == "env_field":
+                eff_corner = int(round(float(cn.get("env_quad_corner", 0.0))))
+            elif lab == "streaming":
+                eff_corner = int(round(float(cod.get("stream_quad_corner", 0.0))))
+            elif lab == "perception":
+                eff_corner = int(round(float(dsp.get("percept_quad_corner", 0.0))))
+            elif lab == "ecosystem":
+                eff_corner = int(round(float(ov.get("eco_quad_corner", 0.0))))
+            elif lab == "crt_magnet":
+                eff_corner = int(round(float(dsp.get("crt_magnet_quad_corner", 0.0))))
+            elif lab == "multiview":
+                eff_corner = int(round(float(dsp.get("mv_quad_corner", 0.0))))
+            if use_graph:
+                frame = self._render_frame_via_graph_with_params(idx, scale, base_params)
+            else:
+                frame = r.render_frame(idx)
+        else:
+            if use_graph:
+                frame = self._render_frame_via_graph_with_params(idx, scale, merged)
+            else:
+                r.invalidate(merged)
+                try:
+                    frame = r.render_frame(idx)
+                finally:
+                    r.invalidate(base_params)
+        slug, label_zh = c_map.get(eff_corner, ("still", "静帧"))
+        return np.clip(frame, 0.0, 1.0).astype(np.float32), slug, label_zh
+
+    def render_quad_burst(
+        self,
+        t: float,
+        scale: float,
+        fmt: str = "png",
+        quality: int = 95,
+        border: int = 0,
+        text: int = 0,
+        include_quad: bool = True,
+        use_graph: bool = False,
+    ) -> dict:
+        """
+        Batch-render the 4 individual corners (`1=左上`, `2=右上`, `3=左下`, `4=右下`) at full frame
+        resolution (`W×H`) with `show_text = text` (default `0`, pure textless) and `show_border = 0`,
+        plus the optional `0_quad_2x2` overview sheet (`corner=0`, `show_border=border`, `show_text=text`).
+        """
+        import base64
+        r, src = self.renderer(True, scale)
+        idx = int(round(t * self.current.fps))
+        idx = max(0, min(idx, max(0, getattr(src, "frame_count", 1) - 1)))
+        base_params = self.current.resolved_params()
+        ext = "jpg" if fmt.lower() in ("jpg", "jpeg") else "png"
+        ctype = "image/jpeg" if ext == "jpg" else "image/png"
+        t_slug = f"{t:.2f}".replace(".", "_") + "s"
+
+        corners_to_render = ([0, 1, 2, 3, 4] if include_quad else [1, 2, 3, 4])
+        shots = []
+        lab_name = "multiview"
+        try:
+            for c_idx in corners_to_render:
+                b_val = int(border) if c_idx == 0 else 0
+                merged, lab_name, c_map = self._detect_quad_lab_and_override(
+                    base_params,
+                    corner=c_idx,
+                    border=b_val,
+                    text=int(text),
+                    force_quad_if_none=True,
+                    use_graph=use_graph,
+                )
+                if use_graph:
+                    frame = self._render_frame_via_graph_with_params(idx, scale, merged)
+                else:
+                    r.invalidate(merged)
+                    frame = np.clip(r.render_frame(idx), 0.0, 1.0).astype(np.float32)
+                raw_bytes = _jpeg(frame, int(quality)) if ext == "jpg" else _png(frame)
+                slug, label_zh = c_map.get(c_idx, (f"c{c_idx}", f"角落{c_idx}"))
+                fname = f"atsim_{t_slug}_{slug}.{ext}"
+                shots.append({
+                    "corner": c_idx,
+                    "slug": slug,
+                    "filename": fname,
+                    "label": label_zh,
+                    "width": int(frame.shape[1]),
+                    "height": int(frame.shape[0]),
+                    "bytes": raw_bytes,
+                    "b64": base64.b64encode(raw_bytes).decode("ascii"),
+                })
+        finally:
+            if not use_graph:
+                r.invalidate(base_params)
+
+        return {
+            "ok": True,
+            "lab": lab_name,
+            "t": round(float(t), 3),
+            "scale": round(float(scale), 4),
+            "format": ext,
+            "content_type": ctype,
+            "show_border": int(border),
+            "show_text": int(text),
+            "shots": shots,
+        }
 
     def source_frame(self, t: float, scale: float, quality: int = 88) -> bytes:
         """
@@ -544,13 +1070,15 @@ class App:
                          "head_clog": 0.0, "debris": 0.0, "surface_damage": 0.0,
                          "chroma_loss": 0.0, "tracking_error": 0.0,
                          "tracking_noise_rows": 0.0, "tracking_noise_wave": 0.0,
-                         "tracking_noise_snow": 0.0},
+                         "tracking_noise_snow": 0.0,
+                         "transport_state": 0.0, "reel_progress": 0.50, "tension_ripple": 0.0,
+                         "belt_slip": 0.0, "roller_eccentricity": 0.0, "servo_hunt": 0.0},
                 "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "tbc_residual": 0.0,
                            "transport_jitter": 0.0, "head_wear": 0.0,
                            "frequency_response": 0.0, "line_delay": 0.0,
                            "output_gain": 0.0, "output_bias": 0.0,
                            "preemphasis": 0.0, "ringing": 0.0},
-                "display": {"enabled": 0.0},
+                "display": {"enabled": 0.0, "reshoot_enabled": 0.0, "reshoot_moire": 0.0, "reshoot_tilt_deg": 0.0, "reshoot_perspective": 0.0, "reshoot_ambient_glare": 0.0, "reshoot_wb_shift": 0.0},
                 "format": {"edge_boost": 0.0, "cross_color": 0.0, "cross_luma": 0.0,
                            "color_noise": 0.0, "chroma_vertical_averaging": 0.0,
                            "comb_depth": 0.0, "burst_phase_error": 0.0,
@@ -573,14 +1101,16 @@ class App:
     def graph_state(self) -> dict:
         from ..graph import CATALOG, TYPES, GRAPH_PRESETS
         issues = self.graph.validate()
+        base_p = self.current.resolved_params()
         return {
             "graph": self.graph.to_dict(),
-            "describe": self.graph.describe(),
-            "catalog": [n.to_dict() for n in CATALOG],
+            "describe": self.graph.describe(base_params=base_p),
+            "catalog": [n.to_dict() for n in CATALOG if n.kind != "node_group"],
             "types": TYPES,
             "presets": {k: {"label": v["label"], "note": v["note"]}
                         for k, v in GRAPH_PRESETS.items()},
             "issues": [i.to_dict() for i in issues],
+            "project": self.project_dict(),
         }
 
     def graph_set(self, payload: dict) -> dict:
@@ -606,12 +1136,44 @@ class App:
             # a graph preset may also declare the reception conditions it was
             # designed around; without this the RF loop loaded a clean signal and
             # showed none of the artefacts it exists to demonstrate
+            # Root-Cause Fix: Reset project params to clean baseline before applying a graph
+            # preset! Previously, `merge_values(self.current.params or {}, spec["params"])` left
+            # residual parameters from earlier presets (such as `display.percept_enabled=1,
+            # percept_mode=2` from `complete_media_ecology_end_to_end_suite` or VHS `tape` jitter
+            # from `family_archive_1992`) stuck in `self.current.params`, causing bottom-half
+            # sinusoidal operator-hunting ripples (`sin(rows * 0.25 + t * 6.0)`) on LOMO presets.
+            from ..core.params import merge_values
+            from .session import _preset_baseline
+            base_params = _preset_baseline()
+            has_tape_node = any(
+                n.kind in ("tape", "transport_servo", "vhs_gen", "vhs_dub_loop", "vhs_iterative_loop")
+                for n in self.graph.nodes.values()
+            )
+            if not has_tape_node:
+                base_params = merge_values(base_params, {
+                    "format": {
+                        "luma_bandwidth": 6.0, "chroma_bandwidth": 2.0,
+                        "chroma_vertical_averaging": 0.0, "cross_color": 0.0,
+                        "cross_luma": 0.0, "edge_boost": 0.0, "color_noise": 0.0,
+                        "burst_phase_error": 0.0, "filter_kind": 0.0,
+                    },
+                    "tape": {
+                        "tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0,
+                        "micro_jitter": 0.0, "vertical_instability": 0.0, "head_switching": 0.0,
+                        "dropout_rate": 0.0, "wear": 0.0, "crease_rate": 0.0, "noise_floor": 0.0,
+                        "tracking_error": 0.0, "row_timebase": 0.0, "stripe_moire": 0.0,
+                    },
+                    "player": {
+                        "tbc_enabled": 1.0, "tbc_strength": 1.0, "tbc_residual": 0.0,
+                        "transport_jitter": 0.0, "head_wear": 0.0, "frequency_response": 0.0,
+                        "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0,
+                    },
+                })
             if spec.get("params"):
-                from ..core.params import merge_values
-                self.current.params = merge_values(self.current.params or {},
-                                                   spec["params"])
-                self.store.drop(self.current.id)
-                self.store.save(self.current)
+                base_params = merge_values(base_params, spec["params"])
+            self.current.params = base_params
+            self.store.drop(self.current.id)
+            self.store.save(self.current)
         return self.graph_state()
 
     def graph_add(self, payload: dict) -> dict:
@@ -687,67 +1249,118 @@ class App:
         return {"ok": True}
 
     def graph_node_params(self, payload: dict) -> dict:
-        """Per-node parameter overrides and iteration count, so one device can be tuned on its own."""
+        """Per-node parameter overrides, label, and iteration count, synced cleanly with project state."""
         with self.lock:
             node = self.graph.nodes.get(str(payload.get("name", "")))
             if node is None:
                 return {"error": "no such node"}
             if "enabled" in payload:
                 node.enabled = bool(payload.get("enabled", node.enabled))
+                if node.kind == "display":
+                    self.current.params = merge_values(
+                        self.current.params or {},
+                        {"display": {"enabled": 1.0 if node.enabled else 0.0}},
+                    )
+            if "label" in payload and payload["label"] is not None:
+                node.label = str(payload["label"]).strip()
+                if node.kind == "node_group" and isinstance(node.subgraph, dict) and node.label:
+                    node.subgraph["label"] = node.label
             if "iterations" in payload and payload["iterations"] is not None:
                 node.iterations = max(1, min(25, int(round(float(payload["iterations"])))))
             if isinstance(payload.get("params"), dict):
+                clean_p = {}
                 for k, v in payload["params"].items():
-                    if isinstance(v, (int, float)):
+                    if isinstance(v, str):
+                        node.params[k] = v
+                        clean_p[k] = v
+                    elif isinstance(v, (int, float)):
                         node.params[k] = float(v)
+                        clean_p[k] = float(v)
+                layer = node.spec.params_layer
+                if layer and clean_p:
+                    same_layer_nodes = [
+                        n for n in self.graph.nodes.values()
+                        if n.spec.params_layer == layer
+                    ]
+                    if len(same_layer_nodes) <= 1:
+                        self.current.params = merge_values(
+                            self.current.params or {},
+                            {layer: clean_p},
+                        )
+                        self.store.drop(self.current.id)
+                        self.store.save(self.current)
             self._graph_execs.clear()
         return self.graph_state()
+
+    def graph_group_nodes(self, payload: dict) -> dict:
+        """Pack multiple selected nodes into a Blender-style `node_group` (e.g. 'VHS')."""
+        with self.lock:
+            raw_names = payload.get("nodes") or []
+            if not isinstance(raw_names, list):
+                return {"error": "nodes must be a list", **self.graph_state()}
+            label = str(payload.get("label") or "VHS").strip() or "VHS"
+            grp_name = payload.get("name")
+            try:
+                g_node = self.graph.group_nodes(
+                    [str(x) for x in raw_names],
+                    label=label,
+                    group_name=str(grp_name) if grp_name else None,
+                    base_params=self.current.resolved_params(),
+                )
+            except Exception as exc:
+                return {"error": str(exc), **self.graph_state()}
+            self._graph_execs.clear()
+            st = self.graph_state()
+            st["created_group"] = g_node.name
+            return st
+
+    def graph_ungroup_node(self, payload: dict) -> dict:
+        """Unpack a `node_group` back into individual nodes in the parent graph."""
+        with self.lock:
+            name = str(payload.get("name") or "")
+            try:
+                restored = self.graph.ungroup_node(name)
+            except Exception as exc:
+                return {"error": str(exc), **self.graph_state()}
+            self._graph_execs.clear()
+            st = self.graph_state()
+            st["restored_nodes"] = restored
+            return st
+
+    def graph_duplicate_node(self, payload: dict) -> dict:
+        """Duplicate a node or `node_group` (either in parallel or chained in series)."""
+        with self.lock:
+            src_name = str(payload.get("name") or "")
+            chain = bool(payload.get("chain", False))
+            new_label = payload.get("label")
+            try:
+                dup = self.graph.duplicate_node(
+                    src_name, chain_in_series=chain,
+                    new_label=str(new_label) if new_label else None,
+                )
+            except Exception as exc:
+                return {"error": str(exc), **self.graph_state()}
+            self._graph_execs.clear()
+            st = self.graph_state()
+            st["duplicated_node"] = dup.name
+            return st
+
+    def graph_subnode_params(self, payload: dict) -> dict:
+        """Update parameters, enabled state, iterations, or position of an internal node inside a `node_group`."""
+        with self.lock:
+            grp_name = str(payload.get("group") or "")
+            sub_name = str(payload.get("name") or "")
+            updated = self.graph.update_subnode(grp_name, sub_name, payload)
+            if updated is None:
+                return {"error": f"找不到节点组 {grp_name!r} 内的子节点 {sub_name!r}", **self.graph_state()}
+            self._graph_execs.clear()
+            return self.graph_state()
 
     def graph_chain_duplicate(self, payload: dict) -> dict:
-        """Append a duplicate of an effector node in series right after `name`."""
-        with self.lock:
-            src_name = str(payload.get("name", ""))
-            node = self.graph.nodes.get(src_name)
-            if node is None:
-                return {"error": f"no such node {src_name!r}", **self.graph_state()}
-            if not node.spec.inputs or not node.spec.outputs:
-                return {"error": f"节点 {src_name} 不支持串联复制", **self.graph_state()}
-            base = node.kind
-            n = 2
-            new_name = f"{base}{n}"
-            while new_name in self.graph.nodes:
-                n += 1
-                new_name = f"{base}{n}"
-            nx = float(node.position[0]) + (210.0 if node.px_position else 1.0)
-            ny = float(node.position[1]) + (24.0 if node.px_position else 0.0)
-            dup = self.graph.add(new_name, node.kind, params=dict(node.params or {}),
-                                 position=(nx, ny))
-            dup.px_position = bool(node.px_position)
-            dup.enabled = bool(node.enabled)
-            dup.iterations = int(getattr(node, "iterations", 1))
-
-            # Find compatible output->input port pair
-            out_ports = {p.name: p.type for p in node.spec.outputs}
-            in_ports = {p.name: p.type for p in dup.spec.inputs}
-            matched_out, matched_in = None, None
-            for op_name, op_type in out_ports.items():
-                for ip_name, ip_type in in_ports.items():
-                    if op_type == ip_type:
-                        matched_out, matched_in = op_name, ip_name
-                        break
-                if matched_out:
-                    break
-            if matched_out and matched_in:
-                # Re-route existing downstream edges that left from `src_name.matched_out`
-                downstream = [e for e in list(self.graph.edges)
-                              if e.src == src_name and e.src_port == matched_out]
-                for e in downstream:
-                    self.graph.edges.remove(e)
-                self.graph.connect(src_name, matched_out, new_name, matched_in)
-                for e in downstream:
-                    self.graph.connect(new_name, matched_out, e.dst, e.dst_port)
-            self._graph_execs.clear()
-        return self.graph_state()
+        """Append a duplicate of an effector node or `node_group` in series right after `name`."""
+        payload_copy = dict(payload or {})
+        payload_copy["chain"] = True
+        return self.graph_duplicate_node(payload_copy)
 
     def graph_frame(self, t: float, scale: float, quality: int,
                     clean: bool = False) -> bytes:
@@ -777,6 +1390,8 @@ class App:
         run = ex.render_frame(idx)
         if run.errors:
             raise RuntimeError("; ".join(run.errors))
+        if getattr(ex, "osd_report", None):
+            self.osd_report = dict(ex.osd_report)
         return _jpeg(run.rgb, quality) if quality < 100 else _png(run.rgb)
 
     def graph_perf(self) -> dict:
@@ -785,6 +1400,112 @@ class App:
         for key, ex in self._graph_execs.items():
             out[str(key)] = ex.describe()
         return out
+
+    def scopes(self, t: float = 0.0, scale: float = 0.5,
+               line_y: float | int | None = None,
+               engine: str = "chain",
+               node_a: str | None = None,
+               node_b: str | None = None) -> dict:
+        """
+        Compute Broadcast Waveform Monitor (IRE Scope), Chroma Vectorscope,
+        and Node-Level / Chain A/B Difference Heatmap & Power Spectrum.
+        """
+        from ..codecs.scopes import compute_all_scopes
+        from ..core.standards import get_standard
+        from ..graph import GraphExecutor
+
+        std = get_standard(self.current.standard)
+        params = self.current.resolved_params()
+        idx = int(round(t * self.current.fps))
+
+        available_nodes: list[dict] = [{"id": "source", "label": "原始素材 (Source)"}]
+        label_a = "最终输出 (Output)"
+        label_b = "原始素材 (Source)"
+
+        if engine == "graph":
+            with self.lock:
+                key = (self.current.id, "graph", round(float(scale), 3),
+                       self.current.seed, self.current.standard, False)
+                ex = self._graph_execs.get(key)
+                src = self.store.source_for((self.current.id, round(float(scale), 3)),
+                                            self.current)
+                if ex is None:
+                    ex = GraphExecutor(self.graph, std, params, src,
+                                       int(getattr(src, "width", 720)),
+                                       int(getattr(src, "height", 480)), self.current.fps,
+                                       seed=self.current.seed, scale=1.0)
+                    self._graph_execs[key] = ex
+                else:
+                    ex.graph = self.graph
+                    ex.sync_params(params)
+            idx = max(0, min(idx, max(0, getattr(src, "frame_count", 1) - 1)))
+            run = ex.render_frame(idx)
+            src_rgb = np.clip(src.frame(idx), 0.0, 1.0).astype(np.float32)
+            for n_name in ex.order:
+                nd = self.graph.nodes.get(n_name)
+                n_lbl = (nd.label or nd.spec.label) if nd else n_name
+                available_nodes.append({"id": n_name, "label": f"{n_lbl} ({n_name})"})
+            if node_a and node_a in run.node_frames:
+                sim_rgb = np.clip(run.node_frames[node_a], 0.0, 1.0).astype(np.float32)
+                label_a = f"节点 {node_a}"
+            elif node_a == "source":
+                sim_rgb = src_rgb
+                label_a = "原始素材 (Source)"
+            else:
+                sim_rgb = np.clip(run.rgb, 0.0, 1.0).astype(np.float32)
+
+            if node_b and node_b in run.node_frames:
+                ref_rgb = np.clip(run.node_frames[node_b], 0.0, 1.0).astype(np.float32)
+                label_b = f"节点 {node_b}"
+            else:
+                ref_rgb = src_rgb
+        else:
+            r, src = self.renderer(True, scale)
+            idx = max(0, min(idx, max(0, getattr(src, "frame_count", 1) - 1)))
+            out_rgb = np.clip(r.render_frame(idx), 0.0, 1.0).astype(np.float32)
+            src_rgb = np.clip(src.frame(idx), 0.0, 1.0).astype(np.float32)
+            from ..render.renderer import STAGE_LABELS
+            for st_name in STAGE_ORDER:
+                available_nodes.append({"id": st_name, "label": STAGE_LABELS.get(st_name, st_name)})
+
+            def _pick_stage(name_or_empty: str | None, default_arr: np.ndarray, default_lbl: str):
+                if not name_or_empty:
+                    return default_arr, default_lbl
+                if name_or_empty == "source":
+                    return src_rgb, "原始素材 (Source)"
+                aux = (r._cache_buf.get(name_or_empty) or {}).get(idx)
+                if aux is not None:
+                    comp_c, meta_c = aux
+                    if comp_c is not None and name_or_empty in ("format", "connector", "tape"):
+                        from ..core.signal import SignalFrame, demod_chroma, split_composite
+                        y_b, c_b = split_composite(comp_c, std, comb_depth=0.0, chroma_bandwidth_hz=0.85e6)
+                        i_b, q_b = demod_chroma(c_b / 0.63, std, i_bw_hz=1.3e6, q_bw_hz=0.6e6)
+                        return np.clip(SignalFrame(y_b, i_b, q_b).to_rgb(), 0.0, 1.0), STAGE_LABELS.get(name_or_empty, name_or_empty)
+                    sig_c = (meta_c or {}).get("signal")
+                    if sig_c is not None and hasattr(sig_c, "to_rgb"):
+                        return np.clip(sig_c.to_rgb(), 0.0, 1.0), STAGE_LABELS.get(name_or_empty, name_or_empty)
+                cached = (r._cache.get(name_or_empty) or {}).get(idx)
+                if cached is not None:
+                    return np.clip(np.asarray(cached, dtype=np.float32), 0.0, 1.0), STAGE_LABELS.get(name_or_empty, name_or_empty)
+                return default_arr, default_lbl
+
+            sim_rgb, label_a = _pick_stage(node_a, out_rgb, "最终输出 (Output)")
+            ref_rgb, label_b = _pick_stage(node_b, src_rgb, "原始素材 (Source)")
+
+        res = compute_all_scopes(
+            sim_rgb=sim_rgb,
+            ref_rgb=ref_rgb,
+            std=std,
+            params=params,
+            line_y=line_y,
+            label_a=label_a,
+            label_b=label_b,
+        )
+        res["t"] = round(float(t), 4)
+        res["frame_index"] = int(idx)
+        res["engine"] = engine
+        res["available_nodes"] = available_nodes
+        return res
 
     def timeline(self) -> dict:
         r, _ = self.renderer(True, 0.5)
@@ -933,7 +1654,11 @@ class App:
 
     def _run_render(self, job_id: str, scale: float, crf: int, keep_audio: bool,
                     preset: str = "medium") -> None:
+        import gc
         job = self.jobs[job_id]
+        sim_wav_path = None
+        r = None
+        src = None
         try:
             project = Project.from_dict(self.current.to_dict())
             store = SessionStore(self.store.data_dir)
@@ -945,53 +1670,48 @@ class App:
             src = store.source_for((project.id, scale), project)
             width = int(getattr(src, "width", 720))
             height = int(getattr(src, "height", 480))
-            r = Renderer(src, width, height, project.fps, project.resolved_params(),
+            resolved_p = project.resolved_params()
+            # Enable streaming=True for batch export so intermediate stages do not
+            # accumulate unbounded float32 frame caches in RAM/pagefile ([WinError 1455]).
+            r = Renderer(src, width, height, project.fps, resolved_p,
                          seed=project.seed, std_key=project.standard,
-                         preview=(scale < 1.0), scale=1.0)
-            env, kf = project.environment_from(), project.keyframe_set()
-            if kf is not None or env is not None:
-                r.set_time_varying(kf, env)
+                         preview=(scale < 1.0), scale=1.0,
+                         streaming=True, max_cache_frames=2)
+            r.set_time_varying(project.keyframe_tracks(), project.environment_state())
             total = max(1, int(getattr(src, "frame_count", 1)))
             out_path = self.store.renders / f"{job_id}.mp4"
             audio_src = None
-            sim_wav_path = None
-            resolved_p = project.resolved_params()
-            audio_cfg = resolved_p.get("audio", {})
-            audio_enabled = float(audio_cfg.get("enabled", 1.0)) > 0.5
             if keep_audio:
-                try:
-                    from ..codecs.audio import AudioSimulator, AudioSpec
-                    from ..io.ffmpeg import wav_encode
-                    spec_a = AudioSpec.from_params(audio_cfg)
-                    dur_s = max(1.0 / max(1.0, project.fps), total / max(1e-6, project.fps))
-                    sr = 44100
-                    # Always use the exact same _source_audio_window helper as /api/audio preview
-                    # so previewed sound, exported WAV, and exported MP4 audio track are 100% identical
-                    # and never silent even when source has no audio track or synth_type == 0.
-                    pcm_in, _ = self._source_audio_window(0.0, dur_s, sr, spec_a, project=project)
-                    if pcm_in is not None and len(pcm_in) > 0:
-                        if audio_enabled:
-                            if r.chain is None:
-                                r._build_chain()
-                            t_stage = (r.stage or {}).get("tape")
-                            if t_stage is not None and hasattr(t_stage, "_ensure"):
-                                t_stage._ensure(total + 4)
-                            sim_a = AudioSimulator(resolved_p, seed=project.seed,
-                                                   fps=project.fps, sample_rate=sr)
-                            arun = sim_a.process(pcm_in, start_s=0.0,
-                                                 tape_stage=t_stage,
-                                                 tape_plan=getattr(t_stage, "plan", None))
-                            pcm_out = arun.pcm
-                        else:
-                            pcm_out = pcm_in
+                aud_cfg = resolved_p.get("audio", {}) or {}
+                aud_enabled = float(aud_cfg.get("enabled", 1.0)) > 0.5
+                if aud_enabled:
+                    try:
+                        from ..audio.engine import AudioSimulator, encode_wav_pcm16, extract_or_synth_audio
+                        clip_p = store.clip_path(project.source) if project.source else None
+                        dur_s = float(total) / max(1.0, float(project.fps))
+                        sr = 44100
+                        pcm_in = extract_or_synth_audio(
+                            clip_p, start_s=0.0, duration_s=dur_s, sr=sr,
+                            synth_type=int(round(float(aud_cfg.get("synth_type", 0.0)))),
+                            seed=project.seed)
+                        asim = AudioSimulator(
+                            std_key=project.standard, fps=project.fps,
+                            params=resolved_p, seed=project.seed, sr=sr)
+                        arun = asim.process(pcm_in, start_s=0.0)
                         sim_wav_path = self.store.renders / f"{job_id}_audio.wav"
-                        sim_wav_path.write_bytes(wav_encode(pcm_out, sample_rate=sr))
+                        sim_wav_path.write_bytes(encode_wav_pcm16(arun.pcm, sr))
                         audio_src = str(sim_wav_path)
-                except Exception:
-                    if project.source:
-                        clip = self.store.clip_path(project.source)
-                        if clip.exists():
-                            audio_src = str(clip)
+                        del pcm_in, arun
+                        gc.collect()
+                    except Exception:
+                        if project.source:
+                            clip = store.clip_path(project.source)
+                            if clip.exists():
+                                audio_src = str(clip)
+                elif project.source:
+                    clip = store.clip_path(project.source)
+                    if clip.exists():
+                        audio_src = str(clip)
 
             job.update(state="running", message="渲染中", total=total)
             with VideoWriter(out_path, width, height, project.fps, crf=crf,
@@ -1004,19 +1724,34 @@ class App:
                         job["message"] = f"渲染中 {i + 1}/{total}"
                         if job.get("cancel"):
                             break
+                    if i % 25 == 24:
+                        gc.collect()
             job.update(state="done", progress=1.0, message="完成", path=str(out_path))
         except Exception as exc:
             job.update(state="error", message=f"{type(exc).__name__}: {exc}",
                        trace=traceback.format_exc()[-2000:])
-
-
+        finally:
+            if r is not None:
+                r._cache.clear()
+                r._cache_buf.clear()
+            if src is not None and hasattr(src, "clear"):
+                try:
+                    src.clear()
+                except Exception:
+                    pass
+            if sim_wav_path is not None and sim_wav_path.exists():
+                try:
+                    sim_wav_path.unlink()
+                except Exception:
+                    pass
+            gc.collect()
 # ---------------------------------------------------------------------------
 def make_handler(app: App):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "analog-tape-sim"
+        server_version = "virtual-media-lab"
 
         def log_message(self, fmt, *args):  # quieter console
-            if "/api/frame" in (self.path or ""):
+            if "/api/frame" in (self.path or "") or "/api/scopes" in (self.path or ""):
                 return
             print(f"  {self.address_string()} {fmt % args}")
 
@@ -1078,6 +1813,16 @@ def make_handler(app: App):
                     return self._send(200, body, "application/json; charset=utf-8", {
                         "Content-Disposition":
                             'attachment; filename="atsim-config-%s.json"' % stamp})
+                if path == "/api/scopes":
+                    t = float((q.get("t") or ["0"])[0])
+                    scale = app.resolve_scale((q.get("scale") or ["0.5"])[0], default=0.5)
+                    raw_line = (q.get("line") or [None])[0]
+                    line_val = float(raw_line) if raw_line is not None and raw_line != "" else None
+                    engine = str((q.get("engine") or ["chain"])[0])
+                    node_a = str((q.get("node_a") or [""])[0]).strip() or None
+                    node_b = str((q.get("node_b") or ["source"])[0]).strip() or "source"
+                    return self._json(app.scopes(t=t, scale=scale, line_y=line_val,
+                                                 engine=engine, node_a=node_a, node_b=node_b))
                 if path == "/api/timeline":
                     return self._json(app.timeline())
                 if path == "/api/audio":
@@ -1113,31 +1858,94 @@ def make_handler(app: App):
                     return self._send(200, data, ctype, {
                         "X-Render-Ms": f"{(time.time() - t0) * 1000:.0f}"})
                 if path == "/api/still":
-                    # Export one frame as a full-resolution still.  The still
-                    # counterpart of /api/render: same frame, no video container,
-                    # so a single result can be filed or compared without a media
-                    # player.  `mode=source` exports the untouched input frame,
-                    # which is what makes before/after pairs possible.
+                    # Export one frame as a full-resolution still, optionally overriding
+                    # `corner` (0=2x2 quad, 1..4=individual corner), `border` (0..2), and `text` (0..2).
                     t = float((q.get("t") or ["0"])[0])
                     want = (q.get("mode") or ["sim"])[0]
                     fmt = (q.get("format") or ["png"])[0].lower()
                     scale = app.resolve_scale((q.get("scale") or ["1.0"])[0], default=1.0)
-                    r, src = app.renderer(True, scale)
-                    idx = int(round(t * app.current.fps))
-                    idx = max(0, min(idx, max(0, getattr(src, "frame_count", 1) - 1)))
-                    if want == "source":
-                        frame = np.clip(src.frame(idx), 0.0, 1.0).astype(np.float32)
-                    else:
-                        frame = r.render_frame(idx)
+                    corner_q = int(float(q["corner"][0])) if "corner" in q and q["corner"] else None
+                    border_q = int(float(q["border"][0])) if "border" in q and q["border"] else None
+                    text_q = int(float(q["text"][0])) if "text" in q and q["text"] else None
+                    use_graph = (q.get("engine") or ["chain"])[0] == "graph"
+                    frame, slug, _lbl = app.render_still_with_quad(
+                        t, scale, want=want, corner=corner_q, border=border_q, text=text_q,
+                        use_graph=use_graph,
+                    )
                     if fmt in ("jpg", "jpeg"):
                         data = _jpeg(frame, int((q.get("q") or ["92"])[0]))
                         ctype, ext = "image/jpeg", "jpg"
                     else:
                         data = _png(frame)
                         ctype, ext = "image/png", "png"
+                    t_slug = f"{t:.2f}".replace(".", "_") + "s"
                     return self._send(200, data, ctype, {
                         "Content-Disposition":
-                            f'attachment; filename="atsim_{want}.{ext}"'})
+                            f'attachment; filename="atsim_{t_slug}_{slug}.{ext}"'})
+                if path == "/api/still_quad_burst":
+                    # Batch 4-Corner Burst Still Export: renders all 4 corners (1..4) at full frame
+                    # resolution with no text (`text=0`) and no border (`border=0`), plus optional 2x2 quad.
+                    import zipfile
+                    t = float((q.get("t") or ["0"])[0])
+                    fmt = (q.get("format") or ["png"])[0].lower()
+                    qual = int((q.get("q") or ["95"])[0])
+                    scale = app.resolve_scale((q.get("scale") or ["1.0"])[0], default=1.0)
+                    border_q = int(float((q.get("border") or ["0"])[0]))
+                    text_q = int(float((q.get("text") or ["0"])[0]))
+                    out_mode = (q.get("mode") or ["json"])[0].lower()
+                    inc_quad = (q.get("include_quad") or ["1"])[0] not in ("0", "false", "no")
+                    use_graph = (q.get("engine") or ["chain"])[0] == "graph"
+                    burst = app.render_quad_burst(
+                        t, scale, fmt=fmt, quality=qual,
+                        border=border_q, text=text_q, include_quad=inc_quad,
+                        use_graph=use_graph,
+                    )
+                    if out_mode == "zip":
+                        zbuf = io.BytesIO()
+                        manifest = {
+                            "kind": "atsim.quad_burst",
+                            "lab": burst["lab"],
+                            "t": burst["t"],
+                            "scale": burst["scale"],
+                            "format": burst["format"],
+                            "show_border": burst["show_border"],
+                            "show_text": burst["show_text"],
+                            "files": [],
+                        }
+                        with zipfile.ZipFile(zbuf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                            for s in burst["shots"]:
+                                zf.writestr(s["filename"], s["bytes"])
+                                manifest["files"].append({
+                                    "corner": s["corner"],
+                                    "filename": s["filename"],
+                                    "label": s["label"],
+                                    "width": s["width"],
+                                    "height": s["height"],
+                                })
+                            zf.writestr(
+                                "burst_manifest.json",
+                                json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                            )
+                        t_slug = f"{t:.2f}".replace(".", "_") + "s"
+                        return self._send(200, zbuf.getvalue(), "application/zip", {
+                            "Content-Disposition":
+                                f'attachment; filename="atsim_quad_burst_{t_slug}.zip"'})
+                    # JSON mode for browser 4-file burst download
+                    json_shots = [
+                        {k: v for k, v in s.items() if k != "bytes"}
+                        for s in burst["shots"]
+                    ]
+                    return self._json({
+                        "ok": True,
+                        "lab": burst["lab"],
+                        "t": burst["t"],
+                        "scale": burst["scale"],
+                        "format": burst["format"],
+                        "content_type": burst["content_type"],
+                        "show_border": burst["show_border"],
+                        "show_text": burst["show_text"],
+                        "shots": json_shots,
+                    })
                 if path == "/api/graph":
                     return self._json(app.graph_state())
                 if path == "/api/graph/perf":
@@ -1248,6 +2056,36 @@ def make_handler(app: App):
                     app.set_project({"source": str(dest)})
                     return self._json({"ok": True, "info": info.to_dict(),
                                        "project": app.project_dict()})
+                if path == "/api/upload_overlay":
+                    n = int(self.headers.get("Content-Length") or 0)
+                    raw_name = self.headers.get("X-Filename") or "overlay.png"
+                    from urllib.parse import unquote
+                    name = "overlay_" + Path(unquote(raw_name)).name
+                    dest = app.store.uploads / name
+                    with open(dest, "wb") as fh:
+                        remaining = n
+                        while remaining > 0:
+                            chunk = self.rfile.read(min(1 << 20, remaining))
+                            if not chunk:
+                                break
+                            fh.write(chunk)
+                            remaining -= len(chunk)
+                    cur_cn = dict((app.current.params or {}).get("connector") or {})
+                    cur_mode = float(cur_cn.get("switcher_mode", 0.0))
+                    patch_cn = {
+                        "switcher_overlay_path": str(dest),
+                        "switcher_b_source": 3.0,
+                    }
+                    if cur_mode < 0.5:
+                        patch_cn["switcher_mode"] = 5.0
+                    proj_out = app.set_project({"params": {"connector": patch_cn}})
+                    return self._json({"ok": True, "overlay_path": str(dest), "project": proj_out})
+                if path == "/api/clear_overlay":
+                    proj_out = app.set_project({"params": {"connector": {
+                        "switcher_overlay_path": "",
+                        "switcher_b_source": 0.0,
+                    }}})
+                    return self._json({"ok": True, "project": proj_out})
                 if path == "/api/graph":
                     return self._json(app.graph_set(self._body()))
                 if path == "/api/graph/preset":
@@ -1264,6 +2102,14 @@ def make_handler(app: App):
                     return self._json(app.graph_move(self._body()))
                 if path == "/api/graph/node":
                     return self._json(app.graph_node_params(self._body()))
+                if path == "/api/graph/group":
+                    return self._json(app.graph_group_nodes(self._body()))
+                if path == "/api/graph/ungroup":
+                    return self._json(app.graph_ungroup_node(self._body()))
+                if path == "/api/graph/duplicate":
+                    return self._json(app.graph_duplicate_node(self._body()))
+                if path == "/api/graph/group/node":
+                    return self._json(app.graph_subnode_params(self._body()))
                 if path == "/api/graph/chain_duplicate":
                     return self._json(app.graph_chain_duplicate(self._body()))
                 if path == "/api/import":
@@ -1323,7 +2169,7 @@ def serve(host: str = "127.0.0.1", port: int = 8931, data_dir: str | Path = "run
     httpd = ThreadingHTTPServer((host, port), make_handler(app))
     url = f"http://{host}:{port}/"
     print("=" * 70)
-    print("  analog-tape-sim  --  模拟磁带信号仿真工具")
+    print("  Virtual Media Lab  --  虚拟媒介实验室")
     print("=" * 70)
     print(f"  WebUI:  {url}")
     print(f"  数据目录: {Path(data_dir).resolve()}")
@@ -1352,7 +2198,7 @@ def serve(host: str = "127.0.0.1", port: int = 8931, data_dir: str | Path = "run
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="atsim-web", description="analog tape simulator WebUI")
+    ap = argparse.ArgumentParser(prog="atsim-web", description="Virtual Media Lab (虚拟媒介实验室) WebUI")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8931)
     ap.add_argument("--data-dir", default="runs")

@@ -366,7 +366,7 @@ def source_glow(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     of fifteen.
 
     **Distinct from `halation`, which tints its glow with a fixed cool colour, and from `lens_flare`, whose tint is
-    the coating stack's.** Neither follows the source, and neither can be made to: a fixed tint is a constant and the
+    the coating's.** Neither follows the source, and neither can be made to: a fixed tint is a constant and the
     source's colour is not.
 
     The one detail that decides whether it works: the highlight map is blurred **per channel** so each keeps its own
@@ -381,20 +381,6 @@ def source_glow(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     hot = np.clip((lum - 0.55) / 0.35, 0.0, 1.0)
     if float(hot.max()) < 1e-6:
         return rgb
-    # **The halo is the blurred highlight, added directly.**  An earlier version divided the per-channel blur by a
-    # grey coverage term and multiplied by it again, which cancels -- it recovered the source's colour for a small
-    # source and then handed back the blurred highlight itself.  Worse, for a *broad* bright region the coverage is
-    # large, so the ratio reads modest everywhere and the clip stops binding: the term was being reduced exactly
-    # where the source is biggest, which is backwards for a glow.
-    #
-    # Adding the per-channel blur is both simpler and right: the colour follows the source because the blur is per
-    # channel, the strength follows the source's brightness in proportion, and the falloff with distance comes from
-    # the blur's own radius.  Measured before the change, the halo reached 0.0007 where the reference needs 0.2.
-    # **The coefficient is calibrated against the reference's own profile, not chosen.**  A small bright
-    # source spread over a wide radius is thin, so a value picked against a test square is roughly two orders
-    # of magnitude too small: at 2.2 the halo moved the measured B-R by 0.01 where the reference needs 0.17 to
-    # 0.51.  The blur radius also has to be in the picture's own terms -- a fixed pixel radius covers a far
-    # smaller fraction of a 3840-px frame than of a 320-px one -- so it scales with the frame's height.
     h = float(rgb.shape[0])
     radius = max(4.0, 0.012 * h) * (0.6 + 0.8 * a)
     halo = np.stack([lowpass(rgb[..., c] * hot, radius) for c in range(3)], axis=-1)
@@ -423,15 +409,6 @@ def longitudinal_ca(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
 def chromatic_aberration(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     """
     Lateral chromatic aberration: the wavelengths focus at different magnifications, **about the optical axis**.
-
-    **A displacement, not a difference in blur.**  The version this replaced gave each channel its own lowpass and
-    shifted nothing, so measured, R/G/B softened almost equally -- 0.1107/0.1111/0.1057 falling to
-    0.0826/0.0823/0.0818 -- and no edge acquired a coloured fringe.  Blurring the channels by different amounts gives
-    a coloured *haze*; a lens gives a coloured *fringe*, because the red and blue images arrive at slightly
-    different sizes.
-
-    The displacement is `k * a * r` **about the optical axis**, so it vanishes where the axis is and grows outward.
-    That is why a centred highlight shows nothing, and why decentring the axis gives it a radius to work with.
     """
     if spec.chroma_aberration < 1e-4:
         return rgb
@@ -439,12 +416,9 @@ def chromatic_aberration(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     h, w = rgb.shape[:2]
     dx, dy = spec.axis_shift()
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    # the axis in pixel coordinates
     cx = (w - 1) * 0.5 * (1.0 + dx)
     cy = (h - 1) * 0.5 * (1.0 + dy)
     out = rgb
-    # 0.012 puts a feature at the frame's edge about 2.7 px out at a = 1.0, which is what a cheap consumer zoom
-    # shows at the corners.
     for ch, scale in ((0, 1.0 + 0.012 * a), (2, 1.0 - 0.012 * a)):
         sx = np.clip(cx + (xx - cx) / scale, 0, w - 1)
         sy = np.clip(cy + (yy - cy) / scale, 0, h - 1)
@@ -459,10 +433,9 @@ def chromatic_aberration(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
         bot = plane[y1, x0] * (1.0 - fx[..., 0]) + plane[y1, x1] * fx[..., 0]
         out = out.copy()
         out[..., ch] = top * (1.0 - fy[..., 0]) + bot * fy[..., 0]
-    # and the per-channel softening, because a real lens does both.  After the shift, so the fringe survives it.
-    r = lowpass(out[..., 0], 1.0 + 1.6 * a)
-    b = lowpass(out[..., 2], 1.0 + 1.9 * a)
-    g = lowpass(out[..., 1], 1.0 + 0.35 * a)
+    r = lowpass(out[..., 0], 2.2 * a)
+    b = lowpass(out[..., 2], 2.6 * a)
+    g = lowpass(out[..., 1], 0.35 * a)
     return np.stack([r, g, b], axis=-1).astype(np.float32)
 
 
@@ -473,22 +446,6 @@ def optical_wt_zoom(rgb: np.ndarray, zoom_pos: float, max_zoom: float = 4.0,
                     resolve_detail: float = 0.75) -> tuple[np.ndarray, float]:
     """
     Physical W-T (Wide -> Telephoto) optical zoom magnification and halo-to-source resolution.
-
-    On a camcorder zoom lens (such as the SONY DCR-TRV310E f=3.6-72mm f/1.4-2.9 lens), pushing the
-    rocker from W (`zoom_pos=0`) toward T (`zoom_pos=1`) changes the focal length exponentially:
-        M(z) = max_zoom ** z
-
-    Crucially, optical magnification happens *in light* BEFORE the sensor's optical low-pass filter
-    (OLPF), photosite well saturation, and interline CCD vertical smear. Therefore:
-      * At Wide (`W`, z=0): closely spaced sub-emitters (individual LED beads on a fan ring, twin
-        fluorescent tubes, or light passing through a perforated case mesh) fall within the angular
-        blur circle of the wide-angle lens + OLPF + halation, merging into a single diffuse glowing
-        halo (`原本的光晕`).
-      * As the lens zooms toward Telephoto (`T`, z->1): the angular subtense of the light source
-        expands across many more CCD photosites while the lens resolves finer angular frequencies.
-        The merged wide-angle halo separates into concrete, discrete light source structures
-        (`更具体的光源细节`): individual emitter beads, filament/tube cores, perforated grille/mesh
-        apertures, and sharper internal luminance boundaries.
     """
     z = float(np.clip(zoom_pos, 0.0, 1.0))
     m_max = float(np.clip(max_zoom, 1.0, 20.0))
@@ -502,7 +459,6 @@ def optical_wt_zoom(rgb: np.ndarray, zoom_pos: float, max_zoom: float = 4.0,
     sc = min(h, w) / 540.0
     src = np.asarray(rgb, np.float32)
 
-    # 1. Optical resampling (bilinear/bicubic-like pre-deconvolved field around optical center)
     if mag > 1.0005:
         cx = float(np.clip(center_x, 0.05, 0.95)) * (w - 1.0)
         cy = float(np.clip(center_y, 0.05, 0.95)) * (h - 1.0)
@@ -513,7 +469,6 @@ def optical_wt_zoom(rgb: np.ndarray, zoom_pos: float, max_zoom: float = 4.0,
     else:
         out = src.copy()
 
-    # 2. Optical Halo-to-Resolved-Source Physics (`放大让原本的光晕变成更具体的光源细节`)
     res_amt = float(np.clip(resolve_detail, 0.0, 1.5))
     if res_amt > 1e-4:
         lum = np.clip(out @ LUMA, 0.0, 2.0)
@@ -524,23 +479,16 @@ def optical_wt_zoom(rgb: np.ndarray, zoom_pos: float, max_zoom: float = 4.0,
         hot_zone = np.clip((rel_peak - 0.24) / 0.45, 0.0, 1.0) * np.clip((lum - bg_lum * 0.55) / 0.25, 0.0, 1.0)
 
         if float(hot_zone.max()) > 1e-3:
-            # At Wide (z -> 0): sub-elements within a light source coalesce into a smooth optical halo.
-            # At Telephoto (z -> 1): optical magnification resolves the internal sub-emitters,
-            # separating bright emitter beads/tubes from dark inter-emitter gaps / perforated mesh.
             wide_blend = float(np.clip((1.0 - z * 1.35), 0.0, 1.0)) * res_amt
             tele_resolve = float(np.clip((z - 0.08) / 0.92, 0.0, 1.0)) * res_amt
 
             if wide_blend > 1e-3:
-                # Wide-angle unresolved halo coalescence
                 sig_w = max(1.2, 4.2 * sc * wide_blend)
                 halo_pool = np.stack([gaussian_filter(out[..., c], sigma=sig_w) for c in range(3)], axis=-1)
                 w_coalesce = np.clip(hot_zone * 0.48 * wide_blend, 0.0, 0.65)[..., None]
                 out = out * (1.0 - w_coalesce) + np.maximum(out * 0.88, halo_pool * 1.08) * w_coalesce
 
             if tele_resolve > 1e-3:
-                # Telephoto source structure resolution:
-                # Recover fine spatial harmonics (multi-band unsharp deconvolution + local valley carving)
-                # inside bright emitters so diffuse halos resolve into discrete LEDs, tubes, and mesh grids.
                 sig_fine = max(0.65, 1.35 * sc)
                 sig_mid  = max(1.40, 3.10 * sc)
                 blur_fine = np.stack([gaussian_filter(out[..., c], sigma=sig_fine) for c in range(3)], axis=-1)
@@ -548,34 +496,24 @@ def optical_wt_zoom(rgb: np.ndarray, zoom_pos: float, max_zoom: float = 4.0,
                 detail_fine = out - blur_fine
                 detail_mid  = blur_fine - blur_mid
 
-                # Local envelope normalization inside emitter clusters:
-                # Carve inter-emitter valleys (dark mesh/grille gaps between LED beads or twin tubes)
-                # while keeping individual sub-emitter cores crisp and well-defined.
                 lum_fine = blur_fine @ LUMA
                 lum_mid  = blur_mid @ LUMA
                 local_contrast = (lum - lum_mid) / np.maximum(lum_mid, 0.08)
                 valley_carve = np.clip(-local_contrast * 0.55 * tele_resolve, 0.0, 0.42) * hot_zone
                 ridge_boost  = np.clip(local_contrast * 0.62 * tele_resolve, 0.0, 0.48) * hot_zone
 
-                # Fine sub-emitter lattice & filament micro-structure that becomes optically resolvable
-                # when M(z) magnifies the emitter beyond the Nyquist limit of the 1/4" CCD + OLPF
                 yy_p, xx_p = np.mgrid[0:h, 0:w].astype(np.float32)
                 cx_f = float(np.clip(center_x, 0.05, 0.95)) * (w - 1.0)
                 cy_f = float(np.clip(center_y, 0.05, 0.95)) * (h - 1.0)
                 u_s = cx_f + (xx_p - cx_f) / max(mag, 1.0)
                 v_s = cy_f + (yy_p - cy_f) / max(mag, 1.0)
 
-                # Perforated fan-mesh / multi-bead emitter modulation in scene coordinates:
-                # Period is ~2.2 source pixels (nyquist-blurred at 1x W, clearly resolved at 2x-4x T)
                 pitch = max(1.8, 2.35 * sc)
                 kx1 = np.cos(2.0 * np.pi * u_s / pitch)
                 ky1 = np.cos(2.0 * np.pi * (u_s * 0.5 + v_s * 0.866) / pitch)
                 ky2 = np.cos(2.0 * np.pi * (-u_s * 0.5 + v_s * 0.866) / pitch)
                 hex_pore = np.clip((kx1 + ky1 + ky2) / 3.0, -1.0, 1.0)
-                # Visibility of sub-emitter pores rises smoothly with magnification above 1.3x
                 pore_vis = float(np.clip((mag - 1.15) / 2.2, 0.0, 1.0)) * tele_resolve
-                # Apply pore/bead structure to extended glowing regions where gradient was medium
-                grad_mag = np.hypot(np.gradient(lum_fine, axis=0), np.gradient(lum_fine, axis=1))
                 extended_emit = hot_zone * np.clip((rel_peak - 0.35) / 0.45, 0.0, 1.0)
                 pore_mod = 1.0 + pore_vis * (0.22 * hex_pore - 0.08 * (1.0 - hex_pore)) * extended_emit
 
@@ -589,25 +527,181 @@ def optical_wt_zoom(rgb: np.ndarray, zoom_pos: float, max_zoom: float = 4.0,
     return np.clip(out, 0.0, 2.0).astype(np.float32), mag
 
 
+def asymmetric_ccd_smear_and_trench(
+    rgb: np.ndarray,
+    smear_amount: float,
+    length_scale: float = 0.65,
+    zoom_pos: float = 0.0,
+) -> np.ndarray:
+    """
+    Physical SONY DCR-TRV310E Up-Down Asymmetric Interline CCD Vertical Smear + Flanking VOD/HOD Dark Trenches.
+
+    Calibrated against `328073600181017743.jpeg`, `4081604481662954477.jpeg`, and `862831116-1416402190.jpeg`:
+      1. **Strong Up-Down Asymmetry (`dy > 0` downward vs `dy < 0` upward)**:
+         During vertical interline transfer, the vertical shift register clocks charge packets downward across the
+         overloaded photosite:
+           - **Downward (`dy > 0`, below the light source)**: A flared core-neck funnel transitions into a
+             razor-sharp (`1-2.5 px` wide), intense vertical needle extending to the bottom of the frame, with a
+             bright cyan-blue/white spine (`B >= G > R`) and subtle 2-row interlaced scanline beading.
+           - **Upward (`dy < 0`, above the light source)**: Pre-transfer leakage forms a significantly weaker
+             (`~0.34x`), wider (`sigma_x ~ 2.1 px`), and faster-decaying upward plume.
+      2. **Flanking Dark VOD/HOD Anti-Blooming Trenches (`垂直溢出亮线两侧的伴随暗槽`)**:
+         Immediately adjacent horizontally to the vertical smear spike (`|dx| ~ 1.5..5.0 px`, stronger on the right
+         side `dx > 0` due to horizontal clamp recovery), the vertical overflow drain (VOD) pulls the neighboring
+         columns below the surrounding background luminance (`-0.06` to `-0.26` on lit road/building backgrounds).
+    """
+    a = float(np.clip(smear_amount, 0.0, 2.0))
+    if a <= 1e-4:
+        return rgb
+
+    from scipy.ndimage import convolve1d, gaussian_filter
+
+    h, w = rgb.shape[:2]
+    sc = min(h, w) / 540.0
+    src = np.clip(np.asarray(rgb, np.float32), 0.0, 2.0)
+    lum = src @ LUMA
+    bg_lum = lowpass(lum, max(2.0, 14.0 * sc))
+    pmax = max(float(src.max()), 1e-4)
+    rel_peak = np.clip(src.max(axis=-1) / pmax, 0.0, 1.0)
+
+    # Per-channel well saturation thresholds (R saturates earliest, then G, then B)
+    clips = np.array([0.74, 0.80, 0.86], dtype=np.float32)[None, None, :]
+    hot_ch = np.clip(src - clips, 0.0, None)
+    hot_gate = np.clip((lum - np.maximum(bg_lum + 0.08, 0.56)) / 0.24, 0.0, 1.0)
+    sat_gate = np.clip((rel_peak - 0.54) / 0.32, 0.0, 1.0) * np.clip((lum - bg_lum * 0.62) / 0.20, 0.0, 1.0)
+    emit_drive = np.maximum(hot_gate ** 1.3, 0.82 * (sat_gate ** 1.5))
+    if float(emit_drive.max()) <= 1e-4 and float(hot_ch.max()) <= 1e-4:
+        return rgb
+
+    # Distinguish compact point emitters (night streetlamps, < 3% of frame) from broad reflective
+    # surfaces (such as flash-lit silver blister packs or daylight skies covering > 3% of the frame):
+    hot_area_frac = float(np.mean(lum > 0.68))
+    if hot_area_frac > 0.030:
+        broad_damp = 1.0 / (1.0 + 45.0 * (hot_area_frac - 0.030))
+        a = a * broad_damp
+        if a <= 1e-4:
+            return rgb
+        # Isolate true specular pinpoints rather than broad bright foil sheets
+        local_prom = np.clip((lum - lowpass(lum, max(1.2, 3.2 * sc))) / 0.16, 0.0, 1.0)
+        emit_drive = emit_drive * local_prom
+        hot_ch = hot_ch * local_prom[..., None]
+
+    z = float(np.clip(zoom_pos, 0.0, 1.0))
+    len_f = float(np.clip(length_scale, 0.15, 1.5))
+
+    # Source packet feeding the vertical shift register:
+    emit_src = np.maximum(hot_ch, src * (emit_drive ** 1.35)[..., None] * 0.52)
+    emit_lum = emit_src @ LUMA
+    col_local_max = lowpass(emit_lum, max(1.2, 3.2 * sc), axis=1)
+    col_pinch = np.clip((emit_lum - 0.72 * col_local_max) / np.maximum(0.28 * col_local_max, 1e-4), 0.0, 1.0) ** 1.6
+    needle_src = emit_src * (0.22 + 0.78 * col_pinch)[..., None]
+
+    # 1. Build 1D Up-Down Asymmetric Vertical Kernels and convolve via fast 1D FFT along axis=0
+    r_neck = max(6, min(h - 1, int(round((28.0 + 36.0 * len_f) * sc))))
+    m_neck = np.arange(-r_neck, r_neck + 1, dtype=np.float32)
+    m_neck_pos = np.maximum(0.0, m_neck)
+    m_neck_neg = np.maximum(0.0, -m_neck)
+    tau_neck_dn = max(3.0, (12.0 + 18.0 * len_f) * sc)
+    tau_neck_up = max(2.0, (6.5 + 9.5 * len_f) * sc)
+    k_neck = np.where(
+        m_neck >= 0.0,
+        np.exp(-m_neck_pos / tau_neck_dn),
+        0.38 * np.exp(-m_neck_neg / tau_neck_up),
+    ).astype(np.float32)
+    k_neck /= max(1e-6, float(k_neck.sum()))
+
+    r_far = max(16, min(h - 1, int(round(min(h * 0.92, (160.0 + 260.0 * len_f) * sc)))))
+    m_far = np.arange(-r_far, r_far + 1, dtype=np.float32)
+    m_far_pos = np.maximum(0.0, m_far)
+    m_far_neg = np.maximum(0.0, -m_far)
+    tau_far_dn = max(12.0, (75.0 + 165.0 * len_f) * sc)
+    tau_far_up = max(6.0, (22.0 + 42.0 * len_f) * sc)
+    k_far_dn = np.where(
+        m_far > 0.0,
+        0.72 * np.exp(-m_far_pos / tau_far_dn) + 0.28 / (1.0 + (m_far_pos / max(6.0, 28.0 * sc)) ** 1.15),
+        0.0,
+    ).astype(np.float32)
+    k_far_dn /= max(1e-6, float(k_far_dn.sum()))
+
+    k_far_up = np.where(
+        m_far < 0.0,
+        np.exp(-m_far_neg / tau_far_up),
+        0.0,
+    ).astype(np.float32)
+    k_far_up /= max(1e-6, float(k_far_up.sum()))
+
+    neck_sig_x = max(0.85, (2.10 - 0.55 * z) * sc)
+    dn_sig_x   = max(0.35, (0.65 - 0.20 * z) * sc)
+    up_sig_x   = max(1.15, (2.05 - 0.45 * z) * sc)
+
+    def _conv1d_axis0_fft(arr3: np.ndarray, k1d: np.ndarray) -> np.ndarray:
+        kh = len(k1d)
+        rad = kh // 2
+        n_fft = int(2 ** np.ceil(np.log2(max(2, h + kh - 1))))
+        fa = np.fft.rfft(arr3, n=n_fft, axis=0)
+        fk = np.fft.rfft(k1d, n=n_fft)[:, None, None]
+        conv = np.fft.irfft(fa * fk, n=n_fft, axis=0)
+        return conv[rad:rad + h].astype(np.float32)
+
+    v_neck = lowpass(_conv1d_axis0_fft(emit_src, k_neck), neck_sig_x, axis=1)
+    v_down = lowpass(_conv1d_axis0_fft(needle_src, k_far_dn), dn_sig_x, axis=1)
+    v_up   = lowpass(_conv1d_axis0_fft(needle_src, k_far_up), up_sig_x, axis=1)
+
+    # Interlaced 2-row readout beading on the downward vertical shift register needle
+    rows_y = np.arange(h, dtype=np.float32)[:, None, None]
+    interlace_bead = (1.0 + 0.075 * np.cos(np.pi * rows_y)).astype(np.float32)
+
+    # Wavelength-dependent charge transfer tint:
+    # Downward needle has a strong cyan-blue/white spine (`B >= G > R`), neck is warm-cyan white
+    neck_tint = np.array([0.96, 1.02, 1.18], dtype=np.float32)[None, None, :]
+    dn_tint   = np.array([0.74, 1.06, 1.46], dtype=np.float32)[None, None, :]
+    up_tint   = np.array([0.72, 0.98, 1.28], dtype=np.float32)[None, None, :]
+
+    v_streak = (
+        0.95 * v_neck * neck_tint
+        + 1.85 * v_down * dn_tint * interlace_bead
+        + 0.42 * v_up * up_tint
+    ) * a
+
+    # 2. Flanking Dark VOD/HOD Anti-Blooming Trenches (`垂直溢出亮线两侧伴随暗槽`)
+    # Immediately to the left and right of the vertical needle (stronger on the right `dx > 0`),
+    # the anti-blooming drain pulls the background below its own exposure.
+    core_shield = np.clip(lowpass(emit_drive, max(1.0, 2.5 * sc)) * 2.4, 0.0, 1.0)
+    spine_lum = (v_down @ LUMA) + 0.25 * (v_up @ LUMA)
+    lat_narrow = lowpass(spine_lum, max(0.35, 0.55 * sc), axis=1)
+    lat_wide   = lowpass(spine_lum, max(1.60, 3.10 * sc), axis=1)
+    shift_r = max(2, int(round(2.6 * sc)))
+    lat_right  = np.roll(lowpass(spine_lum, max(1.10, 1.95 * sc), axis=1), shift_r, axis=1)
+    lat_right[:, :shift_r] = 0.0
+
+    # Gate out the center of the needle so the bright spine stays bright while its flanks dip below background
+    spine_peak_col = np.maximum(lat_narrow, lowpass(v_neck @ LUMA, max(0.6, 1.1 * sc), axis=1) * 0.55)
+    trench_raw = np.clip(0.55 * lat_wide + 0.92 * lat_right - 1.55 * spine_peak_col, 0.0, None)
+    spine_p99 = max(float(np.percentile(spine_lum, 99.2)), 1e-4)
+    trench_norm = np.clip(trench_raw / (0.22 * spine_p99), 0.0, 1.0) * (1.0 - core_shield)
+    trench_atten = np.clip(a * 0.52 * trench_norm, 0.0, 0.52)[..., None]
+
+    # Suppress broad neck spillage inside the flanking trench so the dark groove cuts cleanly into the background
+    trench_gate = np.clip(1.0 - 2.2 * trench_norm, 0.15, 1.0)[..., None]
+    out = src * (1.0 - trench_atten) + v_streak * trench_gate
+    return np.clip(out, 0.0, 2.0).astype(np.float32)
+
+
 def light_streaks(rgb: np.ndarray, amount: float, angle_deg: float = 0.0,
                   length: float = 0.55, zoom_pos: float = 0.0) -> np.ndarray:
     """
-    Physical SONY DCR-TRV310E Light Streak Details (`画面中出现的光条细节`):
+    Physical SONY DCR-TRV310E Light Streak & Scalloped Multi-Petal Starburst Details (`画面高光溢出与光条形态细节`):
 
-    Models the two distinct physical light-streak mechanisms seen in Sony DCR-TRV310E live footage:
-      1. **Vertical CCD Interline Readout Streak + Core-Neck Flare**:
-         High-intensity emitters spill photoelectrons into the vertical shift register during the
-         vertical blanking interval, forming a crisp vertical column streak with a broader,
-         chromatic core-neck transition right above and below the saturated emitter core.
-      2. **Directional / Anamorphic Optical Glare Streaks (`light_streak_angle`)**:
-         Micro-striations on the front glass element, C-mount/handycam multi-coating reflections,
-         and iris-edge diffraction stretch bright light sources into elongated directional light
-         bars (`光条`) with a saturated white-hot spine and a spectrally dispersed cyan-blue /
-         warm-magenta fringe.
-      3. **Zoom-Coupled Streak Resolution**:
-         At Wide (`W`), a merged halo produces a single broad, soft streak. At Telephoto (`T`),
-         as the halo resolves into individual sub-emitters, each resolved bead/tube casts its own
-         distinct, narrower light streak!
+    Models the three distinct non-uniform physical mechanisms measured in Sony DCR-TRV310E night captures:
+      1. **Up-Down Asymmetric Interline CCD Readout Smear + Flanking Dark VOD/HOD Trenches**:
+         Downward razor-sharp cyan-white needle (`dy > 0`), flared core-neck funnel, weaker/wider upward
+         plume (`dy < 0`), and flanking dark anti-blooming drain trenches (`dx = +-2..5 px`).
+      2. **Scalloped 6-Petal Asymmetric Iris & Microlens Starburst Skirt**:
+         Polygonal 6-lobe iris/microlens diffraction halo (`lobes at 36, 108, 180, 216, 272, 0 deg` with
+         dark diffraction notches at `~245 deg` and `~320 deg`, producing `peak/median > 1.48x` angular
+         modulation around bright lamps).
+      3. **Directional / Anamorphic Optical Glare Streaks (`light_streak_angle`)**:
+         Elongated directional light bar with chromatic dispersion along the bar.
     """
     a = float(np.clip(amount, 0.0, 2.0))
     if a <= 1e-4:
@@ -623,7 +717,6 @@ def light_streaks(rgb: np.ndarray, amount: float, angle_deg: float = 0.0,
     pmax = max(float(src.max()), 1e-4)
     rel_peak = np.clip(src.max(axis=-1) / pmax, 0.0, 1.0)
 
-    # Isolate true light emitters (both blown cores and concentrated saturated LED/lamp highlights)
     hot = np.clip((lum - np.maximum(bg_lum + 0.10, 0.58)) / 0.26, 0.0, 1.0)
     sat_hot = np.clip((rel_peak - 0.52) / 0.35, 0.0, 1.0) * np.clip((lum - bg_lum * 0.65) / 0.22, 0.0, 1.0)
     emit_drive = np.maximum(hot ** 1.35, 0.80 * (sat_hot ** 1.6))
@@ -633,39 +726,16 @@ def light_streaks(rgb: np.ndarray, amount: float, angle_deg: float = 0.0,
     z = float(np.clip(zoom_pos, 0.0, 1.0))
     len_f = float(np.clip(length, 0.1, 1.5))
 
-    # Emitter-colored source energy + white-hot core spine
+    # --- Component A: Up-Down Asymmetric Vertical CCD Smear + Flanking VOD/HOD Trenches ---
+    out = asymmetric_ccd_smear_and_trench(src, smear_amount=a * 0.90, length_scale=len_f, zoom_pos=z)
+
+    # --- Component B: Directional / Anamorphic Optical Light Bar + Scalloped 6-Petal Starburst ---
     emit_rgb = src * emit_drive[..., None]
-
-    # --- Component A: Vertical CCD Interline Readout Streak & Core-Neck Flare ---
-    # Narrow vertical readout column + tapered neck around each emitter
-    neck_sig_y = max(3.0, (18.0 + 36.0 * len_f) * sc)
-    far_sig_y  = max(10.0, (65.0 + 130.0 * len_f) * sc)
-    # At Telephoto (z -> 1), streaks from resolved sub-emitters stay laterally tighter
-    lat_sig_x  = max(0.45, (1.45 - 0.65 * z) * sc)
-
-    v_neck = np.stack([
-        gaussian_filter(emit_rgb[..., c], sigma=(neck_sig_y, lat_sig_x))
-        for c in range(3)
-    ], axis=-1)
-    v_far = np.stack([
-        gaussian_filter(emit_rgb[..., c], sigma=(far_sig_y, max(0.4, lat_sig_x * 0.75)))
-        for c in range(3)
-    ], axis=-1)
-
-    # Wavelength-dependent transfer efficiency (Sony Super HAD CCD vertical register):
-    # Short-wave blue/cyan lingers more strongly in the vertical readout column while warm red
-    # concentrates in the near-core neck.
-    neck_tint = np.array([1.05, 0.96, 1.12], dtype=np.float32)[None, None, :]
-    far_tint  = np.array([0.76, 1.02, 1.36], dtype=np.float32)[None, None, :]
-    v_streak = (1.35 * v_neck * neck_tint + 0.95 * v_far * far_tint) * a
-
-    # --- Component B: Directional / Anamorphic Optical Light Bar (`光条`) ---
     theta = np.deg2rad(float(angle_deg))
     ux = float(np.cos(theta))
     uy = float(np.sin(theta))
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
 
-    # Pre-filter emitter core to match optical streak cross-section
     spine_src = np.stack([
         gaussian_filter(emit_rgb[..., c], sigma=max(0.55, (1.25 - 0.45 * z) * sc))
         for c in range(3)
@@ -673,7 +743,6 @@ def light_streaks(rgb: np.ndarray, amount: float, angle_deg: float = 0.0,
 
     max_reach = (22.0 + 78.0 * len_f) * sc * (1.0 + 0.30 * z)
     dir_streak = np.zeros_like(src)
-    # Chromatic dispersion along the light bar: R, G, B stretch slightly differently
     ch_scales = (1.06, 1.00, 0.94)
     n_steps = 10
     for step_i in range(1, n_steps + 1):
@@ -685,18 +754,36 @@ def light_streaks(rgb: np.ndarray, amount: float, angle_deg: float = 0.0,
                 sampled = _bilinear_sample_2d(spine_src[..., ch], yy - uy * dist, xx - ux * dist)
                 dir_streak[..., ch] += sampled * falloff
 
-    dir_streak *= (0.24 * a)
-    # Add a subtle orthogonal cross-glare spike (typical of camcorder iris/coating cross-bars)
-    ortho_reach = max_reach * 0.28
-    for step_i in (1, 2, 3):
-        t = step_i / 3.0
-        falloff = float(np.exp(-2.6 * t)) * 0.08 * a
-        for sign in (-1.0, 1.0):
-            dist = sign * ortho_reach * t
-            for ch in range(3):
-                dir_streak[..., ch] += _bilinear_sample_2d(spine_src[..., ch], yy - ux * dist, xx + uy * dist) * falloff
+    dir_streak *= (0.22 * a)
 
-    out = src + v_streak + dir_streak
+    # Scalloped 6-petal asymmetric iris starburst lobes (calibrated to SONY DCR-TRV310E radial profiles)
+    petal_src = np.stack([
+        gaussian_filter(emit_rgb[..., c], sigma=max(0.8, (2.2 - 0.6 * z) * sc))
+        for c in range(3)
+    ], axis=-1)
+    petal_reach = (16.0 + 46.0 * len_f) * sc * (1.0 - 0.25 * z)
+    # 6 asymmetric petal directions (deg) and weights; note deep notches at ~245 deg and ~320 deg
+    petal_defs = (
+        (36.0, 1.25, 1.05),
+        (108.0, 1.15, 1.00),
+        (180.0, 0.85, 0.85),
+        (216.0, 1.18, 1.02),
+        (272.0, 0.90, 0.88),
+        (0.0, 0.88, 0.86),
+    )
+    petal_field = np.zeros_like(src)
+    for p_deg, p_w, p_rscale in petal_defs:
+        p_rad = np.deg2rad(p_deg + float(angle_deg) * 0.25)
+        px_u = float(np.cos(p_rad))
+        py_u = float(np.sin(p_rad))
+        for frac in (0.25, 0.50, 0.78, 1.05):
+            dist = petal_reach * p_rscale * frac
+            w_step = p_w * float(np.exp(-2.1 * frac)) * 0.09 * a
+            for ch in range(3):
+                c_dist = dist * ch_scales[ch]
+                petal_field[..., ch] += _bilinear_sample_2d(petal_src[..., ch], yy - py_u * c_dist, xx - px_u * c_dist) * w_step
+
+    out = out + dir_streak + petal_field
     return np.clip(out, 0.0, 2.0).astype(np.float32)
 
 
@@ -718,11 +805,9 @@ def draw_trv310e_zoom_osd(rgb: np.ndarray, zoom_pos: float) -> np.ndarray:
     if x1 <= x0 + 8 or y1 <= y0 + 2:
         return rgb
 
-    # Dark drop-shadow backing for OSD legibility
     pad = max(1, int(round(2 * sc)))
     out[max(0, y0 - pad):min(h, y1 + pad), max(0, x0 - pad):min(w, x1 + pad)] *= 0.28
 
-    # White outer track frame
     white = np.array([0.92, 0.94, 0.92], dtype=np.float32)
     border = max(1, int(round(1.2 * sc)))
     out[y0:y0 + border, x0:x1] = white
@@ -730,7 +815,6 @@ def draw_trv310e_zoom_osd(rgb: np.ndarray, zoom_pos: float) -> np.ndarray:
     out[y0:y1, x0:x0 + border] = white
     out[y0:y1, x1 - border:x1] = white
 
-    # Marker cursor position along W..T
     z = float(np.clip(zoom_pos, 0.0, 1.0))
     knob_w = max(3, int(round(5 * sc)))
     kx = int(round(x0 + border + z * max(1, (x1 - x0 - 2 * border - knob_w))))
@@ -738,27 +822,10 @@ def draw_trv310e_zoom_osd(rgb: np.ndarray, zoom_pos: float) -> np.ndarray:
     return out
 
 
-
 def coating_ghost_dispersion(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     """
     Multi-element zoom lens double-reflection ghost chain & wide-angle chromatic dispersion arc
     (calibrated against the opening sequence `0.50s-1.25s` of `30666916021-1-192.mp4`).
-
-    Physical mechanisms:
-      1. **Off-Axis Mie Veiling Glare & Auto-Iris Bleach**:
-         Intense off-axis backlighting floods the front element with a warm-amber/silver forward-scatter
-         veil along the source direction while lifting the black floor.
-      2. **Single-Layer `MgF2` Coating Spectral Selectivity (Green-Null / Magenta-Violet Reflection)**:
-         A 1990s single-layer `MgF2` quarter-wave coating is tuned to $\lambda_0 \approx 550\,\text{nm}$ (green).
-         Internal reflections between lens elements therefore suppress green while reflecting Red ($650\,\text{nm}$)
-         and Blue-Violet ($440\,\text{nm}$), forming:
-           * A centrosymmetric inverted ghost image (`rgb[::-1, ::-1]`) with a violet-magenta coating cast
-             (upper-left violet veil $B - G \approx +0.108$ and sculpture contour ghost $B - G \approx +0.054$);
-           * A diagonal tangential caustic streak cutting across the optical axis ($R - G \approx +0.065$).
-      3. **Wide-Angle Ghost Chromatic Magnification Dispersion (Lower-Left Rainbow Arc)**:
-         Because refractive index $n(\lambda)$ varies across the ghost path, the secondary pupil ghost images
-         at $-k_c \cdot \mathbf{x}_s$ expand with different radial magnifications for Red, Green, and Blue,
-         splitting into a cyan-green-magenta rainbow dispersion arc in the opposite quadrant (`B - R = +0.097`).
     """
     cg = float(getattr(spec, "coat_ghost", 0.0))
     if cg <= 1e-4:

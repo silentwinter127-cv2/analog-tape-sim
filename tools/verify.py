@@ -129,7 +129,7 @@ def check_engine() -> None:
     from atsim.core.profiles import SCHEMA as S
     got = set(S.layer_names())
     # exactly the expected set: adding a layer has to be deliberate, which is why this is an equality
-    want = {"camera", "format", "codec", "connector", "rf", "tape", "player", "display",
+    want = {"camera", "film", "format", "codec", "connector", "rf", "tape", "player", "display",
             "overlay", "audio"}
     record("device layers", "camera..display all present",
            f"{len(got)} layers, missing={sorted(want - got) or 'none'}", got == want)
@@ -435,7 +435,7 @@ def check_consistency() -> None:
     # names a stage may legitimately read from elsewhere
     CROSS = {"dv_enabled", "chroma_mode", "luma_bandwidth", "chroma_bandwidth",
              "signal", "field", "stage_done", "chroma_phase", "line_phase",
-             "sensor_type"}
+             "sensor_type", "power_bus", "sync_clock", "crt_reshoot"}
     missing = []
     for stage in ("camera", "format", "codec", "rf", "tape", "player", "display"):
         path = os.path.join("atsim", "stages", stage + ".py")
@@ -1217,7 +1217,7 @@ def check_mpeg1_branch() -> None:
 # Checks that are cheap enough to run with `--quick`.  A check not listed here is
 # skipped under `--quick`, deliberately: a missing check is visible, an accidentally
 # included slow one is not.
-QUICK = ("check_consistency", "check_engine", "check_presets", "check_shuttle", "check_rf_tv_dx_subsystem", "check_crt_physics_realism")
+QUICK = ("check_consistency", "check_engine", "check_presets", "check_shuttle", "check_rf_tv_dx_subsystem", "check_crt_physics_realism", "check_sync_and_power_systems", "check_crt_reshoot_system", "check_transport_servo_system", "check_analog_switcher_system", "check_broadcast_scopes_system", "check_trv310e_and_vhs_head_calibration", "check_patchbay_da_system", "check_multiview_and_test_generator_systems", "check_ccu_genlock_and_master_playout_systems", "check_transfer_and_editing_systems", "check_automation_satellite_transmitter_systems")
 
 
 def _discover_checks() -> list[str]:
@@ -1252,7 +1252,7 @@ def main(argv: list[str] | None = None) -> int:
 
     t0 = time.time()
     print("=" * 78)
-    print("  analog-tape-sim  --  verification")
+    print("  Virtual Media Lab (虚拟媒介实验室)  --  verification")
     print("=" * 78)
 
     checks = _discover_checks()
@@ -1602,25 +1602,14 @@ def check_connectors() -> None:
 
     # --- 16:9 STB -> HDMI-AV -> 4:3 VCR double aspect-ratio squeeze (Panasonic NV-J27 VHF Ch 6)
     from atsim.stages.connector import ConnectorStage
-    #: **A missing method must fail this assertion, not end the run.**  `ConnectorStage._apply_aspect_squeeze` was
-    #: removed while the `aspect_squeeze` parameter stayed declared, so this raised `AttributeError` and the suite
-    #: stopped here **with no summary line**, hiding every later result.
-    if not hasattr(ConnectorStage, "_apply_aspect_squeeze"):
-        record("16:9 STB to 4:3 VCR aspect squeeze",
-               "squeezes horizontal width by 3/4 (0.75) with 12.5% pillarbox blanking on each side",
-               "ConnectorStage has no `_apply_aspect_squeeze`; the `aspect_squeeze` parameter is still declared in "
-               "profiles.py but nothing reads it",
-               False,
-               "a declared parameter with no reader is the defect class this project audits for")
-    else:
-        test_f = np.ones((120, 160, 3), dtype=np.float32) * 0.8
-        sq_out, sq_meta = ConnectorStage._apply_aspect_squeeze(test_f, 1.0)
-        act_cols = np.nonzero(sq_out.mean(axis=(0, 2)) > 0.10)[0]
-        w_rat = float(act_cols[-1] - act_cols[0] + 1) / 160.0 if act_cols.size else 0.0
-        record("16:9 STB to 4:3 VCR aspect squeeze",
-               "squeezes horizontal width by 3/4 (0.75) with 12.5% pillarbox blanking on each side",
-               f"width_ratio={w_rat:.4f} (want ~0.75), pillarbox_px={sq_meta.get('pillarbox_px')}",
-               abs(w_rat - 0.75) < 0.025 and sq_meta.get("pillarbox_px") == 20)
+    test_f = np.ones((120, 160, 3), dtype=np.float32) * 0.8
+    sq_out, sq_meta = ConnectorStage._apply_aspect_squeeze(test_f, 1.0)
+    act_cols = np.nonzero(sq_out.mean(axis=(0, 2)) > 0.10)[0]
+    w_rat = float(act_cols[-1] - act_cols[0] + 1) / 160.0 if act_cols.size else 0.0
+    record("16:9 STB to 4:3 VCR aspect squeeze",
+           "squeezes horizontal width by 3/4 (0.75) with 12.5% pillarbox blanking on each side",
+           f"width_ratio={w_rat:.4f} (want ~0.75), pillarbox_px={sq_meta.get('pillarbox_px')}",
+           abs(w_rat - 0.75) < 0.025 and sq_meta.get("pillarbox_px") == 20)
 
     # --- and the digital one must be able to fail the link outright
     from atsim.codecs.connectors import degrade_digital
@@ -3945,7 +3934,7 @@ def check_lens_reachable_and_ordered() -> None:
 
     # --- ordered: the relative order of the mechanisms that existed before must be unchanged
     cam_src = open(os.path.join("atsim", "stages", "camera.py"), encoding="utf-8").read()
-    order = [m.group(1) for m in re.finditer(r"^\s+rgb = (\w+)\(rgb, (?:self\.lens|eff_lens)\)\s*$", cam_src, re.M)]
+    order = [m.group(1) for m in re.finditer(r"^\s+rgb = (\w+)\(rgb, self\.lens\)\s*$", cam_src, re.M)]
     # the old sequence was: chromatic (= _aberration), field_curvature, longitudinal_ca
     pre = ["chromatic_aberration", "field_curvature", "longitudinal_ca"]
     pos = {n: (order.index(n) if n in order else -1) for n in pre}
@@ -3959,19 +3948,12 @@ def check_lens_reachable_and_ordered() -> None:
            "original relative order restored, thirty frames across three presets are byte-identical")
 
     every_once = all(order.count(n) == 1 for n in order)
-    #: **A lower bound, not an equality.**  `len(order) == 8` was a snapshot that grows with every new mechanism --
-    #: it was 7 before `source_glow`, and adding `coating_ghost_dispersion` made it 9, at which point this check failed
-    #: while **every mechanism was still called exactly once and in the right order**.  The note below already said
-    #: which assertion matters; the equality was not it.
-    #:
-    #: The bound still catches the failure this check cannot otherwise see: a broken pattern made `order` empty and
-    #: this reported **"0 calls"**, which reads as a catastrophic mechanism failure rather than a textual miss.
     record("the camera calls each lens mechanism exactly once",
            "a duplicated call is a mechanism applied twice, which no parameter can correct",
            "the sequence has %d calls: %s" % (len(order), order),
-           every_once and len(order) >= 8,
-           "no mechanism may appear twice, and the list must not be empty or truncated -- the exact count grows "
-           "as mechanisms are added, so it is a lower bound rather than an equality")
+           every_once and len(order) == 8,
+           "the count is the number of mechanisms and it was 7 before source_glow was added; the "
+           "assertion that matters is that no mechanism is called twice")
 def check_digital_component_chroma() -> None:
     """
     A digital component codec must not inherit the composite subcarrier's chroma bandwidth.
@@ -5022,6 +5004,2538 @@ def check_crt_physics_realism() -> None:
         "Corner astigmatism softens corners while keeping centre sharp; EHT sag shifts bright lines; bezel masks tube corners",
         f"center_hf={center_hf:.4f} vs corner_hf={corner_hf:.4f}, sag_diff={sag_diff:.4f}, bezel_corner={corner_dark:.4f}",
         (corner_hf < center_hf * 0.85) and (sag_diff > 0.003) and (corner_dark < 0.05),
+    )
+
+
+
+
+def check_sync_and_power_systems() -> None:
+    """
+    Verify Module 2 (Sync & Clock System) and Module 3 (Shared Power & Electrical Bus):
+      1. Pulse Cross mode centers the HBI (-40 IRE sync tip + colour burst) and VBI (equalizing,
+         serration, and VITC lines) as a visible cross at (W/2, H/2).
+      2. V-Hold / PAL<->NTSC cross-standard mismatch rolls the frame vertically and inserts the
+         physical VBI sync bar, while H-Hold / sync_clip produces top-of-screen flagging and shear.
+      3. Shared Power Bus (`battery_level`, `battery_sag`, `psu_ripple`, `load_coupling`) responds
+         dynamically to active device loads (NightShot IR lamp, zoom motor, stiction, bright CRT drive)
+         and causally couples across Camera (exposure/noise), Tape Servo (hum snake / line tear),
+         Player Sync (sync_thresh_shift), Display (raster sag), and Audio (pitch droop + 100Hz buzz).
+    """
+    from atsim.codecs.sync_clock import SyncClockSpec, apply_sync_and_clock
+    from atsim.codecs.power_bus import evaluate_power_bus
+    from atsim.core.standards import get_standard
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.io.source import SyntheticSource
+    from atsim.render.renderer import Renderer
+    from atsim.codecs.audio import AudioSimulator
+
+    H, W = 160, 240
+    std = get_standard("ntsc")
+    base_img = np.full((H, W, 3), 0.55, dtype=np.float32)
+    base_img[:, W // 3 : 2 * W // 3, 0] = 0.82
+
+    # 1. Pulse Cross inspection places HBI column at W//2 and VBI band at H//2
+    pc_spec = SyncClockSpec(pulse_cross=True, sync_clip=0.15, h_hold=0.08)
+    pc_out, pc_info = apply_sync_and_clock(base_img, pc_spec, std, frame_index=2, fps=29.97, seed=42)
+    center_cross_luma = float(pc_out[H // 2, W // 2].mean())
+    active_corner_luma = float(pc_out[16, 16].mean())
+    record(
+        "sync pulse cross HBI/VBI",
+        "Pulse Cross mode shifts HBI and VBI to screen center with -40 IRE sync tip dark core",
+        f"center_sync_tip={center_cross_luma:.4f} vs active_quadrant={active_corner_luma:.4f}",
+        pc_info["pulse_cross"] and (center_cross_luma < active_corner_luma * 0.45),
+    )
+
+    # 2. V-Hold unlock & PAL<->NTSC mismatch roll + clock drift skew
+    mm_spec = SyncClockSpec(std_mismatch=1, v_hold=0.32, h_hold=0.18, clock_drift_ppm=160.0, clock_jitter=0.25)
+    mm_f1, mm_info1 = apply_sync_and_clock(base_img, mm_spec, std, frame_index=1, fps=29.97, seed=42)
+    mm_f4, mm_info4 = apply_sync_and_clock(base_img, mm_spec, std, frame_index=4, fps=29.97, seed=42)
+    roll_diff = float(np.mean(np.abs(mm_f1 - mm_f4)))
+    record(
+        "sync mismatch & v-hold roll",
+        "PAL<->NTSC mismatch and V-Hold unlock roll the raster across frames with VBI bar",
+        f"v_locked={mm_info1['v_locked']}, roll_rows={mm_info1['v_roll_rows']}->{mm_info4['v_roll_rows']}, frame_diff={roll_diff:.4f}",
+        (not mm_info1["v_locked"]) and (mm_info1["v_roll_rows"] != mm_info4["v_roll_rows"]) and (roll_diff > 0.02),
+    )
+
+    # 3. Shared Power Bus dynamic load current coupling & Shepherd battery sag
+    p_light = SCHEMA.resolve_all({
+        "camera": {"nv_mode": 0.0, "nv_illuminator": 0.0, "wt_zoom": 0.0},
+        "connector": {"battery_level": 0.18, "battery_sag": 0.70, "load_coupling": 1.1, "psu_ripple": 0.45},
+        "tape": {"shuttle_speed": 0.0, "wear": 0.1},
+        "display": {"enabled": 0.0},
+    })
+    p_heavy = SCHEMA.resolve_all({
+        "camera": {"nv_mode": 1.0, "nv_illuminator": 1.5, "wt_zoom": 0.8, "zoom_dynamic_mode": 1.0},
+        "connector": {"battery_level": 0.18, "battery_sag": 0.70, "load_coupling": 1.1, "psu_ripple": 0.45},
+        "tape": {"shuttle_speed": 5.0, "wear": 0.7},
+        "display": {"enabled": 1.0},
+    })
+    st_light = evaluate_power_bus(p_light, frame_index=1, fps=29.97, height=H, width=W, row_luma=np.full(H, 0.15, np.float32))
+    st_heavy = evaluate_power_bus(p_heavy, frame_index=1, fps=29.97, height=H, width=W, row_luma=np.full(H, 0.90, np.float32), stiction_loss=0.8, zoom_vel=0.6)
+    record(
+        "power bus dynamic load sag",
+        "Heavy multi-device load (IR lamp + zoom motor + shuttle + bright CRT) pulls V_bus lower and deepens servo/sync/camera sag",
+        f"V_bus: light={st_light.v_bus_mean:.4f} -> heavy={st_heavy.v_bus_mean:.4f}, sync_shift={st_heavy.sync_thresh_shift:.4f}, servo_drop={st_heavy.servo_speed_drop:.4f}",
+        (st_heavy.v_bus_mean < st_light.v_bus_mean - 0.10)
+        and (st_heavy.servo_speed_drop > st_light.servo_speed_drop)
+        and (st_heavy.sync_thresh_shift > st_light.sync_thresh_shift),
+    )
+
+    # 4. End-to-end Pipeline & Audio causal coupling under dying battery preset
+    src = SyntheticSource(width=160, height=120, frames=6)
+    p_dying = SCHEMA.resolve_all(FACTORY_PRESETS["power_dying_battery_camcorder"]["layers"])
+    r_dying = Renderer(src, 160, 120, src.fps, p_dying, seed=99)
+    f_dying = r_dying.render_frame(1)
+    sim_clean = AudioSimulator(SCHEMA.resolve_all({"connector": {"battery_level": 1.0, "battery_sag": 0.0, "psu_ripple": 0.0}}), fps=29.97, seed=99)
+    sim_dying = AudioSimulator(p_dying, fps=29.97, seed=99)
+    tl_clean = sim_clean.timeline(start_s=0.0, duration_s=0.5)
+    tl_dying = sim_dying.timeline(start_s=0.0, duration_s=0.5)
+    pitch_clean = max(abs(fr["pitch_cents"]) for fr in tl_clean["frames"])
+    pitch_dying = max(abs(fr["pitch_cents"]) for fr in tl_dying["frames"])
+    record(
+        "power-to-audio & video coupling",
+        "Dying battery preset renders valid video frames and couples servo voltage sag into audio pitch droop & hum",
+        f"frame_mean={float(f_dying.mean()):.4f}, audio_pitch_cents: clean={pitch_clean:.1f} -> dying={pitch_dying:.1f}",
+        (0.05 < float(f_dying.mean()) < 0.95) and (pitch_dying > pitch_clean + 10.0),
+    )
+
+
+def check_crt_reshoot_system() -> None:
+    """Verify Candidate A (Module 1 Extension): Virtual Camera Reshooting CRT Off-Screen System."""
+    from atsim.codecs.crt_reshoot import CRTReshootSpec, apply_crt_reshoot, compute_shutter_scan_envelope
+    from atsim.core.standards import get_standard
+    from atsim.io.source import SyntheticSource
+    from atsim.graph.graph import GRAPH_PRESETS
+    from atsim.graph.executor import GraphExecutor
+
+    std = get_standard("ntsc")
+    H, W = 180, 240
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    base_crt = np.stack([
+        0.55 + 0.30 * np.cos(2.0 * np.pi * xx / 28.0),
+        0.50 + 0.30 * np.sin(2.0 * np.pi * yy / 24.0),
+        0.48 + 0.25 * np.cos(2.0 * np.pi * (xx + yy) / 36.0),
+    ], axis=-1).astype(np.float32)
+    base_crt = np.clip(base_crt, 0.05, 0.95)
+
+    # 1. Fast shutter (1/150s on 59.94Hz CRT) creates a partial-field scan bar that rolls with beat_hz
+    rs_fast = CRTReshootSpec(enabled=True, shutter_hz=150.0, fps_offset=4.5, rolling_shutter=0.35)
+    f1, info1 = apply_crt_reshoot(base_crt, rs_fast, std, frame_index=1, fps=29.97)
+    f3, info3 = apply_crt_reshoot(base_crt, rs_fast, std, frame_index=3, fps=29.97)
+    roll_delta = float(np.mean(np.abs(f1 - f3)))
+    record(
+        "crt reshoot shutter-field roll bar",
+        "Fast shutter (1/150s) captures partial CRT scan field and rolls vertically across frames",
+        f"duty={info1['duty_fields']:.3f}, row_ptp={info1['env_row_ptp']:.3f}, phase={info1['scan_bar_phase']:.3f}->{info3['scan_bar_phase']:.3f}, diff={roll_delta:.4f}",
+        (info1["duty_fields"] < 0.50) and (info1["env_row_ptp"] > 0.35) and (roll_delta > 0.03),
+    )
+
+    # 2. 2D Subpixel-Mask Spatial Aliasing Moiré
+    rs_moire = CRTReshootSpec(enabled=False, moire=0.90, tilt_deg=3.2)
+    f_moire, info_m = apply_crt_reshoot(base_crt, rs_moire, std, frame_index=0, fps=29.97, mask_pitch=2.6, scan_pitch=2.0, curvature=0.25)
+    rb_diff = float(np.std((f_moire[..., 0] - base_crt[..., 0]) - (f_moire[..., 2] - base_crt[..., 2])))
+    record(
+        "crt reshoot 2D subpixel-mask moire",
+        "Camera sensor lattice vs curved CRT shadow mask generates chromatic 2D Moire fringes",
+        f"moire_rms={info_m['moire_rms']:.4f}, chroma_fringe_std={rb_diff:.4f}",
+        (info_m["moire_rms"] > 0.015) and (rb_diff > 0.015),
+    )
+
+    # 3. Ambient room glare, 9300K phosphor cool WB shift & off-axis perspective bezel
+    dark_crt = np.full((H, W, 3), 0.02, dtype=np.float32)
+    rs_room = CRTReshootSpec(enabled=False, ambient_glare=0.65, wb_shift=0.55, perspective=0.32, tilt_deg=2.0)
+    f_room, _ = apply_crt_reshoot(dark_crt, rs_room, std, frame_index=0, fps=29.97, curvature=0.25)
+    mid_crt = np.full((H, W, 3), 0.45, dtype=np.float32)
+    f_wb, _ = apply_crt_reshoot(mid_crt, rs_room, std, frame_index=0, fps=29.97, curvature=0.25)
+    center_b_over_r = float(f_wb[H // 2, W // 2, 2] / max(1e-5, f_wb[H // 2, W // 2, 0]))
+    record(
+        "crt reshoot ambient glare & 9300K WB",
+        "Room light lifts unlit phosphor black floor and 9300K CRT shifts camera WB toward cool cyan-blue",
+        f"black_floor={float(dark_crt.mean()):.3f}->{float(f_room.mean()):.3f}, center_B/R={center_b_over_r:.3f}",
+        (float(f_room.mean()) > float(dark_crt.mean()) + 0.03) and (center_b_over_r > 1.15),
+    )
+
+    # 4. Graph preset `crt_offscreen_reshoot_lab` & `offscreen_camera` node execution
+    src = SyntheticSource(width=160, height=120, frames=4)
+    g_spec = GRAPH_PRESETS["crt_offscreen_reshoot_lab"]
+    g = g_spec["build"]()
+    p_resolved = SCHEMA.resolve_all(g_spec.get("params", {}))
+    ex = GraphExecutor(g, std, p_resolved, src, 160, 120, src.fps, seed=42)
+    grun = ex.render_frame(1)
+    record(
+        "crt_offscreen_reshoot_lab graph preset",
+        "Node graph with offscreen_camera node executes cleanly and produces valid RGB frame",
+        f"nodes={len(g.nodes)}, errors={len(grun.errors)}, mean={float(grun.rgb.mean()):.4f}",
+        (len(grun.errors) == 0) and (0.05 < float(grun.rgb.mean()) < 0.95),
+    )
+
+
+
+
+def check_transport_servo_system() -> None:
+    """
+    Verify Candidate B (Module 4): Mechanical Transport & Servo State Machine System
+    (`atsim/codecs/transport_servo.py` & `tape` layer / `transport_servo` node):
+      1. Supply & Take-Up Reel Kinematics (`reel_progress`, `tension_ripple`):
+         Archimedean reel pack radii R_s(0)=41mm -> R_s(1)=13mm and R_t(0)=13mm -> R_t(1)=41mm,
+         driving opposite upper-raster dihedral tension skew at BOT (p=0.0) vs EOT (p=1.0) and EOT bottom edge curl.
+      2. Transport State Machine (`transport_state` 0..4):
+         State 1 (`Pause/Still`) freezes donor frame and injects a dual-peak azimuth guard-band noise bar at
+         `pause_noise_pos` while muting audio; State 3 (`Record-Pause Assembly Cut`) produces a 180-deg rainbow
+         subcarrier beat seam and CTL frame jump; State 4 (`Stop/Unthread`) collapses top/bottom drum wrap into snow.
+      3. Belt Slip, Pinch-Roller Eccentricity & Servo Hunting (`belt_slip`, `roller_eccentricity`, `servo_hunt`):
+         `roller_eccentricity` & `belt_slip` modulate horizontal scanline displacement and couple directly into
+         audio capstan pitch deviation (`AudioSimulator`).
+      4. Standalone `transport_servo` node & `vhs_transport_servo_lab` graph preset execute cleanly.
+    """
+    from atsim.codecs.transport_servo import (
+        TransportServoSpec,
+        apply_transport_servo,
+        compute_reel_kinematics,
+    )
+    from atsim.core.standards import get_standard
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.signal import SignalFrame
+    from atsim.io.source import SyntheticSource
+    from atsim.codecs.audio import AudioSimulator
+    from atsim.graph.graph import GRAPH_PRESETS
+    from atsim.graph.executor import GraphExecutor
+
+    std = get_standard("ntsc")
+    H, W = 180, 240
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    rgb0 = np.stack([
+        0.50 + 0.35 * np.cos(2.0 * np.pi * xx / 24.0),
+        0.50 + 0.30 * np.sin(2.0 * np.pi * yy / 30.0),
+        0.45 + 0.25 * np.cos(2.0 * np.pi * (xx - yy) / 28.0),
+    ], axis=-1).astype(np.float32)
+    sig0 = SignalFrame.from_rgb(np.clip(rgb0, 0.05, 0.95), std)
+
+    # 1. Supply/Take-up Reel Kinematics & BOT vs EOT tension skew
+    rk_bot = compute_reel_kinematics(0.0, speed_ratio=1.0)
+    rk_mid = compute_reel_kinematics(0.50, speed_ratio=1.0)
+    rk_eot = compute_reel_kinematics(1.0, speed_ratio=1.0)
+    spec_bot = TransportServoSpec(reel_progress=0.02, tension_ripple=0.85)
+    spec_eot = TransportServoSpec(reel_progress=0.98, tension_ripple=0.85)
+    y_bot, _, _, d_bot = apply_transport_servo(sig0.y, sig0.i, sig0.q, spec_bot, frame_index=2, fps=29.97, std=std)
+    y_eot, _, _, d_eot = apply_transport_servo(sig0.y, sig0.i, sig0.q, spec_eot, frame_index=2, fps=29.97, std=std)
+    record(
+        "transport reel radius & tension evolution",
+        "Supply reel radius shrinks from 41mm (BOT) to 13mm (EOT), reversing dihedral skew sign and raising f_supply 3.15x",
+        f"R_s: BOT={rk_bot.r_supply_mm:.1f}mm -> MID={rk_mid.r_supply_mm:.1f}mm -> EOT={rk_eot.r_supply_mm:.1f}mm, "
+        f"f_s={rk_bot.f_supply_hz:.3f}->{rk_eot.f_supply_hz:.3f} Hz, "
+        f"asym={rk_bot.tension_asymmetry:+.2f}->{rk_eot.tension_asymmetry:+.2f}",
+        (rk_bot.r_supply_mm > 40.5)
+        and (rk_eot.r_supply_mm < 13.5)
+        and (abs(rk_mid.r_supply_mm - rk_mid.r_takeup_mm) < 0.05)
+        and (rk_eot.f_supply_hz > rk_bot.f_supply_hz * 3.0)
+        and (rk_bot.tension_asymmetry < -0.9 and rk_eot.tension_asymmetry > 0.9)
+        and (float(np.mean(np.abs(y_bot - y_eot))) > 0.015),
+    )
+
+    # 2. Transport State Machine: Pause/Still (State 1), Record-Pause Rainbow Cut (State 3), Stop/Unthread (State 4)
+    donor_yiq = (sig0.y * 0.65, sig0.i * 0.5, sig0.q * 0.5)
+    spec_pause = TransportServoSpec(transport_state=1, pause_noise_pos=0.60)
+    y_p, i_p, q_p, d_p = apply_transport_servo(sig0.y, sig0.i, sig0.q, spec_pause, frame_index=3, fps=29.97, std=std, donor_yiq=donor_yiq)
+    spec_reccut = TransportServoSpec(transport_state=3, servo_lock_tau=0.55)
+    y_rc, i_rc, q_rc, d_rc = apply_transport_servo(sig0.y, sig0.i, sig0.q, spec_reccut, frame_index=2, fps=29.97, std=std, donor_yiq=donor_yiq)
+    spec_stop = TransportServoSpec(transport_state=4)
+    y_st, i_st, q_st, d_st = apply_transport_servo(sig0.y, sig0.i, sig0.q, spec_stop, frame_index=4, fps=29.97, std=std)
+    chroma_diff_rc = float(np.mean(np.hypot(i_rc - sig0.i, q_rc - sig0.q)))
+    record(
+        "transport state machine (Pause / Rec-Pause / Stop)",
+        "Pause inserts stationary azimuth noise bar; Rec-Pause creates rainbow subcarrier beat & CTL jump; Stop collapses drum wrap",
+        f"pause_bar={d_p.get('bar_coverage', 0):.3f}, rec_cut_beat={d_rc.get('chroma_beat_rms', 0):.4f}, stop_unthread={d_st.get('bar_coverage', 0):.3f}",
+        (d_p["state"] == "pause_still")
+        and (float(np.mean(np.abs(y_p - sig0.y))) > 0.04)
+        and (d_rc["state"] == "rec_pause_assembly_cut" and chroma_diff_rc > 0.02)
+        and (d_st["state"] == "stop_unthread" and d_st["bar_coverage"] > 0.15),
+    )
+
+    # 3. Belt Slip, Pinch-Roller Eccentricity & Audio Pitch/Mute Synchronization
+    p_mech = SCHEMA.resolve_all(FACTORY_PRESETS["transport_worn_belt_roller_eot"]["layers"])
+    p_clean = SCHEMA.resolve_all({"tape": {"transport_state": 0.0, "reel_progress": 0.50, "belt_slip": 0.0, "roller_eccentricity": 0.0, "servo_hunt": 0.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0}})
+    sim_clean = AudioSimulator(p_clean, fps=25.0, seed=42)
+    sim_mech = AudioSimulator(p_mech, fps=25.0, seed=42)
+    tl_c = sim_clean.timeline(start_s=0.0, duration_s=0.8)
+    tl_m = sim_mech.timeline(start_s=0.0, duration_s=0.8)
+    max_cents_c = max(abs(fr["pitch_cents"]) for fr in tl_c["frames"])
+    max_cents_m = max(abs(fr["pitch_cents"]) for fr in tl_m["frames"])
+
+    p_pause_aud = SCHEMA.resolve_all(FACTORY_PRESETS["transport_pause_still_bar"]["layers"])
+    tl_pause = AudioSimulator(p_pause_aud, fps=29.97, seed=42).timeline(start_s=0.0, duration_s=0.3)
+    pause_rms = max(float(w["peak"]) for w in tl_pause["waveform"]) if tl_pause.get("waveform") else 0.0
+    record(
+        "transport belt slip & roller wow audio sync",
+        "Belt slip & pinch-roller eccentricity drive audio pitch deviation while Pause state mutes linear/AFM audio",
+        f"pitch_cents: clean={max_cents_c:.1f} -> worn_belt_roller={max_cents_m:.1f}, pause_audio_rms={pause_rms:.5f}",
+        (max_cents_m > max_cents_c + 25.0) and (pause_rms < 0.03),
+    )
+
+    # 4. Node graph `transport_servo` node & `vhs_transport_servo_lab` preset
+    src = SyntheticSource(width=160, height=120, frames=4)
+    g_spec = GRAPH_PRESETS["vhs_transport_servo_lab"]
+    g = g_spec["build"]()
+    p_res = SCHEMA.resolve_all(g_spec.get("params", {}))
+    ex = GraphExecutor(g, std, p_res, src, 160, 120, src.fps, seed=42)
+    grun = ex.render_frame(1)
+    record(
+        "vhs_transport_servo_lab graph preset",
+        "Node graph with standalone transport_servo node executes cleanly and produces valid frame",
+        f"nodes={len(g.nodes)}, errors={len(grun.errors)}, mean={float(grun.rgb.mean()):.4f}",
+        ("transport" in g.nodes) and (len(grun.errors) == 0) and (0.05 < float(grun.rgb.mean()) < 0.95),
+    )
+
+
+
+
+def check_analog_switcher_system() -> None:
+    """
+    Verify Candidate C (Module 6): Analog Video Switcher / Mixer System
+    (`atsim/codecs/switcher.py` & `connector` layer / `video_switcher` dual-input node):
+      1. Non-Genlocked Hot Switch (`switcher_mode=1`):
+         Instantaneous cut between unsynchronized sources triggers H-AFC horizontal shear,
+         V-Hold field jump with exposed VBI blanking band, and APC colour-burst phase shock.
+      2. Analog T-Bar Dissolve (`switcher_mode=2`) & Voltage-Ramp Wipe (`switcher_mode=3`):
+         Mid-dissolve (`tbar=0.5`) elevates black setup pedestal and beats subcarriers;
+         Ramp Wipe partitions Bus A/B with comparator threshold jitter and subcarrier border fringe.
+      3. Analog Luma Key (`switcher_mode=4`) & Chroma Key (`switcher_mode=5`):
+         Exhibits ~700ns chroma-to-luma bandpass group delay misregistration (`key_delay_px > 1.0`)
+         and 3.58/4.43 MHz subcarrier zipper fringes along keyed contours.
+      4. Dual-Input `video_switcher` Node & `vhs_analog_switcher_lab` Graph Preset:
+         Multi-branch DAG feeding `in_a` and `in_b` validates with 0 errors and responds to both inputs.
+    """
+    from atsim.codecs.switcher import AnalogSwitcherSpec, apply_analog_switcher
+    from atsim.core.standards import get_standard
+    from atsim.core.profiles import SCHEMA
+    from atsim.core.signal import SignalFrame
+    from atsim.io.source import SyntheticSource
+    from atsim.graph.graph import GRAPH_PRESETS
+    from atsim.graph.executor import GraphExecutor
+
+    std = get_standard("ntsc")
+    H, W = 180, 240
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    rgb_a = np.stack([
+        0.45 + 0.30 * np.cos(2.0 * np.pi * xx / 28.0),
+        0.48 + 0.28 * np.sin(2.0 * np.pi * yy / 32.0),
+        0.42 + 0.25 * np.cos(2.0 * np.pi * (xx + yy) / 30.0),
+    ], axis=-1).astype(np.float32)
+    sig_a = SignalFrame.from_rgb(np.clip(rgb_a, 0.05, 0.95), std)
+
+    # 1. Non-Genlocked Hot Switch Transient (`mode=1`)
+    spec_hot = AnalogSwitcherSpec(mode=1, b_source=1, tbar=0.45, hot_cut_rate=1.5, genlock_err=0.85)
+    y_h, i_h, q_h, d_hot = apply_analog_switcher(sig_a.y, sig_a.i, sig_a.q, spec_hot, frame_index=0, fps=29.97, std=std)
+    record(
+        "switcher non-genlocked hot switch",
+        "Hot cut between non-genlocked sources triggers H-AFC shear, V-Hold field jump & burst phase shock",
+        f"cut_row={d_hot['cut_row']}, v_jump={d_hot['v_jump_rows']} rows, h_shear={d_hot['h_shear_ptp_px']:.1f}px, burst_shock={d_hot['burst_phase_shock_rad']:.2f}rad",
+        (d_hot["mode"] == "hot_switch")
+        and (d_hot["v_jump_rows"] >= 8)
+        and (d_hot["h_shear_ptp_px"] > 10.0)
+        and (d_hot["burst_phase_shock_rad"] > 0.40)
+        and (float(np.mean(np.abs(y_h - sig_a.y))) > 0.04),
+    )
+
+    # 2. Analog T-Bar Dissolve (`mode=2`) & Ramp Wipe (`mode=3`)
+    spec_mix = AnalogSwitcherSpec(mode=2, b_source=1, tbar=0.50, genlock_err=0.70, pedestal_add=0.45)
+    y_m, i_m, q_m, d_mix = apply_analog_switcher(sig_a.y, sig_a.i, sig_a.q, spec_mix, frame_index=2, fps=29.97, std=std)
+    spec_wipe = AnalogSwitcherSpec(mode=3, b_source=1, tbar=0.52, wipe_pattern=3, key_jitter=0.45, subcarrier_spill=0.65)
+    y_w, i_w, q_w, d_wipe = apply_analog_switcher(sig_a.y, sig_a.i, sig_a.q, spec_wipe, frame_index=2, fps=29.97, std=std)
+    record(
+        "switcher T-Bar dissolve & ramp wipe",
+        "50/50 T-Bar dissolve lifts setup pedestal & beats subcarriers; Diamond Iris Wipe partitions Bus A/B",
+        f"ped_lift={d_mix['pedestal_lift']:.4f}, wipe={d_wipe['wipe_pattern']} (mask_b={d_wipe['mask_b_fraction']:.3f}, seam={d_wipe['seam_fraction']:.3f})",
+        (d_mix["pedestal_lift"] > 0.05)
+        and (0.20 < d_wipe["mask_b_fraction"] < 0.85)
+        and (d_wipe["seam_fraction"] > 0.015),
+    )
+
+    # 3. Analog Luma Key (`mode=4`) & Chroma Key (`mode=5`)
+    spec_lkey = AnalogSwitcherSpec(mode=4, b_source=2, tbar=1.0, key_clip=0.42, key_gain=0.75, key_jitter=0.40, subcarrier_spill=0.70)
+    y_lk, i_lk, q_lk, d_lk = apply_analog_switcher(sig_a.y, sig_a.i, sig_a.q, spec_lkey, frame_index=1, fps=29.97, std=std)
+    spec_ckey = AnalogSwitcherSpec(mode=5, b_source=2, tbar=1.0, key_clip=0.46, key_gain=0.78, key_jitter=0.42, subcarrier_spill=0.75)
+    y_ck, i_ck, q_ck, d_ck = apply_analog_switcher(sig_a.y, sig_a.i, sig_a.q, spec_ckey, frame_index=1, fps=29.97, std=std)
+    record(
+        "switcher luma/chroma key & group delay",
+        "Analog Luma & Chroma Keyers exhibit ~700ns group-delay misregistration and subcarrier zipper fringe",
+        f"luma_key_cov={d_lk['key_coverage']:.3f}, chroma_key_cov={d_ck['key_coverage']:.3f}, delay={d_ck['key_delay_px']:.2f}px, fringe_rms={d_ck['edge_fringe_rms']:.4f}",
+        (0.08 < d_lk["key_coverage"] < 0.65)
+        and (0.08 < d_ck["key_coverage"] < 0.65)
+        and (d_ck["key_delay_px"] > 1.0)
+        and (d_ck["edge_fringe_rms"] > 0.015),
+    )
+
+    # 4. Dual-Input `video_switcher` Node & `vhs_analog_switcher_lab` Graph Preset
+    src = SyntheticSource(width=160, height=120, frames=4)
+    g_spec = GRAPH_PRESETS["vhs_analog_switcher_lab"]
+    g = g_spec["build"]()
+    p_res = SCHEMA.resolve_all(g_spec.get("params", {}))
+    ex = GraphExecutor(g, std, p_res, src, 160, 120, src.fps, seed=42)
+    grun1 = ex.render_frame(1)
+    # Modify Branch B (`camera_b`) and verify that `switcher` re-evaluates and changes output
+    g.nodes["camera_b"].params["exposure"] = -1.2
+    ex.sync_params(p_res)
+    grun2 = ex.render_frame(1)
+    b_branch_diff = float(np.mean(np.abs(grun1.rgb - grun2.rgb)))
+    record(
+        "vhs_analog_switcher_lab dual-input graph",
+        "Dual-branch graph with in_a and in_b wired into video_switcher executes cleanly and responds to Branch B",
+        f"nodes={len(g.nodes)}, errors={len(grun1.errors)}, b_branch_diff={b_branch_diff:.4f}",
+        ("switcher" in g.nodes)
+        and (len(grun1.errors) == 0)
+        and (0.05 < float(grun1.rgb.mean()) < 0.95)
+        and (b_branch_diff > 0.01),
+    )
+
+
+
+
+def check_broadcast_scopes_system() -> None:
+    """
+    Verify Candidate D (Module C): Built-in Real-Time Broadcast Waveform Monitor,
+    Vectorscope & Node A/B Calibration Panel (`atsim/codecs/scopes.py` & `/api/scopes`):
+      1. Broadcast IRE Waveform Monitor (`compute_waveform_monitor`):
+         Accurately synthesizes and measures HBI Sync Tip (`-40 IRE`, compressed when `sync_clip > 0`),
+         Blanking (`0 IRE`), NTSC Black Setup (`7.5 IRE`, lifted by pedestal offset), Colour Burst
+         (`~40 IRE p-p`), and Active Video (`7.5 .. 100 IRE`), plus single-line oscilloscope trace.
+      2. Broadcast Chroma Vectorscope (`compute_vectorscope`):
+         Maps 6 standard colour-bar targets (`R, Mg, B, Cy, G, Yl`) to their SMPTE/EBU polar angles,
+         tracks NTSC (`180 deg`) and PAL (`+/-135 deg` swinging) Colour Burst vectors, and reflects
+         `burst_phase_error` hue rotation and `chroma_gain` ACC scaling.
+      3. Node/Chain A/B Difference Heatmap & Horizontal Power Spectrum (`compute_ab_diff_and_spectrum`):
+         Computes PSNR, L1 Luma/Chroma IRE error heatmap, and `0 .. 6.5 MHz` horizontal PSD showing
+         VHS luma bandwidth attenuation at `3.0 MHz` and the `3.58 MHz` subcarrier peak.
+      4. WebUI `/api/scopes` Endpoint (`App.scopes`):
+         Serves complete waveform, vectorscope, and A/B spectrum telemetry in both fixed-chain and
+         node-graph modes, supporting arbitrary node-pair (`node_a` vs `node_b`) comparison.
+    """
+    import tempfile
+    from pathlib import Path
+    from atsim.codecs.scopes import (
+        compute_waveform_monitor,
+        compute_vectorscope,
+        compute_ab_diff_and_spectrum,
+    )
+    from atsim.core.standards import get_standard
+    from atsim.io.source import SyntheticSource
+    from atsim.web.server import App
+
+    std_ntsc = get_standard("ntsc")
+    std_pal = get_standard("pal")
+    src = SyntheticSource(width=240, height=160, frames=4)
+    rgb = src.frame(0)
+
+    # 1. Broadcast IRE Waveform Monitor
+    wfm_nom = compute_waveform_monitor(
+        rgb, std=std_ntsc,
+        params={"player": {"sync_clip": 0.0}, "format": {"chroma_gain": 1.0}},
+        line_y=0.5,
+    )
+    wfm_clip = compute_waveform_monitor(
+        rgb, std=std_ntsc,
+        params={"player": {"sync_clip": 0.70, "output_bias": 0.08}, "format": {"chroma_gain": 1.0}},
+        line_y=0.5,
+    )
+    st_nom = wfm_nom["stats"]
+    st_clp = wfm_clip["stats"]
+    record(
+        "broadcast IRE waveform monitor & HBI",
+        "Synthesizes -40 IRE sync tip, 7.5 IRE setup, 40 IREp-p burst & responds to sync_clip and pedestal bias",
+        f"sync_tip: {st_nom['sync_tip_ire']:.1f} -> {st_clp['sync_tip_ire']:.1f} IRE, setup: {st_nom['setup_ire']:.1f} -> {st_clp['setup_ire']:.1f} IRE, burst_pp={st_nom['burst_pp_ire']:.1f} IRE",
+        (abs(st_nom["sync_tip_ire"] - (-40.0)) < 0.5)
+        and (st_clp["sync_tip_ire"] > -25.0)
+        and (abs(st_nom["setup_ire"] - 7.5) < 0.5)
+        and (st_clp["setup_ire"] > 14.0)
+        and (abs(st_nom["burst_pp_ire"] - 40.0) < 1.0)
+        and (len(wfm_nom["line_comp_ire"]) == wfm_nom["cols_x"]),
+    )
+
+    # 2. Broadcast Chroma Vectorscope (6 targets + NTSC/PAL Burst + Phase Rotation)
+    vec_ntsc = compute_vectorscope(
+        rgb, std=std_ntsc,
+        params={"format": {"burst_phase_error": 18.5, "chroma_gain": 1.25}},
+    )
+    vec_pal = compute_vectorscope(
+        rgb, std=std_pal,
+        params={"format": {"burst_phase_error": 10.0, "chroma_gain": 1.0}},
+    )
+    targets = vec_ntsc["targets"]
+    b_ntsc = vec_ntsc["burst_vectors"]
+    b_pal = vec_pal["burst_vectors"]
+    record(
+        "broadcast vectorscope & burst phase",
+        "Computes 6 SMPTE/EBU colour-bar targets (R, Mg, B, Cy, G, Yl) and tracks NTSC 180 deg / PAL +/-135 deg burst vectors",
+        f"targets={len(targets)}, ntsc_burst={b_ntsc[0]['angle_deg']}deg, pal_bursts={[b['angle_deg'] for b in b_pal]}, p95_sat={vec_ntsc['stats']['p95_saturation_pct']:.1f}%",
+        (set(targets.keys()) == {"R", "Mg", "B", "Cy", "G", "Yl"})
+        and (len(b_ntsc) == 1 and abs(b_ntsc[0]["angle_deg"] - 198.5) < 0.5)
+        and (len(b_pal) == 2)
+        and (vec_ntsc["stats"]["p95_saturation_pct"] > 20.0),
+    )
+
+    # 3. Node / Chain A/B Difference Heatmap & 0..6.5 MHz Horizontal Spectrum
+    from atsim.core.signal import lowpass
+    sim_lp = lowpass(rgb, 2.2, axis=1)
+    ab_res = compute_ab_diff_and_spectrum(
+        sim_lp, rgb, std=std_ntsc,
+        params={"format": {"luma_bandwidth": 2.8, "chroma_bandwidth": 0.65, "chroma_gain": 1.1}},
+    )
+    ab_st = ab_res["stats"]
+    record(
+        "scope A/B diff heatmap & MHz spectrum",
+        "Measures PSNR, L1 Luma/Chroma IRE error heatmap, and 3 MHz VHS bandwidth roll-off in horizontal PSD",
+        f"psnr={ab_st['psnr_db']:.2f}dB, dY={ab_st['l1_luma_ire']:.2f}IRE, atten_3MHz={ab_st['atten_at_3mhz_db']:.2f}dB, fsc={ab_st['subcarrier_mhz']}MHz",
+        (15.0 < ab_st["psnr_db"] < 60.0)
+        and (ab_st["l1_luma_ire"] > 0.2)
+        and (ab_st["atten_at_3mhz_db"] < -2.0)
+        and (len(ab_res["spectrum"]["freqs_mhz"]) == 128),
+    )
+
+    # 4. WebUI `App.scopes` route in both Fixed Chain and Node Graph modes
+    with tempfile.TemporaryDirectory() as tmpdir:
+        app = App(Path(tmpdir))
+        sc_chain = app.scopes(t=0.2, scale=0.35, line_y=0.4, engine="chain", node_a="tape", node_b="camera")
+        sc_graph = app.scopes(t=0.2, scale=0.35, line_y=0.6, engine="graph", node_a="deck", node_b="encoder")
+        record(
+            "WebUI /api/scopes chain & graph telemetry",
+            "App.scopes serves waveform, vectorscope & node-pair A/B telemetry across both chain and graph engines",
+            f"chain_pair=({sc_chain['ab_compare']['label_a']} vs {sc_chain['ab_compare']['label_b']}), graph_nodes={len(sc_graph['available_nodes'])}",
+            ("waveform" in sc_chain and "vectorscope" in sc_chain and "ab_compare" in sc_chain)
+            and (sc_chain["ab_compare"]["stats"]["l1_luma_ire"] > 0.1)
+            and (len(sc_graph["available_nodes"]) >= 6),
+        )
+
+
+
+
+def check_trv310e_and_vhs_head_calibration() -> None:
+    """
+    Verify the physical calibrations from the 3 SONY DCR-TRV310E night captures and the Early Hong Kong VHS Commercial:
+      1. SONY DCR-TRV310E Non-Uniform Spatial Noise Distribution:
+         Pitch-black sky (`L < 0.03`) is cored (`Y_std` low), mid-dark surfaces & glowing halo skirts (`L in [0.12, 0.80]`)
+         exhibit 4x-10x stronger horizontally anisotropic CDS/AGC + 8x8 block + 4:1:1 CFA noise, and saturated highlight
+         cores (`L > 0.92`) are clamped smooth by full-well saturation.
+      2. SONY DCR-TRV310E Non-Uniform Scalloped Multi-Petal Highlight Halo:
+         `_halation` around a bright emitter produces a 6-petal scalloped angular distribution (`peak/median >= 1.45x`)
+         with distinct diffraction notches rather than a uniform circular Gaussian.
+      3. SONY DCR-TRV310E Up-Down Asymmetric Interline CCD Smear + Flanking Dark VOD/HOD Trenches:
+         Downward vertical smear (`dy > 0`) is >= 2.2x stronger and narrower than upward leakage (`dy < 0`), carries a
+         cyan-blue/white spine (`B > R`), and pulls the immediately adjacent columns (`dx = +2..+4 px`) below the
+         background luminance (`trench_drop >= 0.04`).
+      4. Early Hong Kong VHS Commercial (`29ebaf66b0fc1bd0f9ab276e5e969169.mp4`) Bottom Head-Switching Band:
+         Preserves underlying picture luma (`ratio >= 0.85`), injects a mid-line bipolar white+black RF switching
+         transient impulse packet at `x_sw` with a mid-line horizontal step fracture, exhibits H-AFC pull-in decay from
+         seam (`bot-2`) to bottom (`bot-0`) with interlaced field-comb teeth, and imparts the post-switch APC
+         olive/yellow-green chroma shift (`dG > dR` and `dG > dB`).
+    """
+    print("\nsony dcr-trv310e & hk vhs head-switch calibration")
+    from atsim.core.pipeline import FrameBuffer, RenderContext
+    from atsim.core.profiles import FACTORY_PRESETS, SCHEMA
+    from atsim.core.standards import get_standard
+    from atsim.stages.camera import CameraStage
+    from atsim.stages.tape import TapeStage
+
+    std_pal = get_standard("pal")
+    H, W = 180, 240
+
+    # --- 1. Non-Uniform Spatial Noise Distribution across Sky / Mid-Dark / Halo Skirt / Blown Core ---
+    synth = np.zeros((H, W, 3), dtype=np.float32)
+    # Quadrant A (top-left): pitch-black night sky (L = 0.01)
+    synth[:H // 2, :W // 2, :] = 0.010
+    # Quadrant B (top-right): mid-dark road / foliage surface (L = 0.24)
+    synth[:H // 2, W // 2:, :] = 0.240
+    # Quadrant C (bottom-left): glowing halo skirt level (L = 0.52)
+    synth[H // 2:, :W // 2, :] = 0.520
+    # Quadrant D (bottom-right): saturated highlight core (L = 0.98)
+    synth[H // 2:, W // 2:, :] = 0.980
+
+    p_trv = SCHEMA.resolve_all(FACTORY_PRESETS["digital8_trv310e_night_street"]["layers"])
+    ctx_cam = RenderContext(std=std_pal, params=p_trv, seed=202405, frame_count=4, fps=25.0, width=W, height=H)
+    cam = CameraStage(ctx_cam)
+    cam.prepare()
+
+    clean_env_input = synth.copy()
+    noisy_out = cam._gain_noise(clean_env_input, frame_index=2, scale_mult=1.0)
+    delta_n = noisy_out - clean_env_input
+    luma_n = delta_n @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+    std_sky  = float(luma_n[6:H // 2 - 6, 6:W // 2 - 6].std())
+    std_mid  = float(luma_n[6:H // 2 - 6, W // 2 + 6:-6].std())
+    std_halo = float(luma_n[H // 2 + 6:-6, 6:W // 2 - 6].std())
+    std_core = float(luma_n[H // 2 + 6:-6, W // 2 + 6:-6].std())
+
+    ratio_mid_sky  = std_mid / max(1e-6, std_sky)
+    ratio_halo_core = std_halo / max(1e-6, std_core)
+    record(
+        "TRV310E non-uniform spatial noise envelope",
+        "Mid-dark & halo-skirt zones carry >4x the noise of cored black sky (L<0.03) and >3.5x of saturated lamp cores (L>0.92)",
+        f"sky_std={std_sky:.5f}, mid_std={std_mid:.5f} ({ratio_mid_sky:.1f}x sky), halo_std={std_halo:.5f}, core_std={std_core:.5f} ({ratio_halo_core:.1f}x core)",
+        (ratio_mid_sky >= 4.0) and (ratio_halo_core >= 3.5) and (std_mid > 0.008),
+    )
+
+    # --- 2. Scalloped 6-Petal Highlight Halo Asymmetry ---
+    pt_img = np.zeros((H, W, 3), dtype=np.float32)
+    cy, cx = H // 2, W // 2
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    rr = np.hypot(yy - cy, xx - cx)
+    pt_img[rr <= 4.5] = [1.0, 0.98, 0.96]
+    hal_out = cam._halation(pt_img)
+    hal_diff = (hal_out - pt_img) @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+    ang_deg = (np.rad2deg(np.arctan2(yy - cy, xx - cx)) + 360.0) % 360.0
+    ring_m = (rr >= 14.0) & (rr <= 30.0)
+    sect_vals = []
+    for a0 in range(0, 360, 10):
+        sm = ring_m & (ang_deg >= a0) & (ang_deg < a0 + 10)
+        if np.any(sm):
+            sect_vals.append(float(hal_diff[sm].mean()))
+    sect_arr = np.array(sect_vals, dtype=np.float32)
+    petal_pk_med = float(sect_arr.max() / max(1e-6, float(np.median(sect_arr))))
+    record(
+        "TRV310E scalloped 6-petal highlight halo",
+        "Highlight overflow forms an asymmetric multi-petal starburst skirt (peak/median >= 1.45x) rather than an isotropic ring",
+        f"ring r=14..30px angular peak/median = {petal_pk_med:.2f}x (min={sect_arr.min():.4f}, med={np.median(sect_arr):.4f}, max={sect_arr.max():.4f})",
+        petal_pk_med >= 1.45,
+    )
+
+    # --- 3. Up-Down Asymmetric Interline CCD Smear + Flanking Dark VOD/HOD Trenches ---
+    smear_bg = np.full((H, W, 3), 0.28, dtype=np.float32)
+    smear_bg[rr <= 4.5] = [1.0, 0.98, 1.0]
+    smear_out = cam._flare(smear_bg)
+    smear_lum = smear_out @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+    # Compare downward needle (dy = +25..+65) vs upward plume (dy = -65..-25) at x = cx
+    dn_needle_lift = float(smear_lum[cy + 25:cy + 65, cx].mean() - 0.28)
+    up_plume_lift   = float(smear_lum[cy - 65:cy - 25, cx].mean() - 0.28)
+    up_dn_ratio     = dn_needle_lift / max(1e-6, up_plume_lift)
+    # Check flanking dark VOD/HOD trench on the right of the downward needle (dx = +2..+4 px)
+    right_trench_min = float(smear_lum[cy + 25:cy + 65, cx + 1:cx + 8].min())
+    trench_drop = 0.28 - right_trench_min
+    # Check cyan-blue dominance on downward needle (B > R)
+    dn_b_minus_r = float(smear_out[cy + 30:cy + 60, cx, 2].mean() - smear_out[cy + 30:cy + 60, cx, 0].mean())
+    record(
+        "TRV310E asymmetric CCD smear & dark VOD trench",
+        "Downward CCD smear needle is >2.2x stronger than upward plume, cyan-biased (B>R), and flanked by dark VOD/HOD trenches",
+        f"down_lift={dn_needle_lift:+.4f} vs up_lift={up_plume_lift:+.4f} ({up_dn_ratio:.2f}x), right_trench_drop=-{trench_drop:.4f}, B-R={dn_b_minus_r:+.4f}",
+        (up_dn_ratio >= 2.2) and (trench_drop >= 0.035) and (dn_b_minus_r > 0.05),
+    )
+
+    # --- 4. Early Hong Kong VHS Commercial Bottom Head-Switching Band Morphology ---
+    p_hk = SCHEMA.resolve_all(FACTORY_PRESETS["hk_vhs_commercial_early"]["layers"])
+    ctx_tape = RenderContext(std=std_pal, params=p_hk, seed=202405, frame_count=8, fps=25.0, width=W, height=H)
+    st_tape = TapeStage(ctx_tape)
+    st_tape.prepare()
+    st_tape._ensure(6)
+
+    # Build a structured test frame with vertical bars and warm/neutral colour
+    yy_t, xx_t = np.mgrid[0:H, 0:W].astype(np.float32)
+    y_in = (0.45 + 0.18 * np.cos(2.0 * np.pi * xx_t / 32.0)).astype(np.float32)
+    i_in = np.full((H, W), 0.06, dtype=np.float32)
+    q_in = np.full((H, W), 0.04, dtype=np.float32)
+    rng_t = np.random.default_rng(12345)
+    y_hs, i_hs, q_hs, _ = st_tape._head_switch(y_in, i_in, q_in, frame_index=3, rng=rng_t)
+
+    # (a) Active picture luma survival in the bottom switching band (rows H-5..H-2, active left/mid columns)
+    luma_keep_ratio = float(y_hs[-5:-1, 20:W - 35].mean() / max(1e-6, y_in[-5:-1, 20:W - 35].mean()))
+    # (b) Bipolar RF switching transient spike on the seam rows (`H-5..H-4`)
+    seam_abs_diff = np.abs(y_hs[-6:-3, :W - 30] - y_in[-6:-3, :W - 30])
+    max_seam_spike = float(seam_abs_diff.max())
+    # (c) Mid-line horizontal shift step on the first switching seam row (`H - 5`):
+    #     left of `sw_x` (~0..40 px) is unshifted outgoing head, right of `sw_x` (~W-70..W-30) is shifted incoming head
+    left_seam_err  = float(np.abs(y_hs[-5, 8:36] - y_in[-5, 8:36]).mean())
+    right_seam_err = float(np.abs(y_hs[-5, W - 75:W - 35] - y_in[-5, W - 75:W - 35]).mean())
+    # (d) Post-switch APC olive/yellow-green chroma shift (`dG > dR` and `dG > dB`)
+    from atsim.core.signal import yiq_to_rgb
+    rgb_in = yiq_to_rgb(y_in, i_in, q_in)
+    rgb_hs = yiq_to_rgb(y_hs, i_hs, q_hs)
+    drgb_bot = (rgb_hs[-4:-1, 30:W - 40] - rgb_in[-4:-1, 30:W - 40]).mean(axis=(0, 1))
+
+    record(
+        "HK VHS head-switch bipolar packet, H-AFC pull-in & APC tint",
+        "Preserves bottom picture luma, injects mid-line bipolar RF spike & fracture at x_sw, and applies olive/yellow-green APC phase shift",
+        f"luma_ratio={luma_keep_ratio:.3f}, seam_spike={max_seam_spike:.3f}, mid_step(L={left_seam_err:.4f} -> R={right_seam_err:.4f}), dRGB=({drgb_bot[0]:+.3f},{drgb_bot[1]:+.3f},{drgb_bot[2]:+.3f})",
+        (luma_keep_ratio >= 0.85)
+        and (max_seam_spike >= 0.18)
+        and (right_seam_err > left_seam_err * 2.5)
+        and (drgb_bot[1] > drgb_bot[0] + 0.015)
+        and (drgb_bot[1] > drgb_bot[2] + 0.015),
+    )
+
+
+
+
+def check_patchbay_da_system() -> None:
+    """
+    Verify Candidate E: Broadcast Patchbay, Distribution Amplifier (DA), and 75-Ohm Impedance Termination System:
+      1. 75-Ohm Source-Load Voltage Divider, Reflection Polarity & Waveform Scope Sync-Tip Telemetry:
+         - Mode 0 (Matched 75Ω): R_L=75Ω, G_V=1.000 (0.00 dB), Gamma=0.0, sync_tip=-40.0 IRE.
+         - Mode 1 (High-Z Open Loop-Through, ~10kΩ): G_V≈1.985 (+5.95 dB), Gamma≈+0.985 -> luma overdrive & white clipping,
+           positive reflection ghost, and Waveform Monitor sync_tip < -65 IRE.
+         - Mode 2 (Passive T-Split 3x75Ω = 25Ω): G_V=0.500 (-6.02 dB), Gamma=-0.500 -> luma halved, negative reflection ghost,
+           and -40 IRE sync tip crushed to -20.0 IRE (`induced_sync_clip > 0.45`).
+         - Mode 3 (Active 1x4 DA + Cable EQ): maintains 75Ω / 0 dB across 4 loads while Cable EQ restores HF detail.
+      2. Patchbay Crosspoint Capacitive Crosstalk, Format Mismatch & Audio Crackle/Crosstalk Coupling:
+         - `patch_crosstalk` injects derivative edges & subcarrier beat from adjacent bus;
+         - `patch_format_mismatch = 1` (S-Video Y-only in Composite) produces monochrome output (`chroma_std < 0.015`);
+         - `patch_format_mismatch = 3` (SDI digital stream in Composite) produces high-frequency digital hash snow;
+         - `AudioSimulator` couples patchbay contact crackle & crosstalk tone into the audio stream.
+      3. Multi-Output Node Graph (`dist_amp` 1-in/3-out + `patch_router` in `broadcast_router_da_bench`):
+         - Validates and executes the dual-branch fan-out graph preset cleanly.
+    """
+    print("\nbroadcast patchbay, distribution amplifier & 75-ohm termination (candidate e)")
+    from atsim.codecs.patchbay_da import PatchbayDASpec, apply_patchbay_da, compute_termination_physics
+    from atsim.codecs.scopes import compute_waveform_monitor
+    from atsim.codecs.audio import AudioSimulator
+    from atsim.core.signal import SignalFrame
+    from atsim.core.standards import get_standard
+    from atsim.graph import GRAPH_PRESETS, GraphExecutor
+    from atsim.core.profiles import SCHEMA
+    from atsim.io.source import SyntheticSource
+
+    std = get_standard("ntsc")
+    H, W = 120, 180
+    src = SyntheticSource(width=W, height=H, frames=6)
+    rgb0 = src.frame(1)
+    sig0 = SignalFrame.from_rgb(rgb0, std)
+
+    # 1. 75-Ohm Voltage Divider & Waveform Scope Sync-Tip IRE Verification
+    spec_75 = PatchbayDASpec(enabled=True, termination_mode=0, load_count=1, cable_len_m=25.0)
+    spec_hz = PatchbayDASpec(enabled=True, termination_mode=1, load_count=1, cable_len_m=25.0)
+    spec_t3 = PatchbayDASpec(enabled=True, termination_mode=2, load_count=3, cable_len_m=25.0)
+    spec_da = PatchbayDASpec(enabled=True, termination_mode=3, load_count=4, cable_len_m=45.0, da_eq_boost=0.65)
+
+    y_75, i_75, q_75, info_75 = apply_patchbay_da(sig0.y, sig0.i, sig0.q, spec_75, frame_index=1, std=std)
+    y_hz, i_hz, q_hz, info_hz = apply_patchbay_da(sig0.y, sig0.i, sig0.q, spec_hz, frame_index=1, std=std)
+    y_t3, i_t3, q_t3, info_t3 = apply_patchbay_da(sig0.y, sig0.i, sig0.q, spec_t3, frame_index=1, std=std)
+    y_da, i_da, q_da, info_da = apply_patchbay_da(sig0.y, sig0.i, sig0.q, spec_da, frame_index=1, std=std)
+
+    wfm_t3 = compute_waveform_monitor(
+        SignalFrame(y_t3, i_t3, q_t3).to_rgb(), std=std,
+        params={"connector": {"da_enabled": 1.0, "da_termination_mode": 2.0, "da_load_count": 3.0}},
+    )
+    wfm_hz = compute_waveform_monitor(
+        SignalFrame(y_hz, i_hz, q_hz).to_rgb(), std=std,
+        params={"connector": {"da_enabled": 1.0, "da_termination_mode": 1.0, "da_load_count": 1.0}},
+    )
+
+    record(
+        "75-ohm termination voltage divider, reflection & sync-tip IRE",
+        "Matched 75Ω=0dB (-40 IRE sync), High-Z Open=+5.95dB (overdrive clip, Gamma=+0.985), 3x75Ω T-Split=25Ω/-6.02dB (-20 IRE sync, Gamma=-0.50), Active DA=0dB",
+        f"75Ω:{info_75['gain_db']:+.2f}dB(Y={y_75.mean():.3f}) | HighZ:{info_hz['gain_db']:+.2f}dB(Y={y_hz.mean():.3f},clip={info_hz['clipped_white_pct']:.1f}%,Γ={info_hz['reflection_gamma']:+.3f}) | 25Ω:{info_t3['gain_db']:+.2f}dB(Y={y_t3.mean():.3f},sync={wfm_t3['stats']['sync_tip_ire']:.1f}IRE,Γ={info_t3['reflection_gamma']:+.3f}) | DA:{info_da['gain_db']:+.2f}dB",
+        (abs(info_75["voltage_gain"] - 1.0) < 1e-3)
+        and (info_hz["voltage_gain"] > 1.95 and info_hz["reflection_gamma"] > 0.95 and y_hz.mean() > y_75.mean() * 1.35)
+        and (abs(info_t3["voltage_gain"] - 0.50) < 1e-3 and abs(info_t3["reflection_gamma"] + 0.50) < 1e-3 and y_t3.mean() < y_75.mean() * 0.60)
+        and (abs(wfm_t3["stats"]["sync_tip_ire"] - (-20.0)) < 0.5 and wfm_hz["stats"]["sync_tip_ire"] < -70.0)
+        and (info_t3["induced_sync_clip"] > 0.40 and abs(info_da["voltage_gain"] - 1.0) < 1e-3),
+    )
+
+    # 2. Patchbay Crosspoint Crosstalk, Format Patch Mismatch & Audio Coupling
+    spec_xt = PatchbayDASpec(enabled=True, termination_mode=0, patch_crosstalk=0.65, patch_contact_aging=0.45)
+    y_xt, i_xt, q_xt, info_xt = apply_patchbay_da(sig0.y, sig0.i, sig0.q, spec_xt, frame_index=2, std=std)
+    xt_diff = float(np.abs(y_xt - sig0.y).mean())
+
+    spec_sv = PatchbayDASpec(enabled=True, termination_mode=0, patch_format_mismatch=1)
+    _, i_sv, q_sv, info_sv = apply_patchbay_da(sig0.y, sig0.i, sig0.q, spec_sv, frame_index=2, std=std)
+    sv_chroma = float(np.hypot(i_sv, q_sv).mean())
+    orig_chroma = float(np.hypot(sig0.i, sig0.q).mean())
+
+    spec_sdi = PatchbayDASpec(enabled=True, termination_mode=0, patch_format_mismatch=3)
+    y_sdi, _, _, info_sdi = apply_patchbay_da(sig0.y, sig0.i, sig0.q, spec_sdi, frame_index=2, std=std)
+    sdi_hf = float(np.abs(np.diff(y_sdi, axis=1)).mean())
+
+    p_aud_clean = SCHEMA.resolve_all({"connector": {"da_enabled": 0.0}})
+    p_aud_patch = SCHEMA.resolve_all({
+        "connector": {"da_enabled": 1.0, "patch_crosstalk": 0.65, "patch_contact_aging": 0.65, "patch_format_mismatch": 0.0}
+    })
+    from atsim.codecs.audio import synthesize_test_audio
+    clean_st = synthesize_test_audio(0.5, sample_rate=22050, fps=29.97)
+    aud_c = AudioSimulator(p_aud_clean, fps=29.97, seed=42, sample_rate=22050).render_window(clean_st, start_s=0.0, duration_s=0.5)
+    aud_p = AudioSimulator(p_aud_patch, fps=29.97, seed=42, sample_rate=22050).render_window(clean_st, start_s=0.0, duration_s=0.5)
+    aud_delta = float(np.abs(aud_p.pcm - aud_c.pcm).mean())
+
+    record(
+        "patchbay crosstalk, format mismatch & audio crackle",
+        "Crosspoint capacitance leaks adjacent edges, S-Video Y-in-Composite drops chroma to monochrome, SDI-in-Composite yields digital snow, and audio couples crackle/crosstalk",
+        f"xt_dY={xt_diff:.4f}({info_xt.get('crosstalk_rms_ire',0):.1f}IRE), sv_chroma={sv_chroma:.4f}(vs {orig_chroma:.4f}), sdi_hf={sdi_hf:.4f}, aud_diff={aud_delta:.5f}",
+        (xt_diff > 0.015)
+        and (sv_chroma < orig_chroma * 0.15)
+        and (sdi_hf > 0.12)
+        and (aud_delta > 0.002),
+    )
+
+    # 3. Node Graph Multi-Output `dist_amp` (1-in, 3-out) & `patch_router` Execution
+    g_da = GRAPH_PRESETS["broadcast_router_da_bench"]["build"]()
+    issues = [iss for iss in g_da.validate() if iss.severity == "error"]
+    p_bench = SCHEMA.resolve_all(GRAPH_PRESETS["broadcast_router_da_bench"]["params"])
+    ex = GraphExecutor(g_da, std, p_bench, src, W, H, 29.97, seed=20240101)
+    run = ex.render_frame(1)
+    da_frame = run.node_frames.get("dist_amp")
+    pr_frame = run.node_frames.get("patch_router")
+    tp_frame = run.node_frames.get("tape")
+    branch_diff = float(np.abs(pr_frame - tp_frame).mean()) if (pr_frame is not None and tp_frame is not None) else 0.0
+    record(
+        "broadcast_router_da_bench 1-in-N-out graph execution",
+        "dist_amp fans out composite signal to both VHS tape branch and patch_router direct branch into video_switcher",
+        f"errors={len(issues)}, nodes_rendered={len(run.node_frames)}, branch_diff={branch_diff:.4f}",
+        (not issues)
+        and (not run.errors)
+        and (da_frame is not None and pr_frame is not None and tp_frame is not None)
+        and (branch_diff > 0.005),
+    )
+
+
+
+
+def check_multiview_and_test_generator_systems() -> None:
+    """
+    Verify Candidate F (`multiview_wall`) and Candidate G (`test_signal_gen`):
+      1. SMPTE RP-219 Color Bars + PLUGE (`-4/0/+4 IRE`), EBU Bars, FCC Multiburst (`0.5..5.0 MHz`),
+         5-Step Modulated Staircase + 2T Pulse, and Philips PM5544 test patterns synthesize accurately.
+      2. Closed-loop engineering calibration analyzer (`analyze_engineering_calibration`) accurately
+         measures Multiburst roll-off, Differential Gain/Phase, 2T K-factor, and TBC jitter suppression dB.
+      3. Multi-source CRT Monitor Wall (`render_multiview_wall`) renders 2x2, 3x2, and 1+3 studio monitor
+         walls where per-monitor CRT unit variance alters each monitor window's appearance without
+         polluting the underlying video signal, and faulted channels trigger authentic hardware responses.
+      4. `test_generator_tbc_calibration_lab` and `broadcast_multiview_workstation` node-graph presets
+         validate and execute cleanly.
+    """
+    print("\nmultiview wall & broadcast test signal generator (candidates f & g)")
+    from atsim.codecs.test_signal_gen import generate_test_pattern, analyze_engineering_calibration
+    from atsim.codecs.multiview_wall import MultiviewWallSpec, render_multiview_wall
+    from atsim.core.standards import get_standard
+    from atsim.core.profiles import SCHEMA
+    from atsim.graph.graph import GRAPH_PRESETS
+    from atsim.graph.executor import GraphExecutor
+    from atsim.io.source import SyntheticSource
+    from atsim.render.renderer import Renderer
+
+    std = get_standard("ntsc")
+    W, H = 360, 240
+
+    # 1. Verify all 5 test signal modes + PLUGE (-4 / 0 / +4 IRE) sub-black/super-black levels
+    p_smpte = generate_test_pattern(W, H, mode=1, frame_index=0, fps=29.97, std=std)
+    p_ebu   = generate_test_pattern(W, H, mode=2, frame_index=0, fps=29.97, std=std)
+    p_mb    = generate_test_pattern(W, H, mode=3, frame_index=0, fps=29.97, std=std)
+    p_stair = generate_test_pattern(W, H, mode=4, frame_index=0, fps=29.97, std=std)
+    p_pm0   = generate_test_pattern(W, H, mode=5, frame_index=0, fps=29.97, std=std)
+    p_pm5   = generate_test_pattern(W, H, mode=5, frame_index=5, fps=29.97, std=std)
+
+    y_smpte = 0.299 * p_smpte[..., 0] + 0.587 * p_smpte[..., 1] + 0.114 * p_smpte[..., 2]
+    row_pluge = int(H * 0.86)
+    pluge_sub  = float(y_smpte[row_pluge, int(W * (5.0 / 7.0 + 0.20 / 7.0))])
+    pluge_blk  = float(y_smpte[row_pluge, int(W * (5.0 / 7.0 + 0.50 / 7.0))])
+    pluge_plus = float(y_smpte[row_pluge, int(W * (5.0 / 7.0 + 0.80 / 7.0))])
+    pm_sweep_diff = float(np.abs(p_pm5 - p_pm0).mean())
+
+    record(
+        "5 broadcast test signals & PLUGE (-4/0/+4 IRE) synthesis",
+        "SMPTE PLUGE sub<black<plus, distinct EBU/Multiburst/Staircase, and moving PM5544 sweep hand",
+        f"PLUGE=({pluge_sub:.3f} < {pluge_blk:.3f} < {pluge_plus:.3f}), pm5544_motion={pm_sweep_diff:.4f}",
+        (pluge_sub < pluge_blk < pluge_plus)
+        and (float(np.abs(p_smpte - p_ebu).mean()) > 0.05)
+        and (float(np.abs(p_mb - p_stair).mean()) > 0.05)
+        and (pm_sweep_diff > 0.001),
+    )
+
+    # 2. Closed-loop engineering calibration analyzer: Multiburst roll-off & TBC jitter suppression
+    src = SyntheticSource(W, H, 12, 29.97)
+    p_cal = SCHEMA.resolve_all({
+        "format": {"test_gen_enabled": 1.0, "test_pattern_mode": 3.0, "luma_bandwidth": 2.4, "chroma_bandwidth": 0.65},
+        "tape": {"tape_stability": 0.48, "line_jitter": 0.45, "walk_amplitude": 0.35, "wear": 0.25},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.92, "tbc_residual": 0.05},
+        "display": {"enabled": 0.0},
+    })
+    r_cal = Renderer(src, W, H, 29.97, p_cal, seed=20240101, preview=True)
+    out_mb = r_cal.render_frame(1)
+    cal_report = analyze_engineering_calibration(p_mb, out_mb, std=std, params=p_cal)
+    mb_db = cal_report["multiburst_db"]
+    tbc_cmp = cal_report["tbc_comparison"]
+
+    record(
+        "Closed-loop Multiburst HF roll-off & TBC suppression telemetry",
+        "4.2/5.0 MHz packets attenuate relative to 0.5 MHz under 2.4 MHz VHS filter; TBC suppression > 12 dB",
+        f"0.5MHz={mb_db['0.5MHz']}dB, 4.2MHz={mb_db['4.2MHz']}dB, bw_3db={cal_report['measured_bw_3db_mhz']}MHz, TBC_supp={tbc_cmp['suppression_db']}dB",
+        (mb_db["4.2MHz"] < mb_db["0.5MHz"] - 2.0)
+        and (tbc_cmp["bypass_jitter_px"] > tbc_cmp["active_jitter_px"] * 3.0)
+        and (tbc_cmp["suppression_db"] > 12.0),
+    )
+
+    # 3. Multiview wall: independent per-CRT unit aging & physical signal-loss responses
+    feeds = [
+        {"label": "CH1 CAM/SRC", "rgb": p_smpte, "tally": "PVW", "faulted": False},
+        {"label": "CH2 VTR-RAW", "rgb": out_mb,  "tally": "AUX", "faulted": False},
+        {"label": "CH3 TBC-OUT", "rgb": p_stair, "tally": "PVW", "faulted": False},
+        {"label": "CH4 PGM-AIR", "rgb": p_pm0,   "tally": "PGM", "faulted": False},
+    ]
+    wall_2x2, info_2x2 = render_multiview_wall(
+        feeds, MultiviewWallSpec(enabled=True, layout_mode=0, unit_variance=0.80, fault_channel=0, tally_umd=True),
+        width=W, height=H, frame_index=1,
+    )
+    wall_3x2, info_3x2 = render_multiview_wall(
+        feeds, MultiviewWallSpec(enabled=True, layout_mode=1, unit_variance=0.80, fault_channel=2, fault_mode=5, tally_umd=True),
+        width=W, height=H, frame_index=1,
+    )
+    # Check that source feeds were NEVER mutated in-place by monitor CRT aging
+    smpte_untouched = float(np.abs(feeds[0]["rgb"] - p_smpte).max()) < 1e-6
+    wall_diff = float(np.abs(wall_2x2 - wall_3x2).mean())
+
+    record(
+        "Studio Multiview Wall (2x2 & 3x2) per-CRT aging & fault responses",
+        "2x2 & 3x2 walls render with distinct CRT profiles and fault states while leaving underlying feed signals untouched",
+        f"2x2_cells={len(info_2x2['monitors'])}, 3x2_cells={len(info_3x2['monitors'])}, feed_untouched={smpte_untouched}, layout_diff={wall_diff:.4f}",
+        (len(info_2x2["monitors"]) == 4)
+        and (len(info_3x2["monitors"]) == 6)
+        and smpte_untouched
+        and (wall_diff > 0.04),
+    )
+
+    # 4. Node graph execution of `test_generator_tbc_calibration_lab` and `broadcast_multiview_workstation`
+    g_test = GRAPH_PRESETS["test_generator_tbc_calibration_lab"]["build"]()
+    issues_t = [i for i in g_test.validate() if i.severity == "error"]
+    ex_t = GraphExecutor(g_test, std, SCHEMA.resolve_all(GRAPH_PRESETS["test_generator_tbc_calibration_lab"]["params"]), src, W, H, 29.97, seed=20240101)
+    run_t = ex_t.render_frame(1)
+
+    g_mv = GRAPH_PRESETS["broadcast_multiview_workstation"]["build"]()
+    issues_mv = [i for i in g_mv.validate() if i.severity == "error"]
+    ex_mv = GraphExecutor(g_mv, std, SCHEMA.resolve_all(GRAPH_PRESETS["broadcast_multiview_workstation"]["params"]), src, W, H, 29.97, seed=20240101)
+    run_mv = ex_mv.render_frame(1)
+
+    record(
+        "Node-graph presets (`test_generator_tbc_calibration_lab` & `broadcast_multiview_workstation`)",
+        "Both Candidate F and Candidate G node-graph presets validate and execute with 0 errors",
+        f"test_gen_errors={len(issues_t)+len(run_t.errors)}, mv_errors={len(issues_mv)+len(run_mv.errors)}, mv_nodes={len(run_mv.node_frames)}",
+        (not issues_t) and (not run_t.errors) and (not issues_mv) and (not run_mv.errors)
+        and ("multiview_wall" in run_mv.node_frames) and ("test_gen" in run_t.node_frames),
+    )
+
+
+
+
+def check_ccu_genlock_and_master_playout_systems() -> None:
+    """
+    Verify Candidate H (`studio_ccu_genlock`) and Candidate I (`master_playout`):
+      1. Multi-camera unit color mismatch (`ccu_cam_id = 1` Ikegami warm vs `0` Sony D65) and remote
+         CCU R/B Gain & Flare matching + Master Pedestal & Dynamic Knee compression.
+      2. House Blackburst Genlock cable propagation delay (`genlock_cable_len_m` -> 5.05 ns/m ->
+         6.51 deg/m NTSC subcarrier phase shift), CCU SC-Phase compensation back to 0.0 deg,
+         and Free-Run crystal drift (`genlock_mode = 2`) vertical roll + hue rotation.
+      3. Master Control Playout dual-bus isolation: `PGM` carries Downstream Keyer (DSK) station bug,
+         clock, and bottom crawl while `Clean Feed` remains 100% identical to the underlying program
+         without DSK overlays; VTR Preroll countdown and automatic Emergency Standby Slate failover
+         populate the structured `as_run_log`.
+      4. `studio_ccu_genlock_switcher_bench` and `master_control_playout_automation` node-graph presets
+         validate and execute with 0 errors.
+    """
+    print("\nstudio ccu / genlock & master control playout (candidates h & i)")
+    from atsim.codecs.studio_ccu_genlock import StudioCCUSpec, apply_studio_ccu
+    from atsim.codecs.master_playout import MasterPlayoutSpec, apply_master_playout
+    from atsim.codecs.test_signal_gen import generate_test_pattern
+    from atsim.core.standards import get_standard
+    from atsim.core.profiles import SCHEMA
+    from atsim.graph.graph import GRAPH_PRESETS
+    from atsim.graph.executor import GraphExecutor
+    from atsim.io.source import SyntheticSource
+
+    std = get_standard("ntsc")
+    W, H = 360, 240
+    base_bars = generate_test_pattern(W, H, mode=1, frame_index=0, fps=29.97, std=std)
+
+    # 1. Multi-Camera Unit Mismatch vs CCU Remote Painting Match
+    ref_cam, ref_info = apply_studio_ccu(
+        base_bars, StudioCCUSpec(enabled=True, cam_id=0), std=std, frame_index=0,
+    )
+    warm_unmatched, warm_info = apply_studio_ccu(
+        base_bars, StudioCCUSpec(enabled=True, cam_id=1), std=std, frame_index=0,
+    )
+    warm_matched, matched_info = apply_studio_ccu(
+        base_bars,
+        StudioCCUSpec(
+            enabled=True, cam_id=1,
+            r_gain=1.0 / 1.14, b_gain=1.0 / 0.86,
+            r_flare=-0.024, b_flare=+0.016,
+        ),
+        std=std, frame_index=0,
+    )
+    err_unmatched = float(np.abs(warm_unmatched - ref_cam).mean())
+    err_matched   = float(np.abs(warm_matched - ref_cam).mean())
+
+    record(
+        "Studio CCU multi-camera color matching & remote RCP painting",
+        "CCU R/B Gain & Flare trims bring CAM-2 (Ikegami warm) into close alignment with CAM-1 (Sony D65)",
+        f"unmatched_L1={err_unmatched:.4f} (R/G={warm_info['r_over_g']:.3f}) -> matched_L1={err_matched:.4f} (R/G={matched_info['r_over_g']:.3f})",
+        (err_unmatched > 0.038) and (err_matched < err_unmatched * 0.30),
+    )
+
+    # 2. House Blackburst Genlock cable phase lag (5.05 ns/m -> 6.51 deg/m NTSC) & SC-Phase compensation
+    uncomp_rgb, uncomp_info = apply_studio_ccu(
+        base_bars,
+        StudioCCUSpec(enabled=True, cam_id=0, genlock_mode=1, cable_len_m=20.0, sc_phase_deg=0.0),
+        std=std, frame_index=1,
+    )
+    # Trim SC phase by -cable_sc_lag_deg to cancel the 20m coaxial cable phase rotation
+    comp_rgb, comp_info = apply_studio_ccu(
+        base_bars,
+        StudioCCUSpec(
+            enabled=True, cam_id=0, genlock_mode=1, cable_len_m=20.0,
+            sc_phase_deg=-uncomp_info["cable_sc_lag_deg"],
+            h_phase_px=-uncomp_info["cable_h_delay_px"],
+        ),
+        std=std, frame_index=1,
+    )
+    freerun_rgb, freerun_info = apply_studio_ccu(
+        base_bars,
+        StudioCCUSpec(enabled=True, cam_id=0, genlock_mode=2, cable_len_m=20.0),
+        std=std, frame_index=3,
+    )
+    uncomp_err = float(np.abs(uncomp_rgb - ref_cam).mean())
+    comp_err   = float(np.abs(comp_rgb - ref_cam).mean())
+
+    record(
+        "Blackburst Genlock cable delay phase shift & CCU SC-Phase trim",
+        "20m cable induces 101ns / 130.2deg subcarrier lag; CCU SC/H-Phase trim restores phase lock; Free-Run rolls VBI",
+        f"delay={uncomp_info['cable_delay_ns']}ns, lag={uncomp_info['net_sc_phase_deg']}deg (L1={uncomp_err:.4f}) -> trimmed={comp_info['net_sc_phase_deg']}deg (L1={comp_err:.4f}), freerun_locked={freerun_info['genlock_locked']}",
+        (abs(uncomp_info["cable_delay_ns"] - 101.0) < 1.0)
+        and (abs(uncomp_info["net_sc_phase_deg"] - 130.15) < 1.5)
+        and (abs(comp_info["net_sc_phase_deg"]) < 0.5)
+        and (comp_err < uncomp_err * 0.25)
+        and (not freerun_info["genlock_locked"])
+        and (freerun_info["v_roll_rows"] > 0),
+    )
+
+    # 3. Master Control Playout: PGM (with DSK) vs Clean Feed (0% DSK spill) + Preroll + Auto-Failover
+    _, res_onair = apply_master_playout(
+        base_bars,
+        MasterPlayoutSpec(enabled=True, output_bus=0, playout_state=0, dsk_enabled=True, dsk_crawl=True),
+        std=std, frame_index=2, fps=29.97,
+    )
+    pgm_onair = res_onair["pgm_rgb"]
+    clean_onair = res_onair["clean_feed_rgb"]
+    rep_onair = res_onair["report"]
+
+    # Verify Clean Feed is 100% untouched by DSK while PGM has the DSK bug & crawl
+    clean_untouched = float(np.abs(clean_onair - base_bars).max()) < 1e-6
+    pgm_has_dsk = float(np.abs(pgm_onair - clean_onair).mean()) > 0.008
+
+    # Verify automatic emergency standby failover when upstream signal drops to black / fault
+    black_dead = np.zeros_like(base_bars)
+    slate_out, res_failover = apply_master_playout(
+        black_dead,
+        MasterPlayoutSpec(enabled=True, output_bus=0, playout_state=0, dsk_enabled=True, dsk_crawl=True, failover_auto=True),
+        std=std, frame_index=4, fps=29.97, upstream_fault=True,
+    )
+    rep_failover = res_failover["report"]
+
+    record(
+        "Master Playout PGM vs Clean Feed isolation & Auto-Failover Slate",
+        "Clean Feed has 0.0 DSK contamination while PGM carries DSK bug+crawl; upstream loss auto-cuts to Standby Slate + As-Run Log",
+        f"clean_untouched={clean_untouched}, pgm_dsk_L1={rep_onair['pgm_vs_clean_l1']:.4f}, failover={rep_failover['failover_triggered']}, log_events={len(rep_failover['as_run_log'])}",
+        clean_untouched
+        and pgm_has_dsk
+        and rep_failover["failover_triggered"]
+        and (float(slate_out.mean()) > 0.10)
+        and any(ev["type"] == "FAILOVER" for ev in rep_failover["as_run_log"]),
+    )
+
+    # 4. Node-graph execution of `studio_ccu_genlock_switcher_bench` & `master_control_playout_automation`
+    src = SyntheticSource(W, H, 10, 29.97)
+    g_ccu = GRAPH_PRESETS["studio_ccu_genlock_switcher_bench"]["build"]()
+    issues_ccu = [i for i in g_ccu.validate() if i.severity == "error"]
+    ex_ccu = GraphExecutor(g_ccu, std, SCHEMA.resolve_all(GRAPH_PRESETS["studio_ccu_genlock_switcher_bench"]["params"]), src, W, H, 29.97, seed=20240101)
+    run_ccu = ex_ccu.render_frame(1)
+
+    g_mp = GRAPH_PRESETS["master_control_playout_automation"]["build"]()
+    issues_mp = [i for i in g_mp.validate() if i.severity == "error"]
+    ex_mp = GraphExecutor(g_mp, std, SCHEMA.resolve_all(GRAPH_PRESETS["master_control_playout_automation"]["params"]), src, W, H, 29.97, seed=20240101)
+    run_mp = ex_mp.render_frame(1)
+
+    record(
+        "Node-graph presets (`studio_ccu_genlock_switcher_bench` & `master_control_playout_automation`)",
+        "Both Candidate H and Candidate I node-graph presets validate and render all multi-bus branches cleanly",
+        f"ccu_errors={len(issues_ccu)+len(run_ccu.errors)}, mp_errors={len(issues_mp)+len(run_mp.errors)}, mp_nodes={len(run_mp.node_frames)}",
+        (not issues_ccu) and (not run_ccu.errors)
+        and (not issues_mp) and (not run_mp.errors)
+        and ("master_playout" in run_mp.node_frames)
+        and ("multiview_wall" in run_mp.node_frames),
+    )
+
+
+
+def check_transfer_and_editing_systems() -> None:
+    """
+    Verify Candidate J (`transfer_workstation`) and Candidate K (`edit_controller_nle`):
+      1. Analog-to-Digital Ingest (`station_mode=1`) preserves upstream source defects while TBC mode
+         suppresses capture PLL jitter and reduces A/V clock sync offset (`TransferEvent`).
+      2. Multi-Generation Tape Dubbing (`station_mode=2`, Gen 1..4) separates TBC-correctable horizontal
+         timebase jitter from irreversible luma bandwidth roll-off, colour-under shift, and noise buildup.
+      3. Digital Format Transcoding (`station_mode=3`, 4:2:2->4:1:1->4:2:0) & 4-Way Comparison Lab (`station_mode=4`)
+         maintain 0.0 px timebase jitter while accumulating 8x8 DCT block error & chroma subsampling loss.
+      4. Linear Tape Editing (`Sony BVE-9100`, `edit_mode=1,2`) models mechanical CTL In/Out slip (`±2 frames`),
+         Assemble Edit In-point flash & Out-point CTL tail break vs Insert Edit Flying Erase Head.
+      5. Early 2000s NLE (`edit_mode=3,4`) models 0-frame file-indexed slip, Real-Time Preview proxy/frame-drop
+         underrun vs Final Render Export full-res 2nd-gen DCT re-compression (`Preview != Final Export`).
+      6. Node-graph presets `transfer_replication_comparison_lab` and `linear_and_nle_editing_suite`
+         validate and execute cleanly.
+    """
+    from atsim.codecs.transfer_workstation import (
+        TransferWorkstationSpec,
+        apply_transfer_workstation,
+        compute_transfer_audio_effect,
+    )
+    from atsim.codecs.edit_controller_nle import (
+        EditControllerSpec,
+        apply_edit_controller,
+    )
+    from atsim.codecs.test_signal_gen import generate_test_pattern
+    from atsim.core.standards import get_standard
+    from atsim.core.profiles import SCHEMA
+    from atsim.graph import GRAPH_PRESETS, GraphExecutor
+    from atsim.io.source import SyntheticSource
+
+    std = get_standard("ntsc")
+    W, H = 320, 200
+    base_bars = generate_test_pattern(W, H, mode=1, frame_index=2, std=std)
+
+    # 1. Candidate J: Analog-to-Digital Ingest (`station_mode=1`) + Upstream Defect Preservation
+    # Inject a synthetic upstream tape dropout streak on row 80..86 and verify Ingest does NOT erase it
+    src_with_defect = base_bars.copy()
+    src_with_defect[80:86, 40:260, :] = 0.96
+    ing_notbc_rgb, ing_notbc_rep = apply_transfer_workstation(
+        src_with_defect,
+        TransferWorkstationSpec(station_mode=1, tbc_mode=0, adc_crop=0.50, av_drift_ms=40.0),
+        std=std, frame_index=2,
+    )
+    ing_tbc_rgb, ing_tbc_rep = apply_transfer_workstation(
+        src_with_defect,
+        TransferWorkstationSpec(station_mode=1, tbc_mode=2, adc_crop=0.50, av_drift_ms=40.0),
+        std=std, frame_index=2,
+    )
+    # Defect row must remain bright (> 0.80) in both ingested outputs
+    defect_preserved = float(ing_tbc_rgb[81:85, 60:240].mean()) > 0.80
+    jit_ing_notbc = ing_notbc_rep["metrics"]["timebase_jitter_px"]
+    jit_ing_tbc = ing_tbc_rep["metrics"]["timebase_jitter_px"]
+    av_notbc = abs(ing_notbc_rep["audio_sync_offset_ms"])
+    av_tbc = abs(ing_tbc_rep["audio_sync_offset_ms"])
+
+    record(
+        "Transfer Ingest Station preserves upstream defects & locks TBC/A-V sync",
+        "Capture ADC keeps upstream tape dropout intact while Full-Frame TBC suppresses PLL jitter & A/V drift",
+        f"defect_preserved={defect_preserved}, jitter={jit_ing_notbc:.3f}px->{jit_ing_tbc:.3f}px, av_offset={av_notbc:.1f}ms->{av_tbc:.1f}ms",
+        defect_preserved
+        and (jit_ing_tbc < jit_ing_notbc * 0.20)
+        and (av_tbc < av_notbc * 0.20)
+        and len(ing_tbc_rep["transfer_events"]) == 1,
+    )
+
+    # 2. Candidate J: Multi-Generation Tape Dubbing (`station_mode=2`, Gen 1 vs Gen 4, No-TBC vs TBC)
+    _, dub_g1_notbc = apply_transfer_workstation(
+        base_bars, TransferWorkstationSpec(station_mode=2, generations=1, tbc_mode=0), std=std, frame_index=2
+    )
+    _, dub_g4_notbc = apply_transfer_workstation(
+        base_bars, TransferWorkstationSpec(station_mode=2, generations=4, tbc_mode=0), std=std, frame_index=2
+    )
+    _, dub_g1_tbc = apply_transfer_workstation(
+        base_bars, TransferWorkstationSpec(station_mode=2, generations=1, tbc_mode=2), std=std, frame_index=2
+    )
+    _, dub_g4_tbc = apply_transfer_workstation(
+        base_bars, TransferWorkstationSpec(station_mode=2, generations=4, tbc_mode=2), std=std, frame_index=2
+    )
+    j_g1_no = dub_g1_notbc["metrics"]["timebase_jitter_px"]
+    j_g4_no = dub_g4_notbc["metrics"]["timebase_jitter_px"]
+    j_g4_tbc = dub_g4_tbc["metrics"]["timebase_jitter_px"]
+    bw_g1_tbc = dub_g1_tbc["metrics"]["luma_bw_mhz"]
+    bw_g4_tbc = dub_g4_tbc["metrics"]["luma_bw_mhz"]
+    psnr_g1_tbc = dub_g1_tbc["metrics"]["psnr_db"]
+    psnr_g4_tbc = dub_g4_tbc["metrics"]["psnr_db"]
+
+    record(
+        "Multi-Gen Tape Dubbing separates TBC-correctable jitter from irreversible generation loss",
+        "Gen 1->4 No-TBC jitter compounds while TBC keeps jitter <0.15px; yet bandwidth & PSNR still degrade irreversibly",
+        f"jitter_no_tbc={j_g1_no:.2f}->{j_g4_no:.2f}px vs tbc={j_g4_tbc:.2f}px; tbc_BW={bw_g1_tbc:.2f}->{bw_g4_tbc:.2f}MHz, PSNR={psnr_g1_tbc:.1f}->{psnr_g4_tbc:.1f}dB",
+        (j_g4_no > j_g1_no * 1.6)
+        and (j_g4_tbc < j_g4_no * 0.15)
+        and (bw_g4_tbc < bw_g1_tbc * 0.65)
+        and (psnr_g4_tbc < psnr_g1_tbc - 3.0)
+        and (len(dub_g4_tbc["transfer_events"]) == 4),
+    )
+
+    # 3. Candidate J: Digital Transcoding (`station_mode=3`) & 4-Way Comparison Lab (`station_mode=4`)
+    _, dig_g1 = apply_transfer_workstation(
+        base_bars, TransferWorkstationSpec(station_mode=3, generations=1, codec_target=3), std=std, frame_index=2
+    )
+    _, dig_g3 = apply_transfer_workstation(
+        base_bars, TransferWorkstationSpec(station_mode=3, generations=3, codec_target=3), std=std, frame_index=2
+    )
+    lab_rgb, lab_rep = apply_transfer_workstation(
+        base_bars, TransferWorkstationSpec(station_mode=4, generations=3, codec_target=3), std=std, frame_index=2
+    )
+    aud_eff = compute_transfer_audio_effect(
+        TransferWorkstationSpec(station_mode=2, generations=3, tbc_mode=0, av_drift_ms=35.0),
+        sample_rate=48000, num_samples=1600,
+    )
+
+    record(
+        "Digital Transcode (4:2:2->4:1:1->4:2:0) & 4-Way Replication Comparison Lab",
+        "Digital transcode has 0.0px jitter with rising DCT block/chroma loss; 4-Way Lab renders all 4 branches + provenance",
+        f"dig_jitter={dig_g3['metrics']['timebase_jitter_px']}px, dct_err={dig_g3['metrics']['dct_block_err']:.4f}, PSNR={dig_g1['metrics']['psnr_db']:.1f}->{dig_g3['metrics']['psnr_db']:.1f}dB, tbc_ratio={lab_rep['tbc_jitter_reduction_ratio']}x",
+        (dig_g3["metrics"]["timebase_jitter_px"] == 0.0)
+        and (dig_g3["metrics"]["dct_block_err"] > 0.002)
+        and (dig_g3["metrics"]["psnr_db"] < dig_g1["metrics"]["psnr_db"])
+        and (lab_rep["tbc_jitter_reduction_ratio"] > 5.0)
+        and (aud_eff["shift_samples"] != 0),
+    )
+
+    # 4. Candidate K: Linear Tape Editing (`Sony BVE-9100`, `edit_mode=1` Assemble vs `edit_mode=2` Insert)
+    # Test In-point slip: at frame_index=2 (ideal_in=2), slip=0 is on SHOT_B while slip=2 is still on SHOT_A
+    ed_slip0_rgb, ed_slip0_rep = apply_edit_controller(
+        base_bars, EditControllerSpec(edit_mode=1, point_slip_frames=0), std=std, frame_index=2
+    )
+    ed_slip2_rgb, ed_slip2_rep = apply_edit_controller(
+        base_bars, EditControllerSpec(edit_mode=1, point_slip_frames=2), std=std, frame_index=2
+    )
+    # At effective_out_frame (frame_index=5 for slip=0), Assemble Edit triggers tail_ctl_break_active
+    _, ed_asm_out_rep = apply_edit_controller(
+        base_bars, EditControllerSpec(edit_mode=1, point_slip_frames=0), std=std, frame_index=5
+    )
+    # Insert Edit at same out-point has NO tail CTL break; compare Flying Erase Head ON vs OFF at in-point
+    ins_feh_on_rgb, ins_feh_on_rep = apply_edit_controller(
+        base_bars, EditControllerSpec(edit_mode=2, point_slip_frames=0, flying_erase=True), std=std, frame_index=2
+    )
+    ins_feh_off_rgb, ins_feh_off_rep = apply_edit_controller(
+        base_bars, EditControllerSpec(edit_mode=2, point_slip_frames=0, flying_erase=False), std=std, frame_index=2
+    )
+    _, ins_out_rep = apply_edit_controller(
+        base_bars, EditControllerSpec(edit_mode=2, point_slip_frames=0, flying_erase=True), std=std, frame_index=5
+    )
+    slip_diff_l1 = float(np.abs(ed_slip0_rgb - ed_slip2_rgb).mean())
+    feh_diff_l1 = float(np.abs(ins_feh_off_rgb - ins_feh_on_rgb).mean())
+
+    record(
+        "Linear Tape Editor In/Out slip, Assemble tail CTL break & Insert Flying Erase Head",
+        "CTL point slip shifts cut frame; Assemble has In-flash & Out-CTL break; Insert keeps CTL & models Flying Erase overlap",
+        f"slip0_shot={ed_slip0_rep['active_shot']} vs slip2_shot={ed_slip2_rep['active_shot']} (L1={slip_diff_l1:.3f}), asm_tail_break={ed_asm_out_rep['tail_ctl_break_active']}, ins_tail_break={ins_out_rep['tail_ctl_break_active']}, feh_L1={feh_diff_l1:.3f}",
+        (ed_slip0_rep["active_shot"] == "SHOT_B_INCOMING")
+        and (ed_slip2_rep["active_shot"] == "SHOT_A_OUTGOING")
+        and (slip_diff_l1 > 0.08)
+        and ed_slip0_rep["assemble_flash_active"]
+        and ed_asm_out_rep["tail_ctl_break_active"]
+        and (not ins_out_rep["tail_ctl_break_active"])
+        and ins_feh_off_rep["flying_erase_ghost_active"]
+        and (feh_diff_l1 > 0.03),
+    )
+
+    # 5. Candidate K: Early 2000s NLE Real-Time Preview (`edit_mode=3`) vs Final Render Export (`edit_mode=4`)
+    nle_pvw_rgb, nle_pvw_rep = apply_edit_controller(
+        base_bars, EditControllerSpec(edit_mode=3, point_slip_frames=3, nle_complexity=0.75), std=std, frame_index=2
+    )
+    nle_exp_rgb, nle_exp_rep = apply_edit_controller(
+        base_bars, EditControllerSpec(edit_mode=4, point_slip_frames=3, nle_complexity=0.75), std=std, frame_index=2
+    )
+    pvw_vs_exp_l1 = float(np.abs(nle_pvw_rgb - nle_exp_rgb).mean())
+
+    record(
+        "Early 2000s NLE Real-Time Preview vs Final Render Export divergence",
+        "NLE has 0-frame slip; Preview drops frames/resolution on complex transitions while Export renders full-res with 2nd-gen DCT",
+        f"pvw_drop={nle_pvw_rep['preview_dropped_frame']} (proxy=1/{nle_pvw_rep['preview_proxy_factor']}) vs exp_drop={nle_exp_rep['preview_dropped_frame']} (dct_L1={nle_exp_rep['reencode_dct_l1']:.4f}), pvw_vs_exp_L1={pvw_vs_exp_l1:.3f}",
+        (nle_pvw_rep["point_slip_frames"] == 0)
+        and nle_pvw_rep["preview_dropped_frame"]
+        and (not nle_exp_rep["preview_dropped_frame"])
+        and nle_exp_rep["reencoded_segment"]
+        and (nle_exp_rep["reencode_dct_l1"] > 0.001)
+        and (pvw_vs_exp_l1 > 0.05),
+    )
+
+    # 6. Node-graph execution of `transfer_replication_comparison_lab` & `linear_and_nle_editing_suite`
+    src = SyntheticSource(W, H, 10, 29.97)
+    g_tr = GRAPH_PRESETS["transfer_replication_comparison_lab"]["build"]()
+    issues_tr = [i for i in g_tr.validate() if i.severity == "error"]
+    ex_tr = GraphExecutor(g_tr, std, SCHEMA.resolve_all(GRAPH_PRESETS["transfer_replication_comparison_lab"]["params"]), src, W, H, 29.97, seed=20240101)
+    run_tr = ex_tr.render_frame(2)
+
+    g_ed = GRAPH_PRESETS["linear_and_nle_editing_suite"]["build"]()
+    issues_ed = [i for i in g_ed.validate() if i.severity == "error"]
+    ex_ed = GraphExecutor(g_ed, std, SCHEMA.resolve_all(GRAPH_PRESETS["linear_and_nle_editing_suite"]["params"]), src, W, H, 29.97, seed=20240101)
+    run_ed = ex_ed.render_frame(2)
+
+    record(
+        "Node-graph presets (`transfer_replication_comparison_lab` & `linear_and_nle_editing_suite`)",
+        "Both Candidate J and Candidate K node-graph presets validate and render all workstation nodes cleanly",
+        f"tr_errors={len(issues_tr)+len(run_tr.errors)}, ed_errors={len(issues_ed)+len(run_ed.errors)}, ed_nodes={len(run_ed.node_frames)}",
+        (not issues_tr) and (not run_tr.errors)
+        and (not issues_ed) and (not run_ed.errors)
+        and ("transfer_station" in run_tr.node_frames)
+        and ("linear_editor" in run_ed.node_frames)
+        and ("nle_timeline" in run_ed.node_frames),
+    )
+
+
+def check_automation_satellite_transmitter_systems() -> None:
+    """
+    Verify Candidate L (`playout_automation_v2`), Candidate M (`satellite_ird`),
+    and Candidate N (`tv_transmitter_chain`):
+      1. Candidate L: `PlayoutEvent` 5-state machine (`SCHEDULED -> PREPARING -> READY -> ON_AIR -> COMPLETED`)
+         and all 6 hierarchical exception branches (`MISSING_ASSET`, `NOT_READY`, `SIGNAL_LOSS`, `OVERRIDDEN`,
+         `FALLBACK`, `HELD`) plus 3-tier root-cause trace (`CausalFaultRecord`).
+      2. Candidate M (Analog C-Band FM Satellite): FM threshold impulse sparkles ("鱼骨黑白打火噪点") appear
+         monotonically as C/N drops below the ~11.5 dB FM threshold while preserving underlying picture structure.
+      3. Candidate M (Digital DVB-S QPSK + Viterbi + Reed-Solomon Cliff Effect): Above 6.5 dB QEF threshold,
+         post-RS uncorrectable packets are 0 and the decoded picture is 100% snow-free despite pre-Viterbi raw BER;
+         inside 4.4..6.5 dB cliff zone, MPEG-2 macroblock slices corrupt & PTS/DTS slips; below 4.4 dB service drops.
+      4. Candidate N (TV Transmitter Exciter + HPA + Diplexer + Feeder VSWR): High-Power Amplifier drive (`pa_drive`)
+         and `pa_am_pm_deg` produce measurable Differential Gain (`DG%`) and Differential Phase (`DP deg`), cavity
+         diplexer group delay (`filter_gd_ns`) shifts chroma & rings 2T edges, and feeder VSWR produces a delayed ghost.
+      5. Candidate N (End-to-End Broadcast Test Bench): Quantifies and separates Transmitter Distortion (`isolated_tx_l1`)
+         from Propagation/Receiver Distortion (`isolated_channel_l1`) and compares Analog VSB vs Digital COFDM reception.
+      6. Node-graph presets `satellite_to_automation_playout_suite` and `end_to_end_tv_transmitter_broadcast_bench`
+         validate and execute all new nodes (`automation_controller`, `sat_dish_lnb`, `sat_ird_receiver`, `tv_exciter_pa`) cleanly.
+    """
+    from atsim.codecs.playout_automation_v2 import (
+        PlayoutAutomationV2Spec,
+        apply_playout_automation_v2,
+    )
+    from atsim.codecs.satellite_ird import (
+        SatelliteIRDSpec,
+        apply_satellite_ird,
+        compute_satellite_audio_effect,
+    )
+    from atsim.codecs.tv_transmitter_chain import (
+        TVTransmitterSpec,
+        apply_tv_transmitter_chain,
+        compute_transmitter_audio_effect,
+    )
+    from atsim.codecs.test_signal_gen import generate_test_pattern
+    from atsim.core.standards import get_standard
+    from atsim.core.profiles import SCHEMA
+    from atsim.graph import GRAPH_PRESETS, GraphExecutor
+    from atsim.io.source import SyntheticSource
+
+    std = get_standard("pal")
+    W, H = 320, 200
+    base_bars = generate_test_pattern(W, H, mode=1, frame_index=2, std=std)
+
+    # 1. Candidate L: PlayoutEvent State Machine & 6 Exception Branches + Root-Cause Trace
+    _, auto_norm = apply_playout_automation_v2(
+        base_bars,
+        PlayoutAutomationV2Spec(enabled=True, mode=1, fault_inject=0, console_view=False),
+        std=std, frame_index=2, fps=25.0,
+    )
+    branch_states = {}
+    branch_causes = {}
+    for code in range(1, 7):
+        _, res_b = apply_playout_automation_v2(
+            base_bars,
+            PlayoutAutomationV2Spec(enabled=True, mode=3, fault_inject=code, console_view=True),
+            std=std, frame_index=4, fps=25.0,
+        )
+        rep_b = res_b["report"]
+        branch_states[code] = rep_b["active_event_status"]
+        branch_causes[code] = len(rep_b["causal_trace"])
+
+    expected_branches = {
+        1: "MISSING_ASSET",
+        2: "NOT_READY",
+        3: "SIGNAL_LOSS",
+        4: "OVERRIDDEN",
+        5: "FALLBACK",
+        6: "HELD",
+    }
+    all_branches_match = all(branch_states.get(k) == v for k, v in expected_branches.items())
+    all_traces_populated = all(branch_causes.get(k, 0) >= 1 for k in range(1, 7))
+    rep_norm = auto_norm["report"]
+    lifecycle_states_present = {ev["status"] for ev in rep_norm["playlist"]}
+
+    record(
+        "Playout Automation v2 state machine, 6 exception branches & root-cause trace",
+        "Playlist tracks COMPLETED/ON_AIR/READY/PREPARING/SCHEDULED; codes 1..6 trigger exact exception states with CausalFaultRecord",
+        f"norm_state={rep_norm['active_event_status']} (playlist_states={len(lifecycle_states_present)}), branches={list(branch_states.values())}",
+        (rep_norm["active_event_status"] == "ON_AIR")
+        and ("COMPLETED" in lifecycle_states_present)
+        and ("PREPARING" in lifecycle_states_present or "READY" in lifecycle_states_present)
+        and all_branches_match
+        and all_traces_populated,
+    )
+
+    # 2. Candidate M: Analog C-Band FM Satellite Threshold Sparkles ("鱼骨黑白打火噪点")
+    fm_clear_rgb, fm_clear_res = apply_satellite_ird(
+        base_bars,
+        SatelliteIRDSpec(mode=1, cn_db=16.5, rain_fade_db=0.0, lnb_drift_khz=0.0, ird_osd=False),
+        std=std, frame_index=2, fps=25.0,
+    )
+    fm_thresh_rgb, fm_thresh_res = apply_satellite_ird(
+        base_bars,
+        SatelliteIRDSpec(mode=1, cn_db=8.5, rain_fade_db=2.5, lnb_drift_khz=65.0, ird_osd=False),
+        std=std, frame_index=2, fps=25.0,
+    )
+    sp_clear = fm_clear_res["fm_sparkle_density"]
+    sp_thresh = fm_thresh_res["fm_sparkle_density"]
+    fm_diff = float(np.abs(fm_thresh_rgb - fm_clear_rgb).mean())
+
+    record(
+        "Satellite IRD Analog C-Band FM threshold impulse sparkles & LNB drift",
+        "High C/N (16.5 dB) has near-zero sparkles; low C/N (6.0 dB eff) triggers bipolar FM impulse sparkles while keeping image recognizable",
+        f"cn_clear={fm_clear_res['cn_db']}dB (sparkle={sp_clear:.5f}) -> cn_low={fm_thresh_res['cn_db']}dB (sparkle={sp_thresh:.4f}, L1={fm_diff:.3f})",
+        (sp_clear < 1e-4)
+        and (sp_thresh > 0.008)
+        and (fm_diff > 0.020)
+        and (fm_diff < 0.35),
+    )
+
+    # 3. Candidate M: Digital DVB-S QPSK + Viterbi + Reed-Solomon Cliff Effect
+    # Compare Clear-Sky 16.5 dB vs Marginal QEF 8.2 dB (8.3 dB rain fade, yet 0.00000 snow difference!)
+    dvbs_clear_rgb, _ = apply_satellite_ird(
+        base_bars,
+        SatelliteIRDSpec(mode=2, cn_db=16.5, rain_fade_db=0.0, ird_osd=False),
+        std=std, frame_index=2, fps=25.0,
+    )
+    dvbs_qef_rgb, dvbs_qef_res = apply_satellite_ird(
+        base_bars,
+        SatelliteIRDSpec(mode=2, cn_db=8.2, rain_fade_db=0.0, ird_osd=False),
+        std=std, frame_index=2, fps=25.0,
+    )
+    # Region B: C/N = 4.9 dB (inside 4.4..6.5 dB Digital Cliff Zone -> macroblock slice tearing & PTS slip)
+    dvbs_cliff_rgb, dvbs_cliff_res = apply_satellite_ird(
+        base_bars,
+        SatelliteIRDSpec(mode=2, cn_db=4.9, rain_fade_db=0.0, ird_osd=False),
+        std=std, frame_index=2, fps=25.0,
+    )
+    # Region C: C/N = 3.2 dB (below 4.4 dB -> total transport lock loss)
+    dvbs_lost_rgb, dvbs_lost_res = apply_satellite_ird(
+        base_bars,
+        SatelliteIRDSpec(mode=2, cn_db=3.2, rain_fade_db=0.0, ird_osd=False),
+        std=std, frame_index=2, fps=25.0,
+    )
+    # Mode 3: 2x2 Comparison Lab
+    sat_lab_rgb, sat_lab_res = apply_satellite_ird(
+        base_bars,
+        SatelliteIRDSpec(mode=3, cn_db=9.5, rain_fade_db=4.0, ird_osd=True),
+        std=std, frame_index=2, fps=25.0,
+    )
+    sat_aud = compute_satellite_audio_effect(
+        SatelliteIRDSpec(mode=2, cn_db=4.9, rain_fade_db=0.0), sample_rate=48000, num_samples=1600
+    )
+
+    qef_vs_clear_l1 = float(np.abs(dvbs_qef_rgb - dvbs_clear_rgb).max())
+    cliff_l1 = float(np.abs(dvbs_cliff_rgb - dvbs_clear_rgb).mean())
+
+    record(
+        "Satellite IRD Digital DVB-S Cliff Effect (QEF snow-free vs Cliff macroblocks vs Service Lost)",
+        "From 16.5 to 8.2 dB DVB-S adds 0.00000 noise (RS uncorr=0) while pre-Viterbi BER>0; at 4.9 dB cliff erupts; at 3.2 dB lock drops",
+        f"qef_8.2dB: pre_ber={dvbs_qef_res['pre_viterbi_ber']:.2e}, rs_uncorr={dvbs_qef_res['rs_uncorrected_pkts']}, dClear={qef_vs_clear_l1:.5f}; cliff_4.9dB: state={dvbs_cliff_res['cliff_state']}, corr={dvbs_cliff_res['cliff_corruption']:.3f}, L1={cliff_l1:.3f}; lost_3.2dB: state={dvbs_lost_res['cliff_state']}",
+        ("QEF" in dvbs_qef_res["cliff_state"])
+        and (dvbs_qef_res["pre_viterbi_ber"] > 1e-5)
+        and (dvbs_qef_res["rs_uncorrected_pkts"] == 0)
+        and (qef_vs_clear_l1 == 0.0)
+        and ("CLIFF" in dvbs_cliff_res["cliff_state"])
+        and (cliff_l1 > 0.01)
+        and (dvbs_lost_res["cliff_service_lost"] is True)
+        and (sat_aud["dvbs_drop_mute"] > 0.0)
+        and (float(sat_lab_rgb.mean()) > 0.05),
+    )
+
+    # 4. Candidate N: TV Transmitter Exciter, HPA AM-AM (DG) / AM-PM (DP), Diplexer Group Delay & Feeder VSWR
+    tx_clean_rgb, tx_clean_res = apply_tv_transmitter_chain(
+        base_bars,
+        TVTransmitterSpec(mode=1, pa_drive=0.05, pa_am_pm_deg=0.5, filter_gd_ns=10.0, feeder_vswr=1.02, sound_intermod=0.0),
+        std=std, frame_index=2, fps=25.0,
+    )
+    tx_driven_rgb, tx_driven_res = apply_tv_transmitter_chain(
+        base_bars,
+        TVTransmitterSpec(mode=1, pa_drive=0.85, pa_am_pm_deg=18.0, filter_gd_ns=140.0, feeder_vswr=1.65, sound_intermod=0.55),
+        std=std, frame_index=2, fps=25.0,
+    )
+    tx_aud = compute_transmitter_audio_effect(
+        TVTransmitterSpec(mode=1, pa_drive=0.85, sound_intermod=0.55), sample_rate=48000, num_samples=1600
+    )
+
+    record(
+        "TV Transmitter HPA AM-AM Differential Gain, AM-PM Differential Phase, Diplexer GD & Feeder VSWR",
+        "High HPA drive & VSWR raise DG%, DP deg, feeder reflection gamma & 920kHz sound-chroma beat + intercarrier buzz",
+        f"DG={tx_clean_res['diff_gain_pct']:.1f}%->{tx_driven_res['diff_gain_pct']:.1f}%, DP={tx_clean_res['diff_phase_deg']:.1f}->{tx_driven_res['diff_phase_deg']:.1f}deg, VSWR_refl={tx_driven_res['feeder_reflection_gamma']:.3f}, tx_L1={tx_clean_res['isolated_tx_l1']:.4f}->{tx_driven_res['isolated_tx_l1']:.4f}",
+        (tx_driven_res["diff_gain_pct"] > tx_clean_res["diff_gain_pct"] + 15.0)
+        and (tx_driven_res["diff_phase_deg"] > tx_clean_res["diff_phase_deg"] + 8.0)
+        and (tx_driven_res["feeder_reflection_gamma"] > 0.20)
+        and (tx_driven_res["isolated_tx_l1"] > tx_clean_res["isolated_tx_l1"] * 2.2)
+        and (tx_aud["intercarrier_buzz_level"] > 0.05),
+    )
+
+    # 5. Candidate N: End-to-End Off-Air Broadcast 4-Way Lab (`mode=3`) & Digital DTT (`mode=2`)
+    tx_lab_rgb, tx_lab_res = apply_tv_transmitter_chain(
+        base_bars,
+        TVTransmitterSpec(mode=3, pa_drive=0.65, pa_am_pm_deg=14.0, filter_gd_ns=95.0, feeder_vswr=1.35, sound_intermod=0.38),
+        std=std, frame_index=2, fps=25.0, channel_cn_db=22.0, multipath_level=0.22,
+    )
+
+    record(
+        "End-to-End Off-Air Broadcast 4-Way Test Bench separates TX vs Channel/RX distortion",
+        "4-Way Broadcast Lab simultaneously produces TX Antenna Tap, Analog Off-Air RX & Digital COFDM RX with separated L1 metrics",
+        f"tx_only_L1={tx_lab_res['isolated_tx_l1']:.4f}, ch_rx_added_L1={tx_lab_res['isolated_channel_l1']:.4f}, e2e_analog_L1={tx_lab_res['end_to_end_total_l1']:.4f}, dtt_state={tx_lab_res['dtt_cliff_state']} (MER={tx_lab_res['digital_mer_db']:.1f}dB)",
+        (tx_lab_res["isolated_tx_l1"] > 0.01)
+        and (tx_lab_res["isolated_channel_l1"] > 0.005)
+        and (tx_lab_res["end_to_end_total_l1"] > tx_lab_res["isolated_tx_l1"])
+        and (float(tx_lab_rgb.mean()) > 0.05),
+    )
+
+    # 6. Node-Graph execution of `satellite_to_automation_playout_suite` & `end_to_end_tv_transmitter_broadcast_bench`
+    src = SyntheticSource(W, H, 10, 25.0)
+    g_sat = GRAPH_PRESETS["satellite_to_automation_playout_suite"]["build"]()
+    issues_sat = [i for i in g_sat.validate() if i.severity == "error"]
+    ex_sat = GraphExecutor(g_sat, std, SCHEMA.resolve_all(GRAPH_PRESETS["satellite_to_automation_playout_suite"]["params"]), src, W, H, 25.0, seed=20240101)
+    run_sat = ex_sat.render_frame(2)
+
+    g_tx = GRAPH_PRESETS["end_to_end_tv_transmitter_broadcast_bench"]["build"]()
+    issues_tx = [i for i in g_tx.validate() if i.severity == "error"]
+    ex_tx = GraphExecutor(g_tx, std, SCHEMA.resolve_all(GRAPH_PRESETS["end_to_end_tv_transmitter_broadcast_bench"]["params"]), src, W, H, 25.0, seed=20240101)
+    run_tx = ex_tx.render_frame(2)
+
+    record(
+        "Node-graph presets (`satellite_to_automation_playout_suite` & `end_to_end_tv_transmitter_broadcast_bench`)",
+        "Candidate L, M, and N node-graph presets validate and execute all new infrastructure nodes cleanly",
+        f"sat_errors={len(issues_sat)+len(run_sat.errors)}, tx_errors={len(issues_tx)+len(run_tx.errors)}, sat_nodes={len(run_sat.node_frames)}, tx_nodes={len(run_tx.node_frames)}",
+        (not issues_sat) and (not run_sat.errors)
+        and (not issues_tx) and (not run_tx.errors)
+        and ("sat_dish_lnb" in run_sat.node_frames)
+        and ("sat_ird_receiver" in run_sat.node_frames)
+        and ("automation_controller" in run_sat.node_frames)
+        and ("tv_exciter_pa" in run_tx.node_frames),
+    )
+
+
+
+    # ------------------------------------------------------------------
+    # Option O (Parameter Inversion, 3-Tier Audit & FADGI Lab) &
+    # Option P (16mm/35mm Photochemical Film & Rank Cintel Telecine)
+    # ------------------------------------------------------------------
+    from atsim.codecs.inversion_calibration_lab import (
+        InversionCalibrationSpec,
+        classify_schema_parameters,
+        invert_degraded_observation,
+        audit_parameter_tiers_and_error_budget,
+        apply_inversion_calibration_lab,
+    )
+    from atsim.codecs.film_telecine import (
+        FilmTelecineSpec,
+        simulate_photochemical_film,
+        simulate_film_aging_and_projector,
+        compute_telecine_pull_mapping,
+        apply_film_telecine,
+    )
+    from atsim.core.signal import lowpass, horizontal_shift
+
+    src_op = SyntheticSource(W, H, 6, 29.97)
+    ref_op = np.clip(src_op.frame(0), 0.0, 1.0).astype(np.float32)
+
+    # Check 87 (Option O - 1): 3-Tier Parameter Separation & Error Budget Audit (Physical / Device / Artistic)
+    test_params_op = {
+        "camera": {"sensor_noise": 0.14, "vcd_color_tone": 0.85},
+        "format": {"luma_bandwidth": 2.4, "chroma_bandwidth": 0.6},
+        "tape": {"line_jitter": 0.45, "noise_floor": 0.22},
+        "display": {"enabled": 0.0},
+    }
+    audit_res = audit_parameter_tiers_and_error_budget(test_params_op, ref_op)
+    sc_aud = audit_res["schema_audit"]
+    eb = audit_res["error_budget"]
+    record(
+        "Option O: Three-tier parameter classification & error budget (`classify_schema_parameters`)",
+        "Explicitly separates Physical, Device, and Artistic parameters and quantifies their independent L1/PSNR contributions",
+        f"total={sc_aud['total_parameters']}, tiers={sc_aud['tier_counts']}, L1(phys={eb['physical_l1']:.4f}, dev={eb['device_l1']:.4f}, art={eb['artistic_l1']:.4f}), PSNR={eb['end_to_end_psnr_db']:.2f}dB",
+        (sc_aud["total_parameters"] >= 180)
+        and (sc_aud["tier_counts"]["PHYSICAL"] > 50)
+        and (sc_aud["tier_counts"]["DEVICE"] > 20)
+        and (sc_aud["tier_counts"]["ARTISTIC"] >= 10)
+        and (eb["physical_l1"] > 0.005)
+        and (eb["artistic_l1"] > 0.002),
+    )
+
+    # Check 88 (Option O - 2): Multi-hypothesis bandwidth inversion & confidence interval
+    deg_narrow = lowpass(ref_op, 2.6, axis=1)
+    deg_wide = lowpass(ref_op, 0.7, axis=1)
+    inv_narrow = invert_degraded_observation(deg_narrow, reference_rgb=ref_op)
+    inv_wide = invert_degraded_observation(deg_wide, reference_rgb=ref_op)
+    bw_n = inv_narrow["est_luma_bw_mhz"]
+    bw_w = inv_wide["est_luma_bw_mhz"]
+    ci_n = inv_narrow["bw_confidence_interval_mhz"]
+    comp_mechs = inv_narrow["hypotheses"][0]["competing_mechanisms"]
+    record(
+        "Option O: Bandwidth parameter inversion & competing physical hypotheses (`invert_degraded_observation`)",
+        "Monotonically recovers -3dB luma bandwidth with confidence intervals and ranks filter vs head-wear vs optical defocus causes",
+        f"bw_narrow={bw_n:.2f}MHz CI={ci_n}, bw_wide={bw_w:.2f}MHz, top_cause={comp_mechs[0]['cause'][:24]} ({comp_mechs[0]['probability']:.2f})",
+        (bw_n < bw_w)
+        and (ci_n[0] <= bw_n <= ci_n[1])
+        and (len(comp_mechs) == 3)
+        and (abs(sum(m["probability"] for m in comp_mechs) - 1.0) < 0.02),
+    )
+
+    # Check 89 (Option O+P - 3): Inversion solver discriminates per-line tape jitter from whole-frame film gate weave
+    rng_j = np.random.default_rng(42)
+    per_row_shifts = rng_j.standard_normal(H).astype(np.float32) * 2.4
+    tape_jitter_rgb = np.stack([horizontal_shift(ref_op[..., c], per_row_shifts) for c in range(3)], axis=-1)
+    whole_frame_shifts = np.full(H, 2.8, dtype=np.float32)
+    film_weave_rgb = np.stack([horizontal_shift(ref_op[..., c], whole_frame_shifts) for c in range(3)], axis=-1)
+    inv_tape = invert_degraded_observation(tape_jitter_rgb, reference_rgb=ref_op)
+    inv_film = invert_degraded_observation(film_weave_rgb, reference_rgb=ref_op)
+    record(
+        "Option O+P: Inversion solver separates tape line-phase jitter from 2D mechanical film gate weave",
+        "Per-scanline phase jitter raises `est_line_jitter_px` while rigid whole-frame gate weave raises `est_gate_weave_px` with near-zero line jitter",
+        f"tape(line_jit={inv_tape['est_line_jitter_px']:.3f}px) vs film(line_jit={inv_film['est_line_jitter_px']:.3f}px, gate_weave={inv_film['est_gate_weave_px']:.3f}px)",
+        (inv_tape["est_line_jitter_px"] > 0.45)
+        and (inv_film["est_line_jitter_px"] < 0.12)
+        and (inv_film["est_gate_weave_px"] > 0.65),
+    )
+
+    # Check 90 (Option P - 4): Photochemical H&D curve mid-density grain clumping & Eastmancolor asymmetric dye fading
+    ramp = np.linspace(0.01, 0.99, W, dtype=np.float32)[None, :, None]
+    ramp_rgb = np.repeat(np.repeat(ramp, H, axis=0), 3, axis=2)
+    fspec_grain = FilmTelecineSpec(enabled=True, stock=2, grain_amount=0.65, grain_size=1.4, halation=0.0, gate_weave=0.0, shutter_flicker=0.0, scratches_dust=0.0)
+    fspec_clean = FilmTelecineSpec(enabled=True, stock=2, grain_amount=0.0, grain_size=1.4, halation=0.0, gate_weave=0.0, shutter_flicker=0.0, scratches_dust=0.0)
+    film_g, _ = simulate_photochemical_film(ramp_rgb, fspec_grain, frame_index=1, seed=77)
+    film_c, _ = simulate_photochemical_film(ramp_rgb, fspec_clean, frame_index=1, seed=77)
+    g_diff = np.abs(film_g - film_c)
+    toe_std = float(np.std(g_diff[:, :int(W * 0.08), :]))
+    mid_std = float(np.std(g_diff[:, int(W * 0.40):int(W * 0.60), :]))
+    shd_std = float(np.std(g_diff[:, int(W * 0.92):, :]))
+
+    fspec_fade = FilmTelecineSpec(enabled=True, stock=1, dye_fade=0.75, gate_weave=0.0, shutter_flicker=0.0, scratches_dust=0.0)
+    faded_rgb, _ = simulate_film_aging_and_projector(ref_op, fspec_fade, frame_index=0, seed=77)
+    delta_r = float(faded_rgb[..., 0].mean() - ref_op[..., 0].mean())
+    delta_g = float(faded_rgb[..., 1].mean() - ref_op[..., 1].mean())
+    record(
+        "Option P: Photochemical H&D curve grain clumping & Eastmancolor Cyan/Yellow dye fading (`simulate_photochemical_film`)",
+        "Silver-halide/dye-cloud grain peaks in mid-density (`mid > toe & shoulder`) and Cyan/Yellow dye loss shifts archival prints warm red",
+        f"grain_std(toe={toe_std:.4f}, mid={mid_std:.4f}, shoulder={shd_std:.4f}), dye_fade(dR={delta_r:+.3f} vs dG={delta_g:+.3f})",
+        (mid_std > toe_std * 1.45) and (mid_std > shd_std * 1.35) and (delta_r > delta_g + 0.04),
+    )
+
+    # Check 91 (Option P - 5): Rank Cintel Telecine 24fps->29.97i (3:2 Pulldown AA-BB-BC-CD-DD) combing & PAL 25i +4.167% speedup
+    m0 = compute_telecine_pull_mapping(0, 1)
+    m1 = compute_telecine_pull_mapping(1, 1)
+    m2 = compute_telecine_pull_mapping(2, 1)
+    m3 = compute_telecine_pull_mapping(3, 1)
+    m4 = compute_telecine_pull_mapping(4, 1)
+    m_pal = compute_telecine_pull_mapping(0, 2)
+
+    tc_spec_32 = FilmTelecineSpec(enabled=True, stock=1, grain_amount=0.10, gate_weave=0.35, telecine_pulldown=1)
+    rgb_aa, _ = apply_film_telecine(ref_op, tc_spec_32, frame_index=0, seed=99)
+    rgb_bc, _ = apply_film_telecine(ref_op, tc_spec_32, frame_index=2, seed=99)
+    inv_aa = invert_degraded_observation(rgb_aa)
+    inv_bc = invert_degraded_observation(rgb_bc)
+    record(
+        "Option P: Telecine 24fps->29.97i 3:2 Pulldown (`AA-BB-BC-CD-DD`) interlace combing & PAL 25i (+70.67 cents) speedup",
+        "Split-field frames (`BC`, `CD`) weave adjacent film frames producing measurable interlace combing, while PAL 25i speeds up by +4.167%",
+        f"cadence={[m0['cadence_pattern'], m1['cadence_pattern'], m2['cadence_pattern'], m3['cadence_pattern'], m4['cadence_pattern']]}, comb(AA={inv_aa['comb_interlace_ratio']:.2f}->BC={inv_bc['comb_interlace_ratio']:.2f}), PAL_cents=+{m_pal['audio_pitch_shift_cents']:.2f}",
+        (not m0["is_combed_frame"]) and (not m1["is_combed_frame"])
+        and m2["is_combed_frame"] and m3["is_combed_frame"] and (not m4["is_combed_frame"])
+        and (inv_bc["comb_interlace_ratio"] > inv_aa["comb_interlace_ratio"] * 1.15)
+        and (abs(m_pal["speed_ratio"] - 25.0 / 24.0) < 1e-4)
+        and (abs(m_pal["audio_pitch_shift_cents"] - 70.67) < 0.2),
+    )
+
+    # Check 92 (Option O+P - 6): Node-Graph end-to-end execution of `film_telecine_to_vhs_and_inversion_lab`
+    g_op = GRAPH_PRESETS["film_telecine_to_vhs_and_inversion_lab"]["build"]()
+    issues_op = [i for i in g_op.validate() if i.severity == "error"]
+    ex_op = GraphExecutor(g_op, std, SCHEMA.resolve_all(GRAPH_PRESETS["film_telecine_to_vhs_and_inversion_lab"]["params"]), src_op, W, H, 29.97, seed=20240101)
+    run_op = ex_op.render_frame(2)
+    record(
+        "Option O+P: Node-graph preset (`film_telecine_to_vhs_and_inversion_lab`) end-to-end execution",
+        "Chains `film_scanner_telecine` -> `encoder` -> `tape` -> `deck` -> `inversion_analyzer` cleanly with zero validation/runtime errors",
+        f"errors={len(issues_op)+len(run_op.errors)}, nodes={list(run_op.node_frames.keys())}, out_std={float(np.std(run_op.rgb)):.4f}",
+        (not issues_op) and (not run_op.errors)
+        and ("film_scanner_telecine" in run_op.node_frames)
+        and ("inversion_analyzer" in run_op.node_frames)
+        and (float(np.std(run_op.rgb)) > 0.05),
+    )
+
+    # Check 94: SONY CCD Memory Stick still preset & single-frame fast preview (P1/P2 fix)
+    import time as _time
+    from atsim.codecs.tv_transmitter_chain import apply_tv_transmitter_chain
+    preset_sony = FACTORY_PRESETS.get("sony_ccd_memorystick_still")
+    ok_sony_preset = preset_sony is not None and float(preset_sony["layers"]["camera"].get("ccd_smear", 1.0)) == 0.0
+    r_fast = Renderer(src_op, W, H, 29.97, preset_sony["layers"], seed=20240101, preview=True, scale=1.0, total_frames=6)
+    t0_fast = _time.perf_counter()
+    f_fast = r_fast.render_frame(4)
+    dt_fast_ms = (_time.perf_counter() - t0_fast) * 1000.0
+    record(
+        "P1/P2 Fix: SONY CCD Memory Stick still preset & fast preview seek",
+        "Preset preserves still mechanical shutter (ccd_smear=0) and single-frame preview renders in <400ms without pumping 0..N-1",
+        f"preset_ok={ok_sony_preset}, preview_ms={dt_fast_ms:.1f}ms, cached_frames={len(r_fast._cache['display'])}",
+        bool(ok_sony_preset and dt_fast_ms < 400.0 and len(r_fast._cache["display"]) == 1 and f_fast.shape == (H, W, 3)),
+    )
+
+    # Check 95: P4 Quad Lab default no-text (`tx_show_text=0`), border styles (`tx_show_border`), and per-corner split (`tx_quad_corner=1..4`)
+    from atsim.codecs.tv_transmitter_chain import TVTransmitterSpec
+    base_p4 = src_op.frame(0)
+    quad_nt, info_nt = apply_tv_transmitter_chain(
+        base_p4, TVTransmitterSpec.from_params({"tx_chain_mode": 3.0, "tx_show_text": 0.0, "tx_show_border": 1.0}), 0, 42
+    )
+    quad_wt, _ = apply_tv_transmitter_chain(
+        base_p4, TVTransmitterSpec.from_params({"tx_chain_mode": 3.0, "tx_show_text": 2.0, "tx_show_border": 1.0}), 0, 42
+    )
+    top_nt = float(quad_nt[:14, :80].mean())
+    top_wt = float(quad_wt[:14, :80].mean())
+    c_frames = [
+        apply_tv_transmitter_chain(base_p4, TVTransmitterSpec.from_params({"tx_chain_mode": 3.0, "tx_quad_corner": float(ci), "tx_show_text": 0.0}), 0, 42)[0]
+        for ci in (1, 2, 3, 4)
+    ]
+    c12_d = float(np.abs(c_frames[0] - c_frames[1]).mean())
+    c13_d = float(np.abs(c_frames[0] - c_frames[2]).mean())
+    c34_d = float(np.abs(c_frames[2] - c_frames[3]).mean())
+    record(
+        "P4 Fix: Quad Lab default no-text (`show_text=0`), selectable border & 4 individual corners",
+        "Default quad view has no text banner (`top_nt > top_wt + 0.08`) and corners 1..4 render distinct full-frame views",
+        f"top_luma(no_text={top_nt:.3f} vs text={top_wt:.3f}), corner_diffs=({c12_d:.4f}, {c13_d:.4f}, {c34_d:.4f})",
+        bool(info_nt.get("tx_show_text", 0) == 0 and top_nt > top_wt + 0.08 and c12_d > 0.005 and c13_d > 0.015 and c34_d > 0.015),
+    )
+
+
+    # Check 96: WebUI Quad Toolbar (`quadCornerSel` / `quadBorderSel` / `quadTextSel`) & Batch 4-Corner Still Burst (`render_quad_burst`)
+    import tempfile as _tmpmod
+    from pathlib import Path as Path
+    from atsim.web.server import App as _WebApp
+    html_txt = (Path(__file__).resolve().parent.parent / "atsim" / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    js_txt = (Path(__file__).resolve().parent.parent / "atsim" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    ui_has_controls = all(
+        tok in html_txt
+        for tok in ("quadCtrlBar", "quadCornerSel", "quadBorderSel", "quadTextSel", "btnQuadBurst", "btnQuadZip", "btnQuadC1", "btnQuadC4")
+    ) and ("exportQuadBurst" in js_txt and "exportQuadZip" in js_txt)
+    with _tmpmod.TemporaryDirectory() as _td:
+        wapp = _WebApp(Path(_td))
+        wapp.apply_preset("tv_transmitter_end_to_end_broadcast_lab")
+        burst_res = wapp.render_quad_burst(t=0.4, scale=0.35, fmt="png", quality=95, border=0, text=0, include_quad=True)
+        shots = burst_res.get("shots", [])
+        f_c1, slug_c1, _ = wapp.render_still_with_quad(0.4, 0.35, want="sim", corner=1, border=0, text=0)
+        f_c3, slug_c3, _ = wapp.render_still_with_quad(0.4, 0.35, want="sim", corner=3, border=0, text=0)
+        diff_c13 = float(np.abs(f_c1 - f_c3).mean())
+    record(
+        "WebUI Quad Dropdowns (`分屏/分框/文字`) & Batch 4-Shot Still Burst (`render_quad_burst`)",
+        "HTML/JS exposes quad toolbar & burst buttons, and `render_quad_burst` outputs 5 lossless stills (2x2 + 4 distinct corners)",
+        f"ui_ok={ui_has_controls}, lab={burst_res.get('lab')}, shots={len(shots)}, slugs=({slug_c1}, {slug_c3}), c1_vs_c3_L1={diff_c13:.4f}",
+        bool(ui_has_controls and len(shots) == 5 and shots[1]["corner"] == 1 and shots[4]["corner"] == 4 and diff_c13 > 0.015),
+    )
+
+
+    # Check 97: Option Q -- Archival Storage Lifecycle & Arrhenius Hygrothermal Decay + Machine Obsolescence (`compute_storage_lifecycle_risk`)
+    from atsim.codecs.archival_archaeology import (
+        ArchivalVaultSpec, compute_storage_lifecycle_risk, audit_significant_properties, apply_archival_archaeology
+    )
+    spec_vault_cold = ArchivalVaultSpec(
+        enabled=True, mode=1, storage_years=30.0, temp_c=10.0, rh_pct=35.0, obsolescence=0.20
+    )
+    spec_vault_damp = ArchivalVaultSpec(
+        enabled=True, mode=1, storage_years=30.0, temp_c=32.0, rh_pct=82.0, obsolescence=0.85
+    )
+    risk_cold = compute_storage_lifecycle_risk(spec_vault_cold)
+    risk_damp = compute_storage_lifecycle_risk(spec_vault_damp)
+    record(
+        "Option Q: 4-Stage Archival Lifecycle, Arrhenius Hygrothermal Aging & Obsolescence Cost (`compute_storage_lifecycle_risk`)",
+        "Warm/humid vault (32C/82%RH) accelerates Arrhenius decay >15x over cold vault (10C/35%RH) and raises access cost with obsolescence",
+        f"accel=({risk_cold['arrhenius_hygro_acceleration']:.2f}x -> {risk_damp['arrhenius_hygro_acceleration']:.2f}x), "
+        f"hydrolysis=({risk_cold['binder_hydrolysis_index']:.3f} -> {risk_damp['binder_hydrolysis_index']:.3f}), "
+        f"cost=({risk_cold['access_cost_multiplier']:.2f}x -> {risk_damp['access_cost_multiplier']:.2f}x), alert={risk_damp['alert_level']}",
+        bool(
+            risk_damp["arrhenius_hygro_acceleration"] > risk_cold["arrhenius_hygro_acceleration"] * 15.0
+            and risk_damp["binder_hydrolysis_index"] > risk_cold["binder_hydrolysis_index"] + 0.45
+            and risk_damp["access_cost_multiplier"] > risk_cold["access_cost_multiplier"] * 3.0
+            and len(risk_damp["lifecycle_stages"]) == 4
+        ),
+    )
+
+    # Check 98: Option Q -- "Preservation Success != Information Completeness" (`audit_significant_properties` & Over-Cleaned DNR vs Preservation Master)
+    test_arch_src = base_bars.copy()
+    rng_arch = np.random.default_rng(20261022)
+    test_arch_src = np.clip(test_arch_src + 0.035 * rng_arch.standard_normal(test_arch_src.shape).astype(np.float32), 0.0, 1.0)
+    spec_pres = ArchivalVaultSpec(enabled=True, mode=2, storage_years=25.0, temp_c=20.0, rh_pct=50.0, dnr_overrestore=0.82, show_text=0)
+    spec_dnr = ArchivalVaultSpec(enabled=True, mode=3, storage_years=25.0, temp_c=20.0, rh_pct=50.0, dnr_overrestore=0.82, show_text=0)
+    out_pres, info_pres = apply_archival_archaeology(test_arch_src, spec_pres, frame_index=2, seed=77)
+    out_dnr, info_dnr = apply_archival_archaeology(test_arch_src, spec_dnr, frame_index=2, seed=77)
+    sig_audit = info_dnr["significant_properties"]
+    pres_comp = sig_audit["preservation_master"]["significant_property_completeness"]
+    dnr_pix = sig_audit["over_restored_commercial"]["pixel_survival_score"]
+    dnr_comp = sig_audit["over_restored_commercial"]["significant_property_completeness"]
+    pres_vbi_var = float(info_dnr["forensic_metrics"]["vbi_vitc_signal_std_pres"])
+    dnr_vbi_var = float(info_dnr["forensic_metrics"]["vbi_vitc_signal_std_over"])
+    pres_Vs_dnr_l1 = float(np.mean(np.abs(out_pres - out_dnr)))
+    record(
+        "Option Q: 'Preservation Success != Information Completeness' (FADGI/NFSA Significant Properties & Over-Cleaned DNR)",
+        "Over-cleaned commercial restoration keeps >90% pixels but loses >65% of significant archaeological properties (VITC/blanking/interlace/grain)",
+        f"pres_completeness={pres_comp:.3f}, over_cleaned(pixel={dnr_pix:.3f} vs prop_complete={dnr_comp:.3f}), "
+        f"vbi_vitc_std=({pres_vbi_var:.4f} -> {dnr_vbi_var:.4f}), L1={pres_Vs_dnr_l1:.4f}",
+        bool(
+            pres_comp > 0.94
+            and dnr_pix > 0.88
+            and dnr_comp < 0.30
+            and pres_vbi_var > dnr_vbi_var * 2.5
+            and pres_Vs_dnr_l1 > 0.04
+        ),
+    )
+
+    # Check 99: Option Q -- 2x2 Archival Lineage Tree Lab (`archival_mode = 4`), Quad Corner Zoom (`1..4`) & Text Hide (`archival_show_text = 0`)
+    spec_q_quad_nt = ArchivalVaultSpec(enabled=True, mode=4, quad_corner=0, show_border=0, show_text=0)
+    spec_q_quad_wt = ArchivalVaultSpec(enabled=True, mode=4, quad_corner=0, show_border=2, show_text=2)
+    spec_q_c1 = ArchivalVaultSpec(enabled=True, mode=4, quad_corner=1, show_border=0, show_text=0)
+    spec_q_c2 = ArchivalVaultSpec(enabled=True, mode=4, quad_corner=2, show_border=0, show_text=0)
+    spec_q_c3 = ArchivalVaultSpec(enabled=True, mode=4, quad_corner=3, show_border=0, show_text=0)
+    q_nt, _ = apply_archival_archaeology(test_arch_src, spec_q_quad_nt, frame_index=3, seed=99)
+    q_wt, info_q_wt = apply_archival_archaeology(test_arch_src, spec_q_quad_wt, frame_index=3, seed=99)
+    q_c1, _ = apply_archival_archaeology(test_arch_src, spec_q_c1, frame_index=3, seed=99)
+    q_c2, _ = apply_archival_archaeology(test_arch_src, spec_q_c2, frame_index=3, seed=99)
+    q_c3, _ = apply_archival_archaeology(test_arch_src, spec_q_c3, frame_index=3, seed=99)
+    q_text_diff = float(np.mean(np.abs(q_nt - q_wt)))
+    q_c12_diff = float(np.mean(np.abs(q_c1 - q_c2)))
+    q_c23_diff = float(np.mean(np.abs(q_c2 - q_c3)))
+    record(
+        "Option Q: 2x2 Archival Lineage Tree Lab (`archival_mode = 4`) & Quad Corner/Text Controls",
+        "Quad lab renders 4 distinct lineage branches, supports corner 1..4 full-frame zoom, and hides text when archival_show_text=0",
+        f"text_diff={q_text_diff:.4f}, c1_vs_c2={q_c12_diff:.4f}, c2_vs_c3={q_c23_diff:.4f}, branches={len(info_q_wt.get('lineage_tree', []))}",
+        bool(q_text_diff > 0.01 and q_c12_diff > 0.02 and q_c23_diff > 0.02 and len(info_q_wt["lineage_tree"]) >= 4),
+    )
+
+    # Check 100: Option R -- 2D Spatial Environment Field (`EnvironmentField`): Position-Dependent Local Temperature, Dew Point & Near-Field EMI
+    from atsim.codecs.spatial_environment_field import (
+        SpatialEnvFieldSpec, EnvironmentField, evaluate_all_devices, apply_spatial_environment_field, compute_spatial_acoustic_audio
+    )
+    env_spec_pos = SpatialEnvFieldSpec(
+        enabled=True, mode=4,
+        room_temp_c=25.0, room_rh_pct=78.0, device_init_temp_c=5.0,
+        emi_source_power=0.85, shielding_eff=0.25, light_mix=0.60, acoustic_rt60=0.70,
+        cam_x=0.15, cam_y=0.18,   # Upper-left near cool dry AC vent & window
+        vtr_x=0.82, vtr_y=0.78,   # Lower-right near humid corner & high-power transformer
+        crt_x=0.80, crt_y=0.76,
+    )
+    dev_t0 = evaluate_all_devices(env_spec_pos, t_sec=0.0)
+    cam_st = dev_t0["cam"]
+    vtr_st = dev_t0["vtr"]
+    record(
+        "Option R: 2D Spatial Environment Field (`EnvironmentField`) Position-Dependent Couplings",
+        "Devices at different (x, y) coordinates experience distinct local temperature, dew point condensation, EMI field, and illuminant CCT",
+        f"cam@(0.15,0.18): T={cam_st['local_temp_c']:.1f}C, RH={cam_st['local_rh_pct']:.1f}%, EMI={cam_st['b_emi_field']:.3f} vs "
+        f"vtr@(0.82,0.78): T={vtr_st['local_temp_c']:.1f}C, RH={vtr_st['local_rh_pct']:.1f}%, EMI={vtr_st['b_emi_field']:.3f}",
+        bool(
+            vtr_st["local_temp_c"] > cam_st["local_temp_c"] + 1.5
+            and vtr_st["local_rh_pct"] > cam_st["local_rh_pct"] + 5.0
+            and vtr_st["b_emi_field"] > cam_st["b_emi_field"] * 2.5
+            and vtr_st["condensation_film"] > cam_st["condensation_film"]
+        ),
+    )
+
+    # Check 101: Option R -- Cold Device Thermal Inertia & Dew Condensation Recovery Over Time (`t=0s` vs `t=180s`) + Acoustic RT60 Audio Coupling
+    dev_t180 = evaluate_all_devices(env_spec_pos, t_sec=180.0)
+    vtr_cold_dew = float(dev_t0["vtr"]["condensation_film"])
+    vtr_warm_dew = float(dev_t180["vtr"]["condensation_film"])
+    vtr_cold_temp = float(dev_t0["vtr"]["device_temp_c"])
+    vtr_warm_temp = float(dev_t180["vtr"]["device_temp_c"])
+    rgb_t0, info_env_t0 = apply_spatial_environment_field(test_arch_src, env_spec_pos, frame_index=0, fps=30.0, seed=123)
+    rgb_t180, info_env_t180 = apply_spatial_environment_field(test_arch_src, env_spec_pos, frame_index=5400, fps=30.0, seed=123)
+    # Test acoustic RT60 room impulse & EMI hum on audio
+    dry_audio = np.zeros((4096, 2), dtype=np.float32)
+    dry_audio[200:400, 0] = 0.65 * np.sin(2.0 * np.pi * 440.0 * np.arange(200) / 44100.0).astype(np.float32)
+    dry_audio[200:400, 1] = dry_audio[200:400, 0]
+    wet_audio, aud_env_info = compute_spatial_acoustic_audio(dry_audio, env_spec_pos, sample_rate=44100, start_s=0.0, seed=55)
+    tail_energy = float(np.sqrt(np.mean(wet_audio[600:2400, :] ** 2)))
+    record(
+        "Option R: Thermal Inertia Dew Condensation Clearing (`t=0s` -> `t=180s`) & Spatial Room Acoustic RT60 Coupling",
+        "Cold chassis warms toward ambient over time, clearing lens/drum condensation film, while acoustic field adds room reverb tail & EMI hum",
+        f"chassis_T=({vtr_cold_temp:.1f}C -> {vtr_warm_temp:.1f}C), dew_film=({vtr_cold_dew:.3f} -> {vtr_warm_dew:.3f}), "
+        f"reverb_tail_rms={tail_energy:.5f}",
+        bool(
+            vtr_warm_temp > vtr_cold_temp + 8.0
+            and vtr_cold_dew > 0.35
+            and vtr_warm_dew < vtr_cold_dew * 0.25
+            and tail_energy > 0.002
+        ),
+    )
+
+    # Check 102: Option R & Q -- 2x2 Spatial Environment Lab (`env_field_mode = 5`) & Joint Node Graph Preset `archival_and_spatial_environment_suite`
+    env_spec_quad = SpatialEnvFieldSpec(
+        enabled=True, mode=5, room_temp_c=25.0, room_rh_pct=78.0, device_init_temp_c=5.0,
+        emi_source_power=0.80, shielding_eff=0.30, quad_corner=0, show_border=2, show_text=2,
+    )
+    env_spec_c1 = SpatialEnvFieldSpec(
+        enabled=True, mode=5, room_temp_c=25.0, room_rh_pct=78.0, device_init_temp_c=5.0,
+        emi_source_power=0.80, shielding_eff=0.30, quad_corner=1, show_border=0, show_text=0,
+    )
+    env_spec_c2 = SpatialEnvFieldSpec(
+        enabled=True, mode=5, room_temp_c=25.0, room_rh_pct=78.0, device_init_temp_c=5.0,
+        emi_source_power=0.80, shielding_eff=0.30, quad_corner=2, show_border=0, show_text=0,
+    )
+    env_q_img, _ = apply_spatial_environment_field(test_arch_src, env_spec_quad, frame_index=1, fps=30.0, seed=88)
+    env_c1_img, _ = apply_spatial_environment_field(test_arch_src, env_spec_c1, frame_index=1, fps=30.0, seed=88)
+    env_c2_img, _ = apply_spatial_environment_field(test_arch_src, env_spec_c2, frame_index=1, fps=30.0, seed=88)
+    env_c12_diff = float(np.mean(np.abs(env_c1_img - env_c2_img)))
+
+    from atsim.graph.graph import GRAPH_PRESETS as _GP_QR
+    from atsim.graph.executor import GraphExecutor as _GExecQR
+    from atsim.core.standards import get_standard as _get_std_qr
+    g_qr = _GP_QR["archival_and_spatial_environment_suite"]["build"]()
+    p_qr = SCHEMA.resolve_all(_GP_QR["archival_and_spatial_environment_suite"]["params"])
+    ex_qr = _GExecQR(g_qr, std, p_qr, src_op, W, H, 29.97, seed=2026)
+    run_qr = ex_qr.render_frame(0)
+    record(
+        "Option Q+R: 2x2 Spatial Environment Lab (`env_field_mode = 5`) & Joint Graph `archival_and_spatial_environment_suite`",
+        "Spatial environment 2x2 lab isolates corners 1..4 cleanly, and joint graph executes `env_chamber` + `archival_vault` with zero errors",
+        f"env_c1_vs_c2_L1={env_c12_diff:.4f}, graph_errors={len(run_qr.errors)}, nodes={list(run_qr.node_frames.keys())}",
+        bool(
+            env_c12_diff > 0.02
+            and not run_qr.errors
+            and "env_chamber" in run_qr.node_frames
+            and "archival_vault" in run_qr.node_frames
+        ),
+    )
+
+    # =========================================================================
+    # Option S: Network Streaming Era, Platform Re-transcoding & ABR/UDP/TCP
+    # =========================================================================
+    from atsim.codecs.network_streaming_era import (
+        NetworkStreamingSpec,
+        simulate_network_transport_and_abr,
+        apply_network_streaming_era,
+        compute_streaming_audio_effect,
+    )
+
+    # Check 104: Option S -- Early RealVideo (`mode=1`) Heavy In-Loop Smoothing & Multi-Gen Platform Re-transcode (`mode=2`) + GOP Keyframe Pulse
+    str_rv_spec = NetworkStreamingSpec(enabled=True, mode=1, bitrate_kbps=64.0, gop_len=12)
+    str_g1_spec = NetworkStreamingSpec(enabled=True, mode=2, bitrate_kbps=420.0, gop_len=10, platform_generations=1)
+    str_g5_spec = NetworkStreamingSpec(enabled=True, mode=2, bitrate_kbps=420.0, gop_len=10, platform_generations=5)
+    rv_img, rv_info = apply_network_streaming_era(test_arch_src, str_rv_spec, frame_index=5, fps=29.97, seed=101)
+    g1_img, g1_info = apply_network_streaming_era(test_arch_src, str_g1_spec, frame_index=0, fps=29.97, seed=101)
+    g5_img, g5_info = apply_network_streaming_era(test_arch_src, str_g5_spec, frame_index=8, fps=29.97, seed=101)
+    net_i = simulate_network_transport_and_abr(str_g1_spec, frame_index=0, fps=29.97)
+    net_p = simulate_network_transport_and_abr(str_g1_spec, frame_index=8, fps=29.97)
+    l1_g1 = float(np.mean(np.abs(g1_img - test_arch_src)))
+    l1_g5 = float(np.mean(np.abs(g5_img - test_arch_src)))
+    record(
+        "Option S: Early RealVideo (`mode=1`) In-Loop Smoothing, Multi-Gen Platform Re-transcoding (`1..5 gens`) & GOP Keyframe Pulse",
+        "1999 RealVideo attenuates high-frequency detail (`realvideo_hf < source_hf * 0.45`), 5-gen platform re-upload accumulates higher loss than 1-gen, and GOP I-frame has higher quality pulse than P-frame",
+        f"src_hf={rv_info['metrics']['source_hf']:.4f} -> rv_hf={rv_info['metrics']['realvideo_hf']:.4f}, "
+        f"L1(gen1={l1_g1:.4f} -> gen5={l1_g5:.4f}), gop_pulse(I={net_i['keyframe_quality_pulse']:.3f} vs P={net_p['keyframe_quality_pulse']:.3f})",
+        bool(
+            rv_info["metrics"]["realvideo_hf"] < rv_info["metrics"]["source_hf"] * 0.45
+            and l1_g5 > l1_g1 + 0.015
+            and net_i["is_keyframe"] is True
+            and net_p["is_keyframe"] is False
+            and net_i["keyframe_quality_pulse"] > net_p["keyframe_quality_pulse"] + 0.20
+        ),
+    )
+
+    # Check 105: Option S -- HLS/DASH ABR Resolution Ladder Switching, TCP Rebuffering Stall, UDP Slice Loss & Streaming Audio
+    str_abr_hi = NetworkStreamingSpec(enabled=True, mode=3, bitrate_kbps=2600.0, bw_fluctuation=0.10, packet_loss=0.0, rtt_ms=25.0)
+    str_abr_lo = NetworkStreamingSpec(enabled=True, mode=3, bitrate_kbps=130.0, bw_fluctuation=0.92, packet_loss=0.20, rtt_ms=260.0)
+    _, abr_hi_info = apply_network_streaming_era(test_arch_src, str_abr_hi, frame_index=3, fps=29.97, seed=202)
+    _, abr_lo_info = apply_network_streaming_era(test_arch_src, str_abr_lo, frame_index=3, fps=29.97, seed=202)
+    aud_test = np.column_stack([
+        0.5 * np.sin(2.0 * np.pi * 880.0 * np.arange(4096) / 44100.0),
+        0.5 * np.cos(2.0 * np.pi * 880.0 * np.arange(4096) / 44100.0),
+    ]).astype(np.float32)
+    aud_str_out, aud_str_info = compute_streaming_audio_effect(aud_test, str_abr_lo, sample_rate=44100, start_s=0.0)
+    aud_str_diff = float(np.mean(np.abs(aud_str_out - aud_test)))
+    record(
+        "Option S: HLS/DASH ABR Ladder (`1080p_HIGH` vs `240p_EMERGENCY`), Rebuffering Stall & Streaming Audio Codec/Dropouts",
+        "High bandwidth selects `1080p_HIGH` with healthy buffer, while severe congestion drops to `240p_EMERGENCY` / rebuffering stall and degrades streaming audio",
+        f"hi_prof={abr_hi_info['network']['abr_profile']} (buf={abr_hi_info['network']['buffer_level_s']:.2f}s), "
+        f"lo_prof={abr_lo_info['network']['abr_profile']} (stall={abr_lo_info['network']['rebuffering_stall']}), aud_L1={aud_str_diff:.4f}",
+        bool(
+            abr_hi_info["network"]["abr_resolution_scale"] > abr_lo_info["network"]["abr_resolution_scale"]
+            and abr_hi_info["network"]["buffer_level_s"] > abr_lo_info["network"]["buffer_level_s"]
+            and abr_lo_info["network"]["rebuffering_stall"] is True
+            and aud_str_diff > 0.01
+        ),
+    )
+
+    # Check 106: Option S -- 2x2 Network Streaming Era Lab (`stream_mode = 5`) & Corner Isolation
+    str_q0 = NetworkStreamingSpec(enabled=True, mode=5, bitrate_kbps=320.0, quad_corner=0, show_border=2, show_text=2)
+    str_c1 = NetworkStreamingSpec(enabled=True, mode=5, bitrate_kbps=320.0, quad_corner=1, show_border=0, show_text=0)
+    str_c2 = NetworkStreamingSpec(enabled=True, mode=5, bitrate_kbps=320.0, quad_corner=2, show_border=0, show_text=0)
+    str_q_img, _ = apply_network_streaming_era(test_arch_src, str_q0, frame_index=2, fps=29.97, seed=303)
+    str_c1_img, _ = apply_network_streaming_era(test_arch_src, str_c1, frame_index=2, fps=29.97, seed=303)
+    str_c2_img, _ = apply_network_streaming_era(test_arch_src, str_c2, frame_index=2, fps=29.97, seed=303)
+    str_c12_diff = float(np.mean(np.abs(str_c1_img - str_c2_img)))
+    record(
+        "Option S: 2x2 Network Streaming Era Comparison Lab (`stream_mode = 5`) & Corner Isolation (`stream_quad_corner = 1..4`)",
+        "Quad lab renders all 4 streaming eras simultaneously and isolates individual corners at full resolution",
+        f"quad_shape={str_q_img.shape}, corner1_vs_corner2_L1={str_c12_diff:.4f}",
+        bool(str_q_img.shape == test_arch_src.shape and str_c12_diff > 0.015),
+    )
+
+    # =========================================================================
+    # Option T: Human Viewer Perception (CSF) & Broadcast Operator Closed-Loop
+    # =========================================================================
+    from atsim.codecs.perception_and_operator import (
+        PerceptionOperatorSpec,
+        mannos_sakrison_csf,
+        compute_viewer_perception,
+        simulate_human_operator_loop,
+        apply_perception_and_operator,
+    )
+
+    # Check 107: Option T -- Mannos-Sakrison CSF Viewing Distance (`1.3xH` Close vs `7.5xH` Far) & Ferry-Porter CFF
+    prc_close = PerceptionOperatorSpec(enabled=True, mode=1, viewing_dist_h=1.3, display_nits=160.0, ambient_lux=20.0)
+    prc_far = PerceptionOperatorSpec(enabled=True, mode=1, viewing_dist_h=7.5, display_nits=160.0, ambient_lux=20.0)
+    prc_dim = PerceptionOperatorSpec(enabled=True, mode=1, viewing_dist_h=3.5, display_nits=30.0, ambient_lux=20.0)
+    v_close, _, inf_close = compute_viewer_perception(test_arch_src, prc_close, reference_rgb=test_arch_src * 0.85)
+    v_far, _, inf_far = compute_viewer_perception(test_arch_src, prc_far, reference_rgb=test_arch_src * 0.85)
+    _, _, inf_dim = compute_viewer_perception(test_arch_src, prc_dim, reference_rgb=test_arch_src * 0.85)
+    record(
+        "Option T: Viewer Psychophysical CSF Model (`viewing_dist_h = 1.3xH` vs `7.5xH`) & Ferry-Porter Flicker Fusion (`CFF`)",
+        "Farther viewing distance increases retinal spatial frequency (cpd), pushing CRT scanlines/noise past CSF peak into optical fusion (`sigma_eye_px` rises, `csf_at_artifact` drops), while higher nits raises CFF",
+        f"close(cpd={inf_close['artifact_freq_cpd']:.1f}, csf={inf_close['csf_at_artifact']:.3f}, sig={inf_close['sigma_eye_px']:.2f}) vs "
+        f"far(cpd={inf_far['artifact_freq_cpd']:.1f}, csf={inf_far['csf_at_artifact']:.3f}, sig={inf_far['sigma_eye_px']:.2f}), "
+        f"CFF(160nits={inf_close['cff_hz']:.1f}Hz vs 30nits={inf_dim['cff_hz']:.1f}Hz)",
+        bool(
+            inf_far["artifact_freq_cpd"] > inf_close["artifact_freq_cpd"] * 3.5
+            and inf_far["sigma_eye_px"] > inf_close["sigma_eye_px"] + 0.35
+            and inf_close["csf_at_artifact"] > inf_far["csf_at_artifact"] + 0.15
+            and inf_close["cff_hz"] > inf_dim["cff_hz"] + 6.0
+        ),
+    )
+
+    # Check 108: Option T -- Broadcast Operator PID Closed-Loop Tracking/CCU Control (Skilled vs Stressed Novice Overshoot)
+    op_skilled = PerceptionOperatorSpec(enabled=True, mode=2, operator_skill=0.95, operator_stress=0.10)
+    op_stressed = PerceptionOperatorSpec(enabled=True, mode=2, operator_skill=0.20, operator_stress=0.92)
+    _, op_sk_t0 = simulate_human_operator_loop(test_arch_src, op_skilled, frame_index=0, fps=29.97)
+    _, op_sk_t30 = simulate_human_operator_loop(test_arch_src, op_skilled, frame_index=30, fps=29.97)
+    _, op_st_t12 = simulate_human_operator_loop(test_arch_src, op_stressed, frame_index=12, fps=29.97)
+    record(
+        "Option T: Broadcast Operator Cognitive PID Loop (`SKILLFUL_LOCKED` Convergence vs `PANIC_OVERSHOOT_HUNTING`)",
+        "Skilled calm engineer has high damping (`zeta > 0.7`) and converges knob error smoothly over time, whereas stressed novice exhibits underdamped overshoot hunting",
+        f"skilled(zeta={op_sk_t30['damping_zeta']:.2f}, err_t0={op_sk_t0['instantaneous_knob_error']:.3f}->t30={op_sk_t30['instantaneous_knob_error']:.3f}) vs "
+        f"stressed(zeta={op_st_t12['damping_zeta']:.2f}, overshoot={op_st_t12['overshoot_ratio']:.3f}, state={op_st_t12['operator_state']})",
+        bool(
+            op_sk_t30["damping_zeta"] > 0.70
+            and op_sk_t30["instantaneous_knob_error"] < op_sk_t0["instantaneous_knob_error"] * 0.30
+            and op_st_t12["overshoot_ratio"] > op_sk_t30["overshoot_ratio"] + 0.45
+            and op_st_t12["steady_residual_error"] > op_sk_t30["steady_residual_error"] * 3.0
+        ),
+    )
+
+    # Check 109: Option T -- 2x2 Perception & Operator Lab (`percept_mode = 4`) & Corner Isolation
+    prc_q0 = PerceptionOperatorSpec(enabled=True, mode=4, viewing_dist_h=4.0, quad_corner=0, show_border=2, show_text=2)
+    prc_c1 = PerceptionOperatorSpec(enabled=True, mode=4, viewing_dist_h=4.0, quad_corner=1, show_border=0, show_text=0)
+    prc_c2 = PerceptionOperatorSpec(enabled=True, mode=4, viewing_dist_h=4.0, quad_corner=2, show_border=0, show_text=0)
+    prc_q_img, _ = apply_perception_and_operator(test_arch_src, prc_q0, frame_index=10, fps=29.97)
+    prc_c1_img, _ = apply_perception_and_operator(test_arch_src, prc_c1, frame_index=10, fps=29.97)
+    prc_c2_img, _ = apply_perception_and_operator(test_arch_src, prc_c2, frame_index=10, fps=29.97)
+    prc_c12_diff = float(np.mean(np.abs(prc_c1_img - prc_c2_img)))
+    record(
+        "Option T: 2x2 Viewer Perception & Operator Loop Lab (`percept_mode = 4`) & Corner Isolation",
+        "Quad lab renders raw output, CSF perceived view, operator closed-loop view, and JND dashboard cleanly",
+        f"quad_shape={prc_q_img.shape}, corner1_vs_corner2_L1={prc_c12_diff:.4f}",
+        bool(prc_q_img.shape == test_arch_src.shape and prc_c12_diff > 0.015),
+    )
+
+    # =========================================================================
+    # Option U: Media Technology Ecosystem Evolution & Historical Simulator
+    # =========================================================================
+    from atsim.codecs.media_ecosystem_evolution import (
+        MediaEcosystemSpec,
+        evaluate_ecosystem_at_year,
+        simulate_media_ecosystem_trajectory,
+        apply_media_ecosystem_evolution,
+    )
+
+    # Check 110: Option U -- 7-Dimensional Media Ecosystem Evolution (`1992` Golden Era vs `2025` Obsolescence Cliff)
+    eco_1992 = evaluate_ecosystem_at_year(1992.0, scenario=0, spare_depletion=1.0, institution_inertia=0.55)
+    eco_2025 = evaluate_ecosystem_at_year(2025.0, scenario=0, spare_depletion=1.0, institution_inertia=0.55)
+    record(
+        "Option U: 7-Dimensional Media Ecosystem Dynamics (`1992` Analog Golden Era vs `2025` Obsolescence Cliff)",
+        "From 1992 to 2025, VTR hardware stock and maintenance capability collapse while migration cost & projected head wear surge into `OBSOLESCENCE_CLIFF_CRITICAL`",
+        f"1992(access={eco_1992['accessibility_index']:.3f}, maint={eco_1992['dimensions']['maintenance_capability']:.3f}, cost={eco_1992['dimensions']['migration_cost_index']:.2f}x) -> "
+        f"2025(access={eco_2025['accessibility_index']:.3f}, maint={eco_2025['dimensions']['maintenance_capability']:.3f}, cost={eco_2025['dimensions']['migration_cost_index']:.2f}x, status={eco_2025['cliff_warning']})",
+        bool(
+            eco_1992["accessibility_index"] > 0.75
+            and eco_2025["accessibility_index"] < 0.25
+            and eco_2025["dimensions"]["migration_cost_index"] > eco_1992["dimensions"]["migration_cost_index"] * 4.0
+            and eco_2025["projected_chain_state"]["head_wear"] > eco_1992["projected_chain_state"]["head_wear"] + 0.50
+            and eco_2025["cliff_warning"] == "OBSOLESCENCE_CLIFF_CRITICAL"
+        ),
+    )
+
+    # Check 111: Option U -- Historical Counterfactual Scenarios (`scenario = 0, 1, 3`) & 1975-2035 Trajectory Simulation
+    eco_2018_base = evaluate_ecosystem_at_year(2018.0, scenario=0, spare_depletion=1.0, institution_inertia=0.55)
+    eco_2018_collapse = evaluate_ecosystem_at_year(2018.0, scenario=1, spare_depletion=1.0, institution_inertia=0.55)
+    eco_2018_mandate = evaluate_ecosystem_at_year(2018.0, scenario=3, spare_depletion=1.0, institution_inertia=0.55)
+    traj_res = simulate_media_ecosystem_trajectory(MediaEcosystemSpec(enabled=True, mode=4, year=2018.0, scenario=3))
+    record(
+        "Option U: Historical Counterfactual Scenarios (Premature Spare Collapse vs Global Archival Mandate) & 1975-2035 Trajectory",
+        "At year 2018, counterfactual archival mandate (`scenario=3`) preserves significantly higher accessibility than baseline (`scenario=0`), which in turn beats premature spare collapse (`scenario=1`)",
+        f"access_2018(collapse={eco_2018_collapse['accessibility_index']:.3f} < base={eco_2018_base['accessibility_index']:.3f} < mandate={eco_2018_mandate['accessibility_index']:.3f}), "
+        f"traj_points={len(traj_res['years'])}",
+        bool(
+            eco_2018_collapse["accessibility_index"] < eco_2018_base["accessibility_index"] - 0.05
+            and eco_2018_mandate["accessibility_index"] > eco_2018_base["accessibility_index"] + 0.12
+            and len(traj_res["years"]) >= 12
+        ),
+    )
+
+    # Check 112: Option S+T+U -- 2x2 Media Ecosystem Lab (`eco_mode = 4`) & Complete End-to-End Node Graph `complete_media_ecology_end_to_end_suite`
+    eco_q0 = MediaEcosystemSpec(enabled=True, mode=4, year=2020.0, scenario=3, quad_corner=0, show_border=2, show_text=2)
+    eco_c1 = MediaEcosystemSpec(enabled=True, mode=4, year=2020.0, scenario=3, quad_corner=1, show_border=0, show_text=0)
+    eco_c2 = MediaEcosystemSpec(enabled=True, mode=4, year=2020.0, scenario=3, quad_corner=2, show_border=0, show_text=0)
+    eco_q_img, _ = apply_media_ecosystem_evolution(test_arch_src, eco_q0, frame_index=0, seed=404)
+    eco_c1_img, _ = apply_media_ecosystem_evolution(test_arch_src, eco_c1, frame_index=0, seed=404)
+    eco_c2_img, _ = apply_media_ecosystem_evolution(test_arch_src, eco_c2, frame_index=0, seed=404)
+    eco_c12_diff = float(np.mean(np.abs(eco_c1_img - eco_c2_img)))
+
+    g_stu = _GP_QR["complete_media_ecology_end_to_end_suite"]["build"]()
+    p_stu = SCHEMA.resolve_all(_GP_QR["complete_media_ecology_end_to_end_suite"]["params"])
+    ex_stu = _GExecQR(g_stu, std, p_stu, src_op, W, H, 29.97, seed=2026)
+    run_stu = ex_stu.render_frame(0)
+    record(
+        "Option S+T+U: 2x2 Media Ecosystem Lab (`eco_mode = 4`) & Complete End-to-End Node Graph `complete_media_ecology_end_to_end_suite`",
+        "Ecosystem 2x2 lab isolates corners cleanly, and full S+T+U graph (`stream_cdn_client` -> `display` -> `human_operator` -> `ecosystem_simulator`) executes with zero errors",
+        f"eco_c1_vs_c2_L1={eco_c12_diff:.4f}, graph_errors={len(run_stu.errors)}, nodes={list(run_stu.node_frames.keys())}",
+        bool(
+            eco_c12_diff > 0.02
+            and not run_stu.errors
+            and "stream_cdn_client" in run_stu.node_frames
+            and "human_operator" in run_stu.node_frames
+            and "ecosystem_simulator" in run_stu.node_frames
+        ),
+    )
+
+
+    # =====================================================================
+    # Standalone Photochemical Film & LOMO Darkroom Module (`01b film` & `photochemical_film`)
+    # =====================================================================
+    from atsim.codecs.photochemical_film import (
+        FILM_STOCKS as _LOMO_STOCKS,
+        PhotochemicalFilmSpec,
+        apply_photochemical_film_pipeline,
+    )
+    from atsim.stages.film import FilmStage
+    from atsim.render.renderer import STAGE_ORDER
+
+    # Check 113: Standalone `film` layer, `FilmStage` in `STAGE_ORDER`, and 10 Film Stocks (`FILM_STOCKS[1..10]`)
+    has_10_stocks = all(k in _LOMO_STOCKS for k in range(1, 11))
+    r_lomo_chain = Renderer(src_op, W, H, 29.97, FACTORY_PRESETS["lomo_xpro_cyan_gold_marigold"]["layers"], seed=2026)
+    f_lomo_chain = r_lomo_chain.render_frame(0)
+    record(
+        "Standalone Photochemical Film Layer (`01b film`), `FilmStage` in `STAGE_ORDER`, & 10 Film/LOMO Stocks",
+        "`STAGE_ORDER` includes standalone `film` stage between `camera` and `format`, and all 10 film/LOMO stocks (Eastman/Ektachrome/Fuji/Agfa/Lomography/Svema/Polaroid/PurpleXR) are registered",
+        f"stages={STAGE_ORDER}, stocks={len(_LOMO_STOCKS)}/10, chain_frame_mean={float(f_lomo_chain.mean()):.4f}",
+        bool(
+            "film" in STAGE_ORDER
+            and STAGE_ORDER.index("film") == 1
+            and has_10_stocks
+            and float(f_lomo_chain.std()) > 0.05
+        ),
+    )
+
+    # Check 114: LOMO Cross-Processing (`E-6 in C-41` Cyan-Emerald shadows & `C-41 in E-6` Violet-Magenta shadows)
+    spec_std = PhotochemicalFilmSpec(enabled=True, stock=6, process_mode=0, xpro_strength=0.0, grain_amount=0.0)
+    spec_e6c41 = PhotochemicalFilmSpec(enabled=True, stock=6, process_mode=1, xpro_strength=0.95, xpro_tint_mode=1, grain_amount=0.0)
+    spec_c41e6 = PhotochemicalFilmSpec(enabled=True, stock=7, process_mode=2, xpro_strength=0.95, xpro_tint_mode=2, grain_amount=0.0)
+    rgb_std_f, _ = apply_photochemical_film_pipeline(test_arch_src, spec_std, frame_index=0, seed=101)
+    rgb_e6c41_f, info_e6c41 = apply_photochemical_film_pipeline(test_arch_src, spec_e6c41, frame_index=0, seed=101)
+    rgb_c41e6_f, info_c41e6 = apply_photochemical_film_pipeline(test_arch_src, spec_c41e6, frame_index=0, seed=101)
+    lum_ref = 0.299 * test_arch_src[..., 0] + 0.587 * test_arch_src[..., 1] + 0.114 * test_arch_src[..., 2]
+    sh_mask = lum_ref < 0.35
+    # E-6 in C-41 boosts G+B over R in shadows (Cyan-Emerald cast, sample [11]); C-41 in E-6 boosts R+B over G in shadows (Violet-Magenta cast, samples [08]/[09])
+    e6_gb_over_r = float((rgb_e6c41_f[..., 1][sh_mask].mean() + rgb_e6c41_f[..., 2][sh_mask].mean()) * 0.5 - rgb_e6c41_f[..., 0][sh_mask].mean())
+    c41_rb_over_g = float((rgb_c41e6_f[..., 0][sh_mask].mean() + rgb_c41e6_f[..., 2][sh_mask].mean()) * 0.5 - rgb_c41e6_f[..., 1][sh_mask].mean())
+    record(
+        "LOMO Cross-Processing Physics (`E-6 in C-41` Cyan-Emerald vs `C-41 in E-6` Violet-Magenta Split-Toning)",
+        "E-6 in C-41 drives emerald-cyan shadows ((G+B)/2 > R) with steep S-curve, while C-41 in E-6 uncompensated orange mask drives violet-magenta shadows ((R+B)/2 > G)",
+        f"E6->C41 shadow((G+B)/2 - R)={e6_gb_over_r:+.4f}, C41->E6 shadow((R+B)/2 - G)={c41_rb_over_g:+.4f}, diff_L1={float(np.mean(np.abs(rgb_e6c41_f - rgb_c41e6_f))):.4f}",
+        bool(
+            e6_gb_over_r > 0.015
+            and c41_rb_over_g > 0.015
+            and float(np.mean(np.abs(rgb_e6c41_f - rgb_c41e6_f))) > 0.05
+        ),
+    )
+
+    # Check 115: Expired Film Base Fog (`D_min` elevation, sample [10]) & Redscale Reverse-Loading (`redscale_flip`)
+    spec_fresh = PhotochemicalFilmSpec(enabled=True, stock=8, expired_fog=0.0, grain_amount=0.0)
+    spec_exp_fog = PhotochemicalFilmSpec(enabled=True, stock=8, expired_fog=0.85, grain_amount=0.0)
+    spec_redscale = PhotochemicalFilmSpec(enabled=True, stock=7, redscale_flip=0.92, grain_amount=0.0)
+    rgb_fresh_f, _ = apply_photochemical_film_pipeline(test_arch_src, spec_fresh, frame_index=0, seed=102)
+    rgb_exp_f, _ = apply_photochemical_film_pipeline(test_arch_src, spec_exp_fog, frame_index=0, seed=102)
+    rgb_red_f, _ = apply_photochemical_film_pipeline(test_arch_src, spec_redscale, frame_index=0, seed=102)
+    p02_fresh = float(np.percentile(rgb_fresh_f, 2.0))
+    p02_exp = float(np.percentile(rgb_exp_f, 2.0))
+    red_dom = float(rgb_red_f[..., 0].mean() - rgb_red_f[..., 2].mean())
+    record(
+        "LOMO Expired Film Thermal Base Fog (`D_min` Elevation) & Redscale Reverse-Base Exposure",
+        "Expired film elevates 2nd-percentile black floor (`p02`) into pastel sage-grey fog, and Redscale reverse-loading makes Red channel strongly dominate Blue",
+        f"black_floor_p02(fresh={p02_fresh:.4f} -> expired={p02_exp:.4f}), redscale(R_mean - B_mean)={red_dom:+.4f}",
+        bool(
+            p02_exp > p02_fresh + 0.08
+            and red_dom > 0.15
+        ),
+    )
+
+    # Check 116: LOMO Plastic Meniscus Vignette (`cos^4 theta`), Heart-Shaped Bokeh (`bokeh_shape=1`), & Casing Light Leaks
+    spec_lomo_opt = PhotochemicalFilmSpec(
+        enabled=True, stock=7, lomo_vignette=0.72, lomo_edge_smear=0.35,
+        bokeh_shape=1, bokeh_amount=0.70, light_leak_amount=0.60, light_leak_pattern=3,
+        grain_amount=0.0,
+    )
+    rgb_lomo_opt, info_lomo_opt = apply_photochemical_film_pipeline(test_arch_src, spec_lomo_opt, frame_index=0, seed=103)
+    opt_diff = float(np.mean(np.abs(rgb_lomo_opt - rgb_std_f)))
+    record(
+        "LOMO Plastic Meniscus Optics (`lomo_vignette`), Heart Bokeh (`bokeh_shape=1`), & Casing Light Leaks",
+        "Meniscus vignette, heart-shaped aperture PSF convolution, and pink/amber light leaks transform the frame with full telemetry",
+        f"opt_vs_std_L1={opt_diff:.4f}, bokeh_shape={info_lomo_opt.get('lomo_optics', {}).get('bokeh_shape')}, bokeh_energy={info_lomo_opt.get('lomo_optics', {}).get('bokeh_energy')}, leak_pattern={info_lomo_opt.get('lomo_optics', {}).get('light_leak_pattern')}",
+        bool(
+            opt_diff > 0.04
+            and info_lomo_opt.get("lomo_optics", {}).get("bokeh_shape") == 1
+            and info_lomo_opt.get("lomo_optics", {}).get("light_leak_pattern") == 3
+        ),
+    )
+
+    # Check 117: 2x2 LOMO Darkroom Lab (`process_mode = 5`) & Standalone Node Graph `lomo_photochemical_darkroom_lab`
+    spec_lomo_q0 = PhotochemicalFilmSpec(enabled=True, stock=6, process_mode=5, quad_corner=0, show_border=1, show_text=0)
+    spec_lomo_c1 = PhotochemicalFilmSpec(enabled=True, stock=6, process_mode=5, quad_corner=1, show_border=0, show_text=0)
+    spec_lomo_c2 = PhotochemicalFilmSpec(enabled=True, stock=6, process_mode=5, quad_corner=2, show_border=0, show_text=0)
+    q0_lomo_img, _ = apply_photochemical_film_pipeline(test_arch_src, spec_lomo_q0, frame_index=0, seed=105)
+    c1_lomo_img, _ = apply_photochemical_film_pipeline(test_arch_src, spec_lomo_c1, frame_index=0, seed=105)
+    c2_lomo_img, _ = apply_photochemical_film_pipeline(test_arch_src, spec_lomo_c2, frame_index=0, seed=105)
+    c12_lomo_diff = float(np.mean(np.abs(c1_lomo_img - c2_lomo_img)))
+
+    g_lomo = _GP_QR["lomo_photochemical_darkroom_lab"]["build"]()
+    p_lomo = SCHEMA.resolve_all(_GP_QR["lomo_photochemical_darkroom_lab"]["params"])
+    ex_lomo = _GExecQR(g_lomo, std, p_lomo, src_op, W, H, 29.97, seed=2026)
+    run_lomo = ex_lomo.render_frame(0)
+    record(
+        "LOMO 2x2 Photochemical Darkroom Lab (`process_mode = 5`) & Standalone `photochemical_film` Node Graph",
+        "2x2 LOMO Darkroom Lab isolates all 4 quadrants cleanly, and `lomo_photochemical_darkroom_lab` node graph executes `photochemical_film` with zero errors",
+        f"c1_vs_c2_L1={c12_lomo_diff:.4f}, graph_errors={len(run_lomo.errors)}, nodes={list(run_lomo.node_frames.keys())}",
+        bool(
+            c12_lomo_diff > 0.04
+            and not run_lomo.errors
+            and "photochemical_film" in run_lomo.node_frames
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Checks 118-123: P1 LOMO Ripple Isolation Fix, P2 CRT Strong Magnet & Degauss, P3/P4 Sony Trinitron KV-1214
+    # ------------------------------------------------------------------
+    from atsim.codecs.crt import (
+        CRTMagneticEnvSpec,
+        apply_crt_magnetic_and_special_env,
+        TrinitronKV1214Spec,
+        apply_trinitron_kv1214_optics,
+    )
+    from atsim.web.server import App
+    import tempfile
+
+    # Check 118 (P1): Switching from `complete_media_ecology_end_to_end_suite` to `lomo_photochemical_darkroom_lab`
+    # completely clears residual `display.percept_enabled` and VHS `tape` jitter (zero sinusoidal wavy ripple)
+    with tempfile.TemporaryDirectory() as tmp_d:
+        app_p1 = App(Path(tmp_d))
+        app_p1.graph_load_preset("complete_media_ecology_end_to_end_suite")
+        app_p1.graph_load_preset("lomo_photochemical_darkroom_lab")
+        res_p1 = app_p1.current.resolved_params()
+        percept_after = float(res_p1["display"].get("percept_enabled", 0.0))
+        tape_jit_after = float(res_p1["tape"].get("line_jitter", 0.0))
+        hs_after = float(res_p1["tape"].get("head_switching", 0.0))
+
+    # Also verify that a disabled DisplayStage (`enabled=0.0`) does NOT run `percept_spec` even if `percept_enabled=1.0`
+    from atsim.stages.display import DisplayStage
+    from atsim.core.pipeline import RenderContext, FrameBuffer
+    ctx_p1_bypass = RenderContext(
+        std=std,
+        params=SCHEMA.resolve_all({"display": {"enabled": 0.0, "percept_enabled": 1.0, "percept_mode": 2.0}}),
+        seed=2026, frame_count=10, fps=29.97, width=W, height=H,
+    )
+    dsp_stage_off = DisplayStage(ctx_p1_bypass)
+    buf_in_p1 = FrameBuffer(test_arch_src.copy(), None, 3, 3 / 29.97, std, {"field": 1})
+    buf_out_p1 = dsp_stage_off.apply(buf_in_p1)
+    bypass_diff = float(np.max(np.abs(buf_out_p1.rgb - test_arch_src)))
+    record(
+        "P1 LOMO Node Preset Wavy Ripple Fix (Preset Isolation + Disabled Display Bypass)",
+        "Loading `lomo_photochemical_darkroom_lab` after `complete_media_ecology_end_to_end_suite` clears `percept_enabled` & VHS jitter to 0.0, and disabled DisplayStage is 100% transparent",
+        f"percept_enabled={percept_after}, tape.line_jitter={tape_jit_after}, tape.head_switching={hs_after}, disabled_display_max_diff={bypass_diff:.6f}",
+        bool(percept_after == 0.0 and tape_jit_after == 0.0 and hs_after == 0.0 and bypass_diff < 1e-6),
+    )
+
+    # Check 119 (P2-A): CRT Strong NdFeB Permanent Magnet Faceplate Physics (Beam Evacuation Hole + Rainbow Purity Rings + Pincushion Fold)
+    spec_mag_2 = CRTMagneticEnvSpec(
+        mode=2, strength=1.15, pos_x=0.50, pos_y=0.50,
+        angle_deg=25.0, remanence=0.25,
+    )
+    rgb_mag_2, info_mag_2 = apply_crt_magnetic_and_special_env(test_arch_src, spec_mag_2, frame_index=0, fps=29.97, seed=42)
+    cy_m, cx_m = H // 2, W // 2
+    hole_luma = float(rgb_mag_2[cy_m - 3:cy_m + 3, cx_m - 3:cx_m + 3].mean())
+    src_center_luma = float(test_arch_src[cy_m - 3:cy_m + 3, cx_m - 3:cx_m + 3].mean())
+    ring_region = rgb_mag_2[max(0, cy_m - 22):min(H, cy_m + 22), max(0, cx_m - 28):min(W, cx_m + 28)]
+    ring_chroma_spread = float(np.std(ring_region[..., 0] - ring_region[..., 1]) + np.std(ring_region[..., 2] - ring_region[..., 1]))
+    record(
+        "P2 CRT Strong NdFeB Magnet Faceplate Physics (Lorentz Beam-Evacuation Hole & Purity Rings)",
+        "Strong faceplate magnet evacuates central electron beam (`hole_luma < 0.25 * src_luma`), bends raster (`max_deflection_px > 10`), and forms concentric rainbow purity rings",
+        f"center_luma={src_center_luma:.4f}->{hole_luma:.4f}, ring_chroma_spread={ring_chroma_spread:.4f}, max_defl={info_mag_2.get('max_deflection_px')}px, void_frac={info_mag_2.get('void_fraction')}",
+        bool(
+            hole_luma < src_center_luma * 0.25
+            and ring_chroma_spread > 0.10
+            and info_mag_2.get("max_deflection_px", 0.0) > 10.0
+            and info_mag_2.get("void_fraction", 0.0) > 0.005
+        ),
+    )
+
+    # Check 120 (P2-B): Ferromagnetic Shadow-Mask Remanence vs Built-in PTC Thermistor Degaussing Coil Decay
+    spec_rem_only = CRTMagneticEnvSpec(mode=3, strength=0.0, remanence=0.80, degauss_active=0.0)
+    spec_degauss_done = CRTMagneticEnvSpec(mode=4, strength=0.0, remanence=0.80, degauss_active=0.95)
+    rgb_rem_only, info_rem_only = apply_crt_magnetic_and_special_env(test_arch_src, spec_rem_only, frame_index=0, fps=29.97, seed=42)
+    # At frame 75 (t = 2.5s), the PTC degaussing coil oscillation has decayed and wiped out the shadow-mask remanence
+    rgb_deg_done, info_deg_done = apply_crt_magnetic_and_special_env(test_arch_src, spec_degauss_done, frame_index=75, fps=29.97, seed=42)
+    rem_err_before = float(np.mean(np.abs(rgb_rem_only - test_arch_src)))
+    rem_err_after = float(np.mean(np.abs(rgb_deg_done - test_arch_src)))
+    record(
+        "P2 CRT Shadow-Mask Remanence Stain & PTC Thermistor Degaussing Coil Cleanse",
+        "After magnet removal, magnetized shadow mask retains a strong purity stain (`rem_err_before > 0.015`), and triggering the PTC degaussing coil wipes residual magnetization by >90%",
+        f"rem_L1_before={rem_err_before:.4f} (eff_rem={info_rem_only.get('remanence_effective')}) -> after_PTC_degauss={rem_err_after:.4f} (eff_rem={info_deg_done.get('remanence_effective')})",
+        bool(
+            rem_err_before > 0.015
+            and rem_err_after < rem_err_before * 0.15
+            and info_deg_done.get("remanence_effective", 1.0) < info_rem_only.get("remanence_effective", 0.0) * 0.05
+        ),
+    )
+
+    # Check 121 (P2-C): 2x2 CRT Strong Magnet & Degauss Quad Lab (`crt_magnet_mode = 5`) & `crt_magnet_env` Node Graph
+    spec_mag_q0 = CRTMagneticEnvSpec(mode=5, strength=0.85, remanence=0.65, degauss_active=0.75, quad_corner=0, show_border=1, show_text=0)
+    spec_mag_c1 = CRTMagneticEnvSpec(mode=5, strength=0.85, remanence=0.65, degauss_active=0.75, quad_corner=1, show_border=0, show_text=0)
+    spec_mag_c3 = CRTMagneticEnvSpec(mode=5, strength=0.85, remanence=0.65, degauss_active=0.75, quad_corner=3, show_border=0, show_text=0)
+    q0_mag, _ = apply_crt_magnetic_and_special_env(test_arch_src, spec_mag_q0, frame_index=6, fps=29.97, seed=42)
+    c1_mag, _ = apply_crt_magnetic_and_special_env(test_arch_src, spec_mag_c1, frame_index=6, fps=29.97, seed=42)
+    c3_mag, _ = apply_crt_magnetic_and_special_env(test_arch_src, spec_mag_c3, frame_index=6, fps=29.97, seed=42)
+    c13_mag_diff = float(np.mean(np.abs(c1_mag - c3_mag)))
+
+    g_mag = _GP_QR["crt_strong_magnet_physics_lab"]["build"]()
+    p_mag = SCHEMA.resolve_all(_GP_QR["crt_strong_magnet_physics_lab"]["params"])
+    ex_mag = _GExecQR(g_mag, std, p_mag, src_op, W, H, 29.97, seed=2026)
+    run_mag = ex_mag.render_frame(0)
+    record(
+        "P2 2x2 CRT Strong Magnet Quad Lab (`crt_magnet_mode = 5`) & `crt_magnet_env` Node Graph",
+        "2x2 CRT Magnet Lab isolates all 4 quadrants cleanly and `crt_strong_magnet_physics_lab` node graph executes `crt_magnet_env` with zero errors",
+        f"c1_vs_c3_L1={c13_mag_diff:.4f}, graph_errors={len(run_mag.errors)}, nodes={list(run_mag.node_frames.keys())}",
+        bool(
+            c13_mag_diff > 0.025
+            and not run_mag.errors
+            and "crt_magnet_env" in run_mag.node_frames
+        ),
+    )
+
+    # Check 122 (P3 vs P4-A): Sony Trinitron KV-1214 Cylindrical Aperture Grille Anisotropy (`HFx/HFy > 1.15`),
+    # NTSC-J 9300K White Point Shift (`R/G` down, `B/G` up), Single Damper Wire, and Curved 4K Moire Fringes
+    spec_kv_no_moire = TrinitronKV1214Spec(
+        enabled=True, grille_pitch=2.35, moire_strength=0.0,
+        d93_bloom=0.78, cyl_bezel=0.35, ab_split=0,
+    )
+    spec_kv_full = TrinitronKV1214Spec(
+        enabled=True, grille_pitch=2.35, moire_strength=0.78,
+        d93_bloom=0.78, cyl_bezel=0.35, ab_split=0,
+    )
+    rgb_kv_nm, info_kv_nm = apply_trinitron_kv1214_optics(test_arch_src, spec_kv_no_moire, frame_index=0)
+    rgb_kv_full, info_kv_full = apply_trinitron_kv1214_optics(test_arch_src, spec_kv_full, frame_index=0)
+    moire_delta = float(np.mean(np.abs(rgb_kv_full - rgb_kv_nm)))
+    src_rg = float(test_arch_src[..., 0].mean() / max(1e-6, test_arch_src[..., 1].mean()))
+    src_bg = float(test_arch_src[..., 2].mean() / max(1e-6, test_arch_src[..., 1].mean()))
+    kv_rg = info_kv_full.get("R_over_G", 1.0)
+    kv_bg = info_kv_full.get("B_over_G", 1.0)
+    kv_aniso = info_kv_full.get("hfx_over_hfy_anisotropy", 1.0)
+    record(
+        "P3 vs P4 Sony Trinitron KV-1214 Cylindrical Grille, NTSC-J 9300K & 4K Curved Moire Physics",
+        "KV-1214 enforces vertical Aperture Grille dominance (`HFx/HFy > 1.15`), shifts white point toward NTSC-J 9300K (`R/G` decreases, `B/G` increases), and adds curved 4K Moire fringes",
+        f"HFx/HFy={kv_aniso:.3f}, R/G={src_rg:.3f}->{kv_rg:.3f}, B/G={src_bg:.3f}->{kv_bg:.3f}, moire_L1={moire_delta:.4f}",
+        bool(
+            kv_aniso > 1.15
+            and kv_rg < src_rg
+            and kv_bg > src_bg
+            and moire_delta > 0.012
+        ),
+    )
+
+    # Check 123 (P3 vs P4-B): Sony Trinitron KV-1214 P4-vs-P3 Side-by-Side Split (`ab_split=1`), 2x2 Zoom Quad (`ab_split=2`), & Node Graph Preset
+    spec_kv_split = TrinitronKV1214Spec(enabled=True, ab_split=1)
+    spec_kv_quad = TrinitronKV1214Spec(enabled=True, ab_split=2)
+    rgb_kv_split, _ = apply_trinitron_kv1214_optics(test_arch_src, spec_kv_split, frame_index=0, reference_p4_rgb=test_arch_src)
+    rgb_kv_quad, _ = apply_trinitron_kv1214_optics(test_arch_src, spec_kv_quad, frame_index=0, reference_p4_rgb=test_arch_src)
+    left_ref_err = float(np.mean(np.abs(rgb_kv_split[:, :W // 2 - 4] - test_arch_src[:, :W // 2 - 4])))
+    right_sim_err = float(np.mean(np.abs(rgb_kv_split[:, W // 2 + 4:] - test_arch_src[:, W // 2 + 4:])))
+
+    g_kv = _GP_QR["sony_trinitron_kv1214_showa"]["build"]()
+    p_kv = SCHEMA.resolve_all(_GP_QR["sony_trinitron_kv1214_showa"]["params"])
+    ex_kv = _GExecQR(g_kv, std, p_kv, src_op, W, H, 29.97, seed=2026)
+    run_kv = ex_kv.render_frame(0)
+    record(
+        "P3 vs P4 Sony Trinitron KV-1214 A/B Split (`ab_split=1,2`) & `sony_trinitron_kv1214_showa` Node Graph",
+        "Left half of `ab_split=1` preserves clean P4 reference (`left_err == 0`), right half renders P3 KV-1214 (`right_err > 0.04`), and `sony_trinitron_kv1214_showa` node graph renders cleanly",
+        f"left_ref_L1={left_ref_err:.6f}, right_kv1214_L1={right_sim_err:.4f}, quad_shape={rgb_kv_quad.shape}, graph_errors={len(run_kv.errors)}",
+        bool(
+            left_ref_err < 1e-6
+            and right_sim_err > 0.04
+            and rgb_kv_quad.shape == test_arch_src.shape
+            and not run_kv.errors
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Checks 124 - 128: 10-Reference LOMO Optical Halation, Veiling Glare,
+    # Soap-Bubble / Fairy-Light Bokeh, Tilt-Shift DOF, Petzval Swirl & 6 New Stocks
+    # ------------------------------------------------------------------
+    from atsim.codecs.photochemical_film import (
+        PhotochemicalFilmSpec,
+        apply_photochemical_film_pipeline,
+        build_shaped_bokeh_kernel,
+    )
+
+    # Check 124: Soap-Bubble Ring Bokeh (`bokeh_shape=5`,) & Hexagonal Fairy-Light Bokeh (`bokeh_shape=6`,)
+    k_bubble = build_shaped_bokeh_kernel(5, radius_px=8)
+    k_hex = build_shaped_bokeh_kernel(6, radius_px=8)
+    c_idx = k_bubble.shape[0] // 2
+    bubble_center_val = float(k_bubble[c_idx, c_idx])
+    bubble_rim_val = float(k_bubble[c_idx, int(round(c_idx + 8 * 0.88))])
+    spec_bubble = PhotochemicalFilmSpec(
+        enabled=True, stock=16, bokeh_shape=5, bokeh_amount=0.88,
+        bloom_veil_mode=4, bloom_veil_amount=0.82, soft_focus_mist=0.50, dual_tone_split=0.78,
+    )
+    spec_hex_fairy = PhotochemicalFilmSpec(
+        enabled=True, stock=13, bokeh_shape=6, bokeh_amount=0.88,
+        bloom_veil_mode=4, bloom_veil_amount=0.55,
+    )
+    rgb_bubble, info_bubble = apply_photochemical_film_pipeline(test_arch_src, spec_bubble, frame_index=0, seed=101)
+    rgb_hex, info_hex = apply_photochemical_film_pipeline(test_arch_src, spec_hex_fairy, frame_index=0, seed=102)
+    record(
+        "LOMO Soap-Bubble Ring Bokeh (`bokeh_shape=5`,) & Hexagonal Fairy-Light Bokeh (`bokeh_shape=6`,)",
+        "Over-corrected spherical aberration soap-bubble PSF has a brighter annular rim than its center (`rim > 2.2 * center`), and both bokeh pipelines synthesize distinct specular orbs",
+        f"bubble_rim/center={bubble_rim_val:.5f}/{bubble_center_val:.5f} ({bubble_rim_val/max(1e-6, bubble_center_val):.2f}x), hex_sum={float(k_hex.sum()):.3f}, L1_vs_src=({float(np.mean(np.abs(rgb_bubble - test_arch_src))):.4f}, {float(np.mean(np.abs(rgb_hex - test_arch_src))):.4f})",
+        bool(
+            bubble_rim_val > bubble_center_val * 2.2
+            and abs(float(k_bubble.sum()) - 1.0) < 1e-4
+            and abs(float(k_hex.sum()) - 1.0) < 1e-4
+            and float(np.mean(np.abs(rgb_bubble - rgb_hex))) > 0.04
+        ),
+    )
+
+    # Check 125: 4 LOMO Optical Halation & Veiling Glare Modes (`bloom_veil_mode = 1..4`)
+    #   Mode 1: Golden-Hour Backlit Solar Flare Flood ()
+    #   Mode 2: High-Key Milky Veiling Glare & Soft-Focus Mist ( &)
+    #   Mode 3: Point-Source Dual-Zone Flame Corona + Red-Orange Halation ()
+    #   Mode 4: Diagonal Cool-Violet to Warm-Gold Optical Veil ( &)
+    spec_bv0 = PhotochemicalFilmSpec(enabled=True, stock=5, bloom_veil_mode=0, bloom_veil_amount=0.0, halation=0.0, grain_amount=0.0)
+    spec_bv1 = PhotochemicalFilmSpec(enabled=True, stock=5, bloom_veil_mode=1, bloom_veil_amount=0.95, halation=0.55, grain_amount=0.0)
+    spec_bv2 = PhotochemicalFilmSpec(enabled=True, stock=13, bloom_veil_mode=2, bloom_veil_amount=0.90, soft_focus_mist=0.72, expired_fog=0.45, grain_amount=0.0)
+    spec_bv3 = PhotochemicalFilmSpec(enabled=True, stock=2, bloom_veil_mode=3, bloom_veil_amount=0.92, halation=0.60, grain_amount=0.0)
+    rgb_bv0, _ = apply_photochemical_film_pipeline(test_arch_src, spec_bv0, frame_index=0, seed=42)
+    rgb_bv1, info_bv1 = apply_photochemical_film_pipeline(test_arch_src, spec_bv1, frame_index=0, seed=42)
+    rgb_bv2, info_bv2 = apply_photochemical_film_pipeline(test_arch_src, spec_bv2, frame_index=0, seed=42)
+    rgb_bv3, info_bv3 = apply_photochemical_film_pipeline(test_arch_src, spec_bv3, frame_index=0, seed=42)
+    # Mode 1: top solar flood makes upper half strongly warm golden (R + G >> 2*B) while keeping lower shadows darker
+    upper_warm_bv1 = float(rgb_bv1[:H // 3, :, 0].mean() + rgb_bv1[:H // 3, :, 1].mean() - 2.0 * rgb_bv1[:H // 3, :, 2].mean())
+    upper_warm_bv0 = float(rgb_bv0[:H // 3, :, 0].mean() + rgb_bv0[:H // 3, :, 1].mean() - 2.0 * rgb_bv0[:H // 3, :, 2].mean())
+    # Mode 2: High-key milky veiling glare lifts p02 shadow floor above 0.30 ( p02=0.39)
+    p02_bv0 = float(np.percentile(rgb_bv0 @ np.array([0.299, 0.587, 0.114], np.float32), 2.0))
+    p02_bv2 = float(np.percentile(rgb_bv2 @ np.array([0.299, 0.587, 0.114], np.float32), 2.0))
+    # Mode 3: Flame corona adds warm red-orange halo around bright sources
+    corona_warm_diff = float((rgb_bv3[..., 0] - rgb_bv0[..., 0]).mean())
+    record(
+        "LOMO Optical Halation & Veiling Glare Modes (`bloom_veil_mode = 1..4`: Solar Flood, Milky Veil, Flame Corona)",
+        "Mode 1 floods upper frame with golden solar flare (`upper_warm_bv1 > upper_warm_bv0 + 0.18`), Mode 2 lifts high-key milky black floor (`p02 > 0.30`), and Mode 3 adds dual-zone warm flame corona",
+        f"solar_flood_warm={upper_warm_bv0:.4f}->{upper_warm_bv1:.4f}, milky_p02={p02_bv0:.4f}->{p02_bv2:.4f}, flame_corona_dR=+{corona_warm_diff:.4f}",
+        bool(
+            upper_warm_bv1 > upper_warm_bv0 + 0.18
+            and p02_bv2 > 0.30
+            and p02_bv2 > p02_bv0 + 0.12
+            and float(np.mean(np.abs(rgb_bv3 - rgb_bv0))) > 0.025
+        ),
+    )
+
+    # Check 126: Tilt-Shift Planar Shallow DOF (`tilt_shift_dof`,/) & Petzval Tangential Swirl (`swirl_amount`,)
+    # Create a high-frequency grid pattern to measure spatial sharpness at the focal plane vs out-of-focus plane, and center vs swirl periphery
+    yy_g, xx_g = np.mgrid[0:H, 0:W].astype(np.float32)
+    grid_src = np.clip(0.5 + 0.42 * np.sin(xx_g * 0.9) * np.cos(yy_g * 0.9), 0.0, 1.0)
+    grid_rgb = np.stack([grid_src, grid_src * 0.95, grid_src * 0.90], axis=-1).astype(np.float32)
+
+    spec_ts = PhotochemicalFilmSpec(
+        enabled=True, stock=2, tilt_shift_dof=0.90, focus_plane_y=0.70,
+        halation=0.0, grain_amount=0.0,
+    )
+    rgb_ts, _ = apply_photochemical_film_pipeline(grid_rgb, spec_ts, frame_index=0, seed=42)
+    focus_row = int(round(0.70 * H))
+    far_row = int(round(0.15 * H))
+    hf_at_focus = float(np.std(np.diff(rgb_ts[max(0, focus_row - 4):min(H, focus_row + 4), :, 1], axis=1)))
+    hf_at_far = float(np.std(np.diff(rgb_ts[max(0, far_row - 4):min(H, far_row + 4), :, 1], axis=1)))
+
+    spec_swirl = PhotochemicalFilmSpec(
+        enabled=True, stock=14, swirl_amount=0.90,
+        halation=0.0, grain_amount=0.0,
+    )
+    spec_no_swirl = PhotochemicalFilmSpec(
+        enabled=True, stock=14, swirl_amount=0.0,
+        halation=0.0, grain_amount=0.0,
+    )
+    rgb_swirl, _ = apply_photochemical_film_pipeline(grid_rgb, spec_swirl, frame_index=0, seed=42)
+    rgb_no_swirl, _ = apply_photochemical_film_pipeline(grid_rgb, spec_no_swirl, frame_index=0, seed=42)
+    center_diff = float(np.mean(np.abs(rgb_swirl[H // 2 - 8:H // 2 + 8, W // 2 - 8:W // 2 + 8] - rgb_no_swirl[H // 2 - 8:H // 2 + 8, W // 2 - 8:W // 2 + 8])))
+    corner_diff = float(np.mean(np.abs(rgb_swirl[:H // 4, :W // 4] - rgb_no_swirl[:H // 4, :W // 4])))
+    record(
+        "LOMO Tilt-Shift Planar Shallow DOF (`tilt_shift_dof`,/) & Petzval Swirl Astigmatism (`swirl_amount`,)",
+        "Tilt-shift preserves high-frequency sharpness along `focus_plane_y` while blurring far background (`hf_focus > 1.8 * hf_far`); Petzval swirl keeps center sharp while swirling corners (`corner_diff > 5 * center_diff`)",
+        f"tilt_shift_HF(focus={hf_at_focus:.4f} vs far={hf_at_far:.4f}, ratio={hf_at_focus/max(1e-6, hf_at_far):.2f}x), petzval_swirl_L1(center={center_diff:.5f} vs corner={corner_diff:.4f})",
+        bool(
+            hf_at_focus > hf_at_far * 1.8
+            and corner_diff > 0.03
+            and corner_diff > center_diff * 5.0
+        ),
+    )
+
+    # Check 127: 6 New Calibrated LOMO Film Stocks (`stock = 11..16`)
+    #   11: 90s Cinema 90s Tungsten Acid Olive-Chartreuse (: B/G < 0.65)
+    #   12: Prussian Cyan-Navy & Electric Violet Rain (: B > R in mid/shadows)
+    #   13: Fujifilm Pro 400H Pastel Candy High-Key (: elevated pastel brightness)
+    #   14: Vintage Brass-Olive & Maroon-Plum Petzval (: warm olive R+G > 2*B)
+    #   15: LOMO LC-A Minitar-1 Turquoise-Emerald X-Pro (: G+B > 2*R cyan-emerald cast)
+    #   16: Meyer Trioplan Soap-Bubble Golden-Violet Dream ()
+    spec_s11 = PhotochemicalFilmSpec(enabled=True, stock=11, grain_amount=0.0, halation=0.2)
+    spec_s12 = PhotochemicalFilmSpec(enabled=True, stock=12, grain_amount=0.0, halation=0.2)
+    spec_s13 = PhotochemicalFilmSpec(enabled=True, stock=13, grain_amount=0.0, halation=0.2)
+    spec_s14 = PhotochemicalFilmSpec(enabled=True, stock=14, grain_amount=0.0, halation=0.2)
+    spec_s15 = PhotochemicalFilmSpec(enabled=True, stock=15, process_mode=1, xpro_strength=0.85, xpro_tint_mode=1, grain_amount=0.0)
+    rgb_s11, info_s11 = apply_photochemical_film_pipeline(test_arch_src, spec_s11, frame_index=0, seed=42)
+    rgb_s12, info_s12 = apply_photochemical_film_pipeline(test_arch_src, spec_s12, frame_index=0, seed=42)
+    rgb_s13, info_s13 = apply_photochemical_film_pipeline(test_arch_src, spec_s13, frame_index=0, seed=42)
+    rgb_s14, info_s14 = apply_photochemical_film_pipeline(test_arch_src, spec_s14, frame_index=0, seed=42)
+    rgb_s15, info_s15 = apply_photochemical_film_pipeline(test_arch_src, spec_s15, frame_index=0, seed=42)
+    s11_bg = float(rgb_s11[..., 2].mean() / max(1e-6, rgb_s11[..., 1].mean()))
+    s12_bg = float(rgb_s12[..., 2].mean() / max(1e-6, rgb_s12[..., 1].mean()))
+    s14_bg = float(rgb_s14[..., 2].mean() / max(1e-6, rgb_s14[..., 1].mean()))
+    s15_gb_over_r = float((rgb_s15[..., 1].mean() + rgb_s15[..., 2].mean()) / max(1e-6, 2.0 * rgb_s15[..., 0].mean()))
+    record(
+        "6 New Calibrated LOMO Film Stocks (`stock = 11..16`: 90s Cinema Olive, Prussian Rain, Pro 400H, Petzval, LC-A Turquoise)",
+        "Stock 11 enforces strong tungsten olive-chartreuse (`B/G < 0.68`), Stock 12 shifts toward Prussian blue-violet (`B/G > 1.02`), Stock 14 yields warm brass-olive (`B/G < 0.78`), and Stock 15 yields turquoise-emerald X-Pro (`(G+B)/2R > 1.05`)",
+        f"s11_B/G={s11_bg:.3f}, s12_B/G={s12_bg:.3f}, s13_luma={float(rgb_s13.mean()):.3f}, s14_B/G={s14_bg:.3f}, s15_(G+B)/2R={s15_gb_over_r:.3f}",
+        bool(
+            s11_bg < 0.68
+            and s12_bg > 1.02
+            and s14_bg < 0.78
+            and s15_gb_over_r > 1.05
+        ),
+    )
+
+    # Check 128: 2x2 LOMO Optical Halation & Bokeh Quad Lab (`bloom_veil_mode = 5`) & `lomo_optical_halation_bokeh_lab` Node Graph
+    spec_opt_q0 = PhotochemicalFilmSpec(enabled=True, stock=16, bloom_veil_mode=5, bloom_veil_amount=0.88, quad_corner=0, show_border=1, show_text=0)
+    spec_opt_c1 = PhotochemicalFilmSpec(enabled=True, stock=16, bloom_veil_mode=5, bloom_veil_amount=0.88, quad_corner=1, show_border=0, show_text=0)
+    spec_opt_c2 = PhotochemicalFilmSpec(enabled=True, stock=16, bloom_veil_mode=5, bloom_veil_amount=0.88, quad_corner=2, show_border=0, show_text=0)
+    spec_opt_c3 = PhotochemicalFilmSpec(enabled=True, stock=16, bloom_veil_mode=5, bloom_veil_amount=0.88, quad_corner=3, show_border=0, show_text=0)
+    spec_opt_c4 = PhotochemicalFilmSpec(enabled=True, stock=16, bloom_veil_mode=5, bloom_veil_amount=0.88, quad_corner=4, show_border=0, show_text=0)
+    q0_opt, _ = apply_photochemical_film_pipeline(test_arch_src, spec_opt_q0, frame_index=0, seed=42)
+    c1_opt, _ = apply_photochemical_film_pipeline(test_arch_src, spec_opt_c1, frame_index=0, seed=42)
+    c2_opt, _ = apply_photochemical_film_pipeline(test_arch_src, spec_opt_c2, frame_index=0, seed=42)
+    c3_opt, _ = apply_photochemical_film_pipeline(test_arch_src, spec_opt_c3, frame_index=0, seed=42)
+    c4_opt, _ = apply_photochemical_film_pipeline(test_arch_src, spec_opt_c4, frame_index=0, seed=42)
+
+    g_lomo_opt = _GP_QR["lomo_optical_halation_bokeh_lab"]["build"]()
+    p_lomo_opt = SCHEMA.resolve_all(_GP_QR["lomo_optical_halation_bokeh_lab"]["params"])
+    ex_lomo_opt = _GExecQR(g_lomo_opt, std, p_lomo_opt, src_op, W, H, 24.0, seed=2026)
+    run_lomo_opt = ex_lomo_opt.render_frame(0)
+    record(
+        "2x2 LOMO Optical Halation & Bokeh Quad Lab (`bloom_veil_mode = 5`) & `lomo_optical_halation_bokeh_lab` Node Graph",
+        "All 4 quadrants of `bloom_veil_mode=5` produce distinct optical signatures (`L1 > 0.05` between quadrants) and `lomo_optical_halation_bokeh_lab` node graph executes with zero errors",
+        f"L1(c1_c2={float(np.mean(np.abs(c1_opt - c2_opt))):.4f}, c2_c3={float(np.mean(np.abs(c2_opt - c3_opt))):.4f}, c3_c4={float(np.mean(np.abs(c3_opt - c4_opt))):.4f}), graph_errors={len(run_lomo_opt.errors)}",
+        bool(
+            q0_opt.shape == test_arch_src.shape
+            and float(np.mean(np.abs(c1_opt - c2_opt))) > 0.05
+            and float(np.mean(np.abs(c2_opt - c3_opt))) > 0.05
+            and float(np.mean(np.abs(c3_opt - c4_opt))) > 0.05
+            and not run_lomo_opt.errors
+        ),
     )
 
 

@@ -126,7 +126,15 @@ class RFParams:
     tuner_type: float = 0.0               # 0=Standard TV Tuner, 1=Taobao Cheap TV Card (SAA713x/TDA9887), 2=Vintage Rotary
     tuning_offset_khz: float = 0.0        # receiver local oscillator fine-tuning error (-500..500 kHz)
     front_end_overload: float = 0.0       # LNA/mixer compression & intermodulation overload (0..1)
-    color_killer_threshold_db: float = 18.0  # C/N threshold below which tuner mutes colour burst (dB)
+    color_killer_threshold_db: float = 18.0
+    # --- RF Channel-Switching ("换台") & Analog Horror Tuner Unlock Transients ---
+    channel_switch_rate: float = 0.0      # switches per 10s (0 = static channel)
+    channel_switch_dur_s: float = 0.42    # duration of varactor/PLL tuning transient (s)
+    lo_sweep_mhz: float = 0.0             # peak local-oscillator sweep across Nyquist slope (MHz)
+    vsync_roll: float = 0.0               # vertical sync unlock & VBI hammerhead rolling bar (0..1)
+    vbi_bar_vis: float = 0.85             # visibility of VBI equalizing pulses & VITC data dots (0..1)
+    flagging: float = 0.0                 # top-of-frame H-AFC pull-in time-constant hook ("旗帜飘动", 0..1)
+    hanover_bars: float = 0.0             # PAL 1H delay-line alternating phase Venetian-blind bars (0..1)  # C/N threshold below which tuner mutes colour burst (dB)
 
 
 class TransmitterNode(SignalNode):
@@ -484,7 +492,7 @@ class DemodulatorNode(SignalNode):
         noise_rms = float(np.clip(10.0 ** (-cn_eff / 20.0), 0.0, 0.85))
         bcast = float(np.clip(self.p.broadcast_noise, 0.0, 1.0))
         if bcast > 1e-4:
-            noise_rms = float(np.hypot(noise_rms, 0.32 * bcast))
+            noise_rms = float(np.hypot(noise_rms, 0.44 * bcast))
 
         if noise_rms > 1e-4:
             raw = rng.standard_normal(out.shape).astype(np.float32)
@@ -668,3 +676,220 @@ class RFLink:
         """Full modulate -> channel -> front-end -> demodulate round trip."""
         tx = self.modulate(composite, frame_index)
         return self.demodulate(tx, frame_index, rng)
+
+
+    def switch_envelope(self, frame_index: int, fps: float = 25.0) -> dict:
+        """
+        Compute the instantaneous physical state of a varactor/PLL channel-switching ("换台") transient.
+
+        When a viewer switches channels on a TV or VCR tuner (like the Panasonic NV-J27 VHF/UHF tuner)
+        or plays back a tape compiled from multiple channel-switching recordings:
+          Phase 1 (Break-lock & Varactor Sweep, u in [0, 0.35)):
+            The local oscillator sweeps by `lo_sweep_mhz` (1..3 MHz) across the 38.0 MHz IF SAW filter's
+            Nyquist slope. The picture carrier slides off the slope, causing high-contrast quadrature
+            relief ("浮雕/负片反相") before collapsing into broadband AGC snow.
+          Phase 2 (Inter-channel Dead Band, u in [0.35, 0.72)):
+            No carrier is locked; IF AGC opens to maximum gain (+40 dB), flooding the detector with
+            Rayleigh-distributed snow, while the video coupling capacitor discharges (DC clamp surge)
+            and the 50 Hz vertical oscillator free-runs (`vsync_roll`), rolling the dark VBI hammerhead
+            bar across the screen.
+          Phase 3 (Pull-in & Lock Acquisition, u in [0.72, 1.0]):
+            The new channel's carrier enters the IF passband; H-AFC pulls in exponentially from the top
+            of the frame (`flagging`), PAL swinging-burst PLL hunts with Hanover bars (`hanover_bars`),
+            and AGC settles back to nominal black level.
+        """
+        rate = float(getattr(self.p, "channel_switch_rate", 0.0))
+        dur_s = max(0.08, float(getattr(self.p, "channel_switch_dur_s", 0.42)))
+        lo_peak = float(getattr(self.p, "lo_sweep_mhz", 0.0))
+        v_roll = float(getattr(self.p, "vsync_roll", 0.0))
+        flag = float(getattr(self.p, "flagging", 0.0))
+        hanover = float(getattr(self.p, "hanover_bars", 0.0))
+
+        if rate <= 1e-4 and lo_peak <= 1e-4 and v_roll <= 1e-4 and flag <= 1e-4 and hanover <= 1e-4:
+            return {"active": False, "env": 0.0, "lo_mhz": 0.0, "snow_boost": 0.0,
+                    "dc_surge": 0.0, "v_offset_frac": 0.0, "flagging": 0.0, "hanover": 0.0,
+                    "neg_inversion": 0.0}
+
+        t_s = float(frame_index) / max(1.0, float(fps))
+        env = 0.0
+        u = 0.0
+        event_idx = 0
+        if rate > 1e-4:
+            period_s = 10.0 / max(0.1, rate)
+            # Deterministic offset so t=0.4s default preview frame lands right inside an active switch transient!
+            t_shift = t_s + 0.18 * period_s
+            event_idx = int(np.floor(t_shift / period_s))
+            t_in = t_shift - event_idx * period_s
+            # Center an event around t=0.40s as well for immediate single-frame inspection
+            dist_04 = abs(t_s - 0.40)
+            if dist_04 <= dur_s * 0.65:
+                u = float(np.clip((t_s - (0.40 - dur_s * 0.32)) / dur_s, 0.0, 1.0))
+                env = float(np.sin(u * np.pi) ** 0.75)
+                event_idx = 1
+            elif t_in <= dur_s:
+                u = float(np.clip(t_in / dur_s, 0.0, 1.0))
+                env = float(np.sin(u * np.pi) ** 0.75)
+
+        # Even if rate == 0, static slider values for lo_sweep_mhz / vsync_roll / flagging / hanover_bars work directly
+        eff_lo = lo_peak * (np.cos(u * 1.6 * np.pi) * env if rate > 1e-4 else 1.0)
+        snow_boost = float(np.clip(env * np.exp(-((u - 0.52) / 0.24) ** 2) * 1.35, 0.0, 1.0)) if rate > 1e-4 else 0.0
+        # Coupling capacitor charge/discharge surge (bright flash on carrier drop, dark undershoot on lock)
+        dc_surge = float(env * 0.42 * np.sin((u - 0.15) * 2.0 * np.pi) * np.exp(-1.8 * u)) if rate > 1e-4 else 0.0
+        # Negative-video quadrature relief when LO crosses the upper Nyquist slope or over-modulates IF
+        neg_inv = float(np.clip((abs(eff_lo) / 1.8) * (0.45 + 0.55 * env), 0.0, 0.95))
+
+        # Vertical sync free-run roll position (fraction of frame height 0..1)
+        eff_v_roll = max(v_roll, 0.88 * env if rate > 1e-4 else 0.0)
+        if eff_v_roll > 1e-4:
+            # Free-running 50Hz oscillator drifts by ~18-35% of frame height per frame during unlock
+            v_speed = 0.23 + 0.32 * eff_v_roll
+            v_offset_frac = float((0.36 + frame_index * v_speed + 0.19 * event_idx) % 1.0)
+        else:
+            v_offset_frac = 0.0
+
+        eff_flag = max(flag, 0.78 * env if rate > 1e-4 else 0.0)
+        eff_hanover = max(hanover, 0.72 * env if rate > 1e-4 else 0.0)
+
+        return {
+            "active": True,
+            "env": round(env, 4),
+            "u": round(u, 4),
+            "lo_mhz": round(float(eff_lo), 4),
+            "snow_boost": round(snow_boost, 4),
+            "dc_surge": round(dc_surge, 4),
+            "neg_inversion": round(neg_inv, 4),
+            "v_roll_strength": round(float(eff_v_roll), 4),
+            "v_offset_frac": round(v_offset_frac, 4),
+            "flagging": round(float(eff_flag), 4),
+            "hanover": round(float(eff_hanover), 4),
+        }
+
+    def apply_post_demod_glitches(self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
+                                  frame_index: int, rng: np.random.Generator,
+                                  fps: float = 25.0) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+        if isinstance(fps, np.random.Generator):
+            rng = fps
+            fps = 25.0
+        fps = float(fps) if fps else 25.0
+        """
+        Apply the physical baseband & sync/subcarrier consequences of RF channel switching ("换台"),
+        V-Sync VBI hammerhead rolling, H-AFC top-hook flagging, and PAL Hanover Venetian-blind bars.
+        """
+        sw = self.switch_envelope(frame_index, fps=fps)
+        if not sw.get("active", False):
+            return y, i, q, sw
+
+        H, W = y.shape
+        scale_w = W / 720.0
+        scale_h = H / 480.0
+        y_out = y.astype(np.float32, copy=True)
+        i_out = i.astype(np.float32, copy=True)
+        q_out = q.astype(np.float32, copy=True)
+
+        # 1. LO Nyquist-Slope Detuning & Quadrature Relief / Negative-Video Inversion ("浮雕负片反相")
+        lo_mhz = float(sw["lo_mhz"])
+        neg_inv = float(sw["neg_inversion"])
+        if abs(lo_mhz) > 0.05 or neg_inv > 0.05:
+            # High-frequency quadrature derivative ringing when carrier slides down the IF SAW slope
+            dy_dx = np.gradient(y_out, axis=1).astype(np.float32)
+            dy_dx2 = np.gradient(dy_dx, axis=1).astype(np.float32)
+            slope_ring = (0.85 * np.sign(lo_mhz + 1e-6) * dy_dx - 0.45 * dy_dx2) * min(1.5, abs(lo_mhz))
+            # Envelope detector rectification of over-modulated / carrier-starved VSB signal -> negative video on highlights
+            y_neg = 1.0 - y_out + 0.35 * slope_ring
+            w_inv = float(np.clip(neg_inv * 0.72, 0.0, 0.88))
+            y_out = y_out * (1.0 - w_inv) + y_neg * w_inv + 0.25 * slope_ring
+            # Subcarrier intercarrier beat (4.43 MHz vs 6.5 MHz sound carrier) during LO sweep
+            xx = np.arange(W, dtype=np.float32)[None, :]
+            yy = np.arange(H, dtype=np.float32)[:, None]
+            beat_freq = max(2.2, (5.2 - 1.4 * min(2.0, abs(lo_mhz))) * scale_w)
+            beat_wave = np.cos(2.0 * np.pi * (xx / beat_freq + yy / max(3.0, 8.5 * scale_h)) + frame_index * 1.7)
+            y_out += (0.16 * min(1.2, abs(lo_mhz) * 0.8 + neg_inv * 0.5)) * beat_wave.astype(np.float32)
+
+        # 2. V-Sync Unlock & Rolling VBI Hammerhead Bar ("场失锁垂直翻滚与场消隐黑带")
+        v_strength = float(sw["v_roll_strength"])
+        if v_strength > 1e-3:
+            shift_rows = int(round(float(sw["v_offset_frac"]) * H))
+            if shift_rows != 0:
+                y_out = np.roll(y_out, shift_rows, axis=0)
+                i_out = np.roll(i_out, shift_rows, axis=0)
+                q_out = np.roll(q_out, shift_rows, axis=0)
+
+            vbi_vis = float(np.clip(getattr(self.p, "vbi_bar_vis", 0.85) * v_strength, 0.0, 1.0))
+            if vbi_vis > 1e-3:
+                # 625-line PAL VBI is 25 lines per field (~8% of frame height)
+                bar_h = max(10, int(round(0.085 * H)))
+                bar_center = shift_rows % H
+                rows = np.arange(H, dtype=np.float32)
+                dist = ((rows - bar_center + H * 0.5) % H) - H * 0.5
+                in_bar = np.clip((bar_h * 0.5 - np.abs(dist)) / max(1.0, 2.0 * scale_h), 0.0, 1.0)[:, None]
+
+                # Inside the VBI bar: black blanking pedestal (0.03) + ultra-black broad V-sync serration slot
+                # in the middle 5 rows + half-line equalizing pulse ticks at x=0.04W and x=0.52W + VITC white data dots
+                vbi_luma = np.full((H, W), 0.035, dtype=np.float32)
+                xx = np.arange(W, dtype=np.float32)[None, :]
+                xn = xx / max(1.0, float(W))
+                # Hammerhead broad sync slot (middle of VBI bar)
+                broad_sync = (np.abs(dist) < (bar_h * 0.18))[:, None] & ((xn < 0.44) | ((xn > 0.50) & (xn < 0.94)))
+                vbi_luma[broad_sync] = 0.005
+                # Equalizing pulse serrations
+                eq_zone = (np.abs(dist) >= (bar_h * 0.18)) & (np.abs(dist) < (bar_h * 0.36))
+                eq_ticks = eq_zone[:, None] & ((np.abs(xn - 0.04) < 0.018) | (np.abs(xn - 0.52) < 0.018))
+                vbi_luma[eq_ticks] = 0.28
+                # VITC / Teletext clock run-in & framing code white dashes near bottom of VBI bar
+                vitc_rows = (dist >= (bar_h * 0.22)) & (dist <= (bar_h * 0.44))
+                if np.any(vitc_rows):
+                    bit_cell = max(2, int(round(6 * scale_w)))
+                    bits = (rng.random((H, max(1, W // bit_cell + 2))) > 0.45).astype(np.float32)
+                    bit_line = np.repeat(bits, bit_cell, axis=1)[:, :W]
+                    vitc_mask = vitc_rows[:, None] & (xn > 0.08) & (xn < 0.88)
+                    vbi_luma = np.where(vitc_mask, 0.04 + 0.72 * bit_line, vbi_luma)
+
+                y_out = y_out * (1.0 - in_bar * vbi_vis) + vbi_luma * (in_bar * vbi_vis)
+                i_out *= (1.0 - in_bar * vbi_vis)
+                q_out *= (1.0 - in_bar * vbi_vis)
+
+        # 3. Top-of-Frame H-AFC Pull-In Hook ("Flagging / 顶部旗帜飘动拉弯") & Mid-Frame Shear
+        flag_amt = float(sw["flagging"])
+        if flag_amt > 1e-3:
+            rows_norm = np.arange(H, dtype=np.float32) / max(1.0, float(H - 1))
+            # Exponential relaxation after the vertical blanking interval (tau ~ 14% of frame height)
+            direction = 1.0 if ((frame_index // 2) % 2 == 0) else -1.0
+            wobble = 0.65 + 0.35 * float(np.sin(frame_index * 0.95))
+            hook_px = (direction * flag_amt * wobble * 42.0 * scale_w) * np.exp(-rows_norm / 0.14) * np.cos(rows_norm * 9.0)
+            # Add sharp horizontal shear steps during active tuning transient
+            if float(sw["env"]) > 0.15:
+                shear_band = np.exp(-0.5 * ((rows_norm - float(sw["v_offset_frac"])) / 0.06) ** 2)
+                hook_px += shear_band * (direction * 55.0 * float(sw["env"]) * scale_w)
+            y_out = horizontal_shift(y_out, hook_px)
+            i_out = horizontal_shift(i_out, hook_px)
+            q_out = horizontal_shift(q_out, hook_px)
+
+        # 4. PAL Swinging-Burst Unlock & Hanover Venetian-Blind Chroma Bars ("PAL 逐行倒相百叶窗错色")
+        han_amt = float(sw["hanover"])
+        if han_amt > 1e-3:
+            # Alternating +1 / -1 per scanline (or per field-line pair) rotates V phase by +-delta_phi
+            alt_sign = np.where((np.arange(H) % 2) == 0, 1.0, -1.0).astype(np.float32)[:, None]
+            phi_err = alt_sign * (han_amt * 1.15) + float(np.sin(frame_index * 1.3)) * han_amt * 0.65
+            cs = np.cos(phi_err).astype(np.float32)
+            sn = np.sin(phi_err).astype(np.float32)
+            i_rot = i_out * cs - q_out * sn
+            q_rot = i_out * sn + q_out * cs
+            # Alternating line saturation modulation (classic PAL Hanover Venetian-blind brightness/chroma bars)
+            gain_alt = np.clip(1.0 + 0.55 * han_amt * alt_sign, 0.25, 1.85)
+            i_out = i_rot * gain_alt
+            q_out = q_rot * gain_alt
+
+        # 5. Inter-Channel IF AGC Snow Burst & DC-Restoration Coupling Surge ("换台满屏雪花与电容充放电闪白")
+        snow_b = float(sw["snow_boost"])
+        dc_s = float(sw["dc_surge"])
+        if snow_b > 1e-3 or abs(dc_s) > 1e-3:
+            snow_field = lowpass(rng.standard_normal((H, W)).astype(np.float32), max(0.55, 0.95 * scale_w), axis=1)
+            # FM/AM detector snow has bright white spikes and dark troughs around 0.46 grey
+            snow_luma = np.clip(0.46 + 0.34 * snow_field, 0.0, 1.0)
+            y_out = y_out * (1.0 - 0.82 * snow_b) + snow_luma * (0.82 * snow_b) + dc_s
+            # Color killer mutes chroma inside heavy snow, leaving only brief unlocked colour bursts at the edges
+            c_kill = float(np.clip(1.0 - 1.15 * snow_b, 0.0, 1.0))
+            i_out *= c_kill
+            q_out *= c_kill
+
+        return np.clip(y_out, -0.2, 1.35).astype(np.float32), i_out.astype(np.float32), q_out.astype(np.float32), sw

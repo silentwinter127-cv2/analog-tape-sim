@@ -3,21 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>模拟磁带信号仿真工具</title>
+<title>虚拟媒介实验室 · Virtual Media Lab</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <header>
   <div class="brand">
     <span class="dot"></span>
-    <h1>模拟磁带信号仿真工具</h1>
-    <span class="sub">virtual signal chain · VHS / Hi8 · WebUI</span>
+    <h1>虚拟媒介实验室</h1>
+    <span class="sub">Virtual Media Lab · 视听物理与媒介考古工作站</span>
   </div>
   <div class="actions">
     <input id="clipFile" type="file" accept="video/*,image/*" hidden>
     <button id="btnImport">导入素材</button>
+    <input id="overlayFile" type="file" accept="image/*,video/*" hidden>
+    <button id="btnImportOverlay" class="ghost" title="导入自定义叠层图片或视频（用于切换台划像、色键/亮键抠像与画中画叠层）">🖼 导入叠层</button>
+    <button id="btnClearOverlay" class="ghost hidden" title="清除已导入的自定义叠层图，恢复参数化自定义叠层">✕ 清除叠层</button>
     <input id="seed" type="number" title="随机种子：相同种子与参数产生完全相同的影像" value="20240101">
     <button id="btnCanvas">接线画布</button>
+    <button id="btnScopes" title="展开/收起实时广播级波形监视器 (IRE)、矢量示波器与节点 A/B 频谱对比">📊 广播示波器</button>
     <button id="btnTimeline">缺陷时间线</button>
     <button id="btnMatrix">效果矩阵</button>
     <button id="btnFaults">故障速查</button>
@@ -33,7 +37,9 @@
       <option value="medium">导出画质: 均衡 (JPG 92% / CRF 20)</option>
       <option value="draft">导出画质: 快速 (JPG 82% / CRF 24)</option>
     </select>
-    <button id="btnStill">导出静帧</button>
+    <button id="btnStill" title="按当前「分屏 / 分框 / 文字」设置导出单张静帧">导出静帧</button>
+    <button id="btnQuadBurst" class="primary" title="一键批量连拍导出：左上1、右上2、左下3、右下4 四张全分辨率无文字独立静帧">📸 批量四连拍</button>
+    <button id="btnQuadZip" class="ghost" title="打包下载：2×2四分屏 + 四个独立角落全尺寸无文字静帧 ZIP (共5张)">📦 四连拍ZIP</button>
     <button id="btnSave">保存工程</button>
     <button id="btnExport" title="把整套设置导出成一个 JSON 文件，别人导入后能得到同样的画面">导出设置</button>
     <button id="btnImportCfg" title="导入一个导出的设置文件">导入设置</button>
@@ -50,10 +56,10 @@
     <div id="presetList" class="list"></div>
     <div class="paletteWrap">
       <div class="palGroup">设备目录（点选加入画布）</div>
-      <div id="palette" class="palette"></div>
+      <div id="paletteSidebar" class="palette palette-box"></div>
       <div class="palGroup">整套接线</div>
-      <div id="graphPresets" class="presetRow"></div>
-      <button id="btnGraphRefresh" class="ghost wide">刷新画布状态</button>
+      <div id="graphPresetsSidebar" class="presetRow graph-presets-box"></div>
+      <button id="btnGraphRefreshSidebar" class="ghost wide">刷新画布状态</button>
     </div>
   </aside>
 
@@ -86,6 +92,36 @@
       <label class="chk"><input id="autoRefresh" type="checkbox" checked> 自动刷新</label>
       <label class="chk"><input id="engineGraph" type="checkbox"> 用节点图渲染</label>
     </div>
+    <div class="wtBar quadCtrlBar" id="quadCtrlBar">
+      <span class="wt-title quad-title" title="控制所有 2×2 实验室与多画面监视墙的分屏角落拆选、边框显隐、无文字纯净模式及静帧批量四连拍">❖ 分屏 / 分框 / 文字</span>
+      <div class="quadBtnGroup" role="group" aria-label="分屏角落快捷切换">
+        <button id="btnQuadC0" class="ghost wt-btn qcorner-btn on" data-corner="0" title="显示 2×2 四分屏同屏对比">⊞ 2×2四分屏</button>
+        <button id="btnQuadC1" class="ghost wt-btn qcorner-btn" data-corner="1" title="全屏单独查看/导出：角落 1（左上角）">↖ 左上1</button>
+        <button id="btnQuadC2" class="ghost wt-btn qcorner-btn" data-corner="2" title="全屏单独查看/导出：角落 2（右上角）">↗ 右上2</button>
+        <button id="btnQuadC3" class="ghost wt-btn qcorner-btn" data-corner="3" title="全屏单独查看/导出：角落 3（左下角）">↙ 左下3</button>
+        <button id="btnQuadC4" class="ghost wt-btn qcorner-btn" data-corner="4" title="全屏单独查看/导出：角落 4（右下角）">↘ 右下4</button>
+      </div>
+      <select id="quadCornerSel" class="qsel quad-sel" title="快捷下拉框 1 · 分屏选择：2×2 四分屏 或 单独全屏拆选任意角落 (1..4)">
+        <option value="0" selected>分屏: 2×2 四分屏</option>
+        <option value="1">角落 1: 左上角 (全屏)</option>
+        <option value="2">角落 2: 右上角 (全屏)</option>
+        <option value="3">角落 3: 左下角 (全屏)</option>
+        <option value="4">角落 4: 右下角 (全屏)</option>
+      </select>
+      <select id="quadBorderSel" class="qsel quad-sel" title="快捷下拉框 2 · 分框选择：无分框无缝拼接、细十字线 或 标准演播室边框">
+        <option value="0">分框: 无分框 (无缝)</option>
+        <option value="1">分框: 细十字分框线</option>
+        <option value="2" selected>分框: 标准演播室分框</option>
+      </select>
+      <select id="quadTextSel" class="qsel quad-sel" title="快捷下拉框 3 · 文字显隐：默认不要文字（纯净画面），或按需开启角落标签与底部遥测栏">
+        <option value="0" selected>文字: 不要文字 (纯净)</option>
+        <option value="1">文字: 仅角落标签</option>
+        <option value="2">文字: 标签+底部遥测栏</option>
+      </select>
+      <button id="btnQuadStillInline" class="ghost wt-btn" title="按当前选中的角落与文字/分框设置导出单张静帧">⬇ 导出当前帧</button>
+      <button id="btnQuadBurstInline" class="primary wt-btn" title="一键连续导出左上1、右上2、左下3、右下4 四张全分辨率无文字静帧">📸 批量四连拍 (4张)</button>
+      <button id="btnQuadZipInline" class="ghost wt-btn" title="打包下载 2×2 四分屏 + 4 个独立角落无文字静帧 ZIP">📦 四连拍ZIP</button>
+    </div>
     <div class="wtBar" id="wtBar">
       <span class="wt-title" title="SONY DCR-TRV310E 电动变焦摇杆 (f=3.6–72mm, f/1.4–2.9)">W–T 光学变焦</span>
       <button id="btnZoomW" class="ghost wt-btn" title="按住向 W（广角端）缩小，视场变宽、细小发光体融合为光晕">◀ W 广角</button>
@@ -106,9 +142,59 @@
       <button id="btnAudioExportFull" class="ghost" title="导出全片完整模拟伴音 WAV（与导出视频内嵌音轨完全一致）">⬇ 导出全片 WAV</button>
       <label class="chk" title="切换试听经过模拟设备后的伴音 vs 未经模拟的原始伴音"><input id="audioClean" type="checkbox"> 原始伴音对比</label>
       <label class="chk" title="播放伴音时自动同步推进视频帧，直观观察音画同步故障"><input id="audioSyncPlay" type="checkbox" checked> 音画联动</label>
-      <canvas id="audioScope" width="520" height="34" title="点击跳转时间点 · 上半部：双声道模拟波形 · 下半部：音画同步故障包络（红=磁带失落/AFM切换，橙=磁头切换脉冲，蓝=走带抖晃，紫=接口/RF干扰）"></canvas>
+      <canvas id="audioScope" width="520" height="34" title="点击跳转时间点 · 上半部：双声道模拟波形 · 下半部：音画同步故障包络（红=磁带失落/AFM切换，青=磁头切换脉冲，蓝=走带抖晃，紫=接口/RF干扰）"></canvas>
       <span id="audioFaultBadge" class="badge">伴音就绪</span>
       <audio id="audioPlayer" preload="none" style="display:none"></audio>
+    </div>
+    <!-- 广播级实时示波与校准抽屉 (Waveform Monitor, Vectorscope & Node A/B Spectrum) -->
+    <div class="scopesDrawer" id="scopesDrawer">
+      <div class="scopesToolbar">
+        <span class="scopesTitle">📊 广播级实时示波与校准台 (Tektronix 1740A / IRE &amp; Vectorscope)</span>
+        <select id="scopeWfmMode" class="qsel" title="切换波形监视器显示模式">
+          <option value="comp" selected>波形: 复合 IRE (含HBI/色同步)</option>
+          <option value="luma">波形: 纯亮度 Y (IRE)</option>
+          <option value="parade">波形: RGB 分量并列 (Parade)</option>
+          <option value="line">波形: 单行扫描线精测</option>
+        </select>
+        <span id="scopeLineLabel" class="mono scopeMini">行 Y=240/480</span>
+        <input id="scopeLineSlider" type="range" min="0" max="1" value="0.5" step="0.005" title="选择单行示波器追踪的扫描行位置（也可按住 Alt 点击预览图选行）" style="width:88px">
+        <select id="scopeAbMode" class="qsel" title="切换右侧校准分析仪模式">
+          <option value="spectrum" selected>分析: 0–6.5MHz 水平功率谱</option>
+          <option value="heat_total">分析: A/B 综合误差热力图</option>
+          <option value="heat_luma">分析: A/B 亮度 ΔY 热力图</option>
+          <option value="heat_chroma">分析: A/B 色度 ΔC 热力图</option>
+        </select>
+        <select id="scopeNodeA" class="qsel" title="选择对比信号 A（输出或中间节点）">
+          <option value="">A: 最终输出 (Output)</option>
+        </select>
+        <select id="scopeNodeB" class="qsel" title="选择参考信号 B（原始素材或任意上游节点）">
+          <option value="source">B: 原始素材 (Source)</option>
+        </select>
+        <button id="btnToggleScopes" class="ghost scopeToggleBtn">▼ 收起示波器</button>
+      </div>
+      <div class="scopesGrid">
+        <div class="scopeCard">
+          <div class="scopeCardHead">
+            <b>亮度/复合波形监视器 (Waveform Monitor · -40..+100 IRE)</b>
+            <span id="wfmReadout" class="mono">同步顶 -40.0 IRE · 黑基座 7.5 IRE</span>
+          </div>
+          <canvas id="wfmCanvas" width="380" height="150" title="点击垂直位置可切换选中扫描行 Y · 左侧 16% 为 HBI 行消隐区（-40 IRE 同步顶与 ±20 IRE 色同步脉冲串）"></canvas>
+        </div>
+        <div class="scopeCard">
+          <div class="scopeCardHead">
+            <b>色度矢量示波器 (Vectorscope · R/Mg/B/Cy/G/Yl + Burst)</b>
+            <span id="vecReadout" class="mono">NTSC · 色同步 0.0° · ACC 1.00×</span>
+          </div>
+          <canvas id="vecCanvas" width="210" height="150" title="极坐标色度矢量盘：方框为 75% 标准彩条靶框，金黄色矢量为色同步脉冲 (Burst)"></canvas>
+        </div>
+        <div class="scopeCard">
+          <div class="scopeCardHead">
+            <b>节点级 A/B 频谱与差值分析 (0–6.5 MHz PSD &amp; Heatmap)</b>
+            <span id="abReadout" class="mono">PSNR -- dB · ΔY -- IRE</span>
+          </div>
+          <canvas id="abCanvas" width="340" height="150" title="绿线=当前模拟亮度谱，金线=含副载波复合谱，灰青线=参考源谱；可切换热力图观察空间误差分布"></canvas>
+        </div>
+      </div>
     </div>
     <div class="timeline" id="tlStrip">
       <div class="tl-label">信号链</div>
@@ -124,32 +210,40 @@
   </aside>
 </main>
 
-<!-- node graph canvas: a full-viewport overlay, so it never competes with the
-     preview for height (it was previously squeezed below the fold) -->
+<!-- node graph canvas: a full-viewport overlay with Blender-style Node Group packaging -->
 <section class="canvasPane hidden" id="canvasPane">
   <div class="canvasHead">
     <b>设备接线画布</b>
     <span class="mono" id="canvasMsg"></span>
     <span class="spacer"></span>
-    <span class="hint2">拖动输出端口到输入端口连线 · 点击连线断开 · 滚轮缩放 · 拖动空白平移</span>
+    <span class="hint2">Shift+点击或框选多节点 → Ctrl+G 打包节点组 · 双击/Tab 进入节点组 · Shift+D 复制</span>
+    <button id="btnBoxSelect" class="ghost" title="框选模式 (快捷键 B 或按住 Shift 拖拽空白处)">⬚ 框选</button>
+    <button id="btnSelectVhs" class="ghost" title="一键多选 成像系统+信号编码+记录介质+播放设备">☑ 选VHS四件套</button>
+    <input id="groupNameInput" type="text" value="VHS" placeholder="节点组名称" title="打包后的节点组名称" style="width:88px;padding:4px 7px;font-size:12px">
+    <button id="btnGroupNodes" class="primary" title="将当前多选的节点打包为一个节点组 (快捷键 Ctrl+G)">📦 打包节点组</button>
+    <button id="btnDuplicateNode" class="ghost" title="复制所选节点或节点组 (快捷键 Shift+D)">📋 复制</button>
+    <button id="btnChainDuplicate" class="ghost" title="将所选节点或节点组串联复制到下游">⛓ 串联复制</button>
+    <button id="btnUngroupNode" class="ghost" title="将所选节点组解包还原为独立节点 (快捷键 Alt+G)">🔓 解包</button>
     <button id="btnFitView" class="ghost">适配视野</button>
-    <button id="btnRemove" class="ghost">删除所选节点</button>
+    <button id="btnRemove" class="ghost">删除所选</button>
     <button id="btnCanvasClose" class="ghost">关闭画布</button>
   </div>
+  <div id="canvasBreadcrumb" class="canvasBreadcrumb hidden"></div>
   <div class="canvasBody">
     <div class="canvasLeft">
       <div class="paletteWrap">
         <div class="palGroup">整套接线</div>
-        <div id="graphPresets" class="presetRow"></div>
+        <div id="graphPresets" class="presetRow graph-presets-box"></div>
+        <button id="btnGraphRefresh" class="ghost wide">刷新画布状态</button>
       </div>
       <div class="paletteWrap">
         <div class="palGroup">设备目录（点选加入画布）</div>
-        <div id="palette" class="palette"></div>
+        <div id="palette" class="palette palette-box"></div>
       </div>
     </div>
     <svg id="canvas"></svg>
     <div class="inspector">
-      <div class="palGroup">节点参数</div>
+      <div class="palGroup">节点 / 节点组参数</div>
       <div id="nodeInspector"></div>
       <div class="palGroup">校验</div>
       <div id="canvasIssues" class="issues"></div>
@@ -191,12 +285,13 @@
 <script src="/static/canvas.js"></script>
 <script src="/static/faults.js"></script>
 <script src="/static/session_ui.js"></script>
+<script src="/static/scopes.js"></script>
 <div id="mxModal" class="modal hidden">
   <div class="sheet wide">
     <h2>效果矩阵 <span class="mono" id="mxInfo"></span></h2>
     <p class="note">
       选一个参数，用若干取值各渲一帧、拼成一页看完——不用来回拖滑块去记上一个位置。
-      取值范围优先用<b>物理区间</b>（琥珀色之外的部分），因为那才是模型声明为真实的范围。
+      取值范围优先用<b>物理区间</b>（青蓝色之外的部分），因为那才是模型声明为真实的范围。
       点任意一格即可把该取值应用到工程。
     </p>
     <div class="mxbar">

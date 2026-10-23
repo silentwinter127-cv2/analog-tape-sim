@@ -28,6 +28,7 @@ from ..core.rng import OUProcess, ValueNoise3D, rng_for
 from ..core.signal import (SignalFrame, composite_encode, highpass, lowpass,
                            subcarrier_phase)
 from ..core.standards import VideoStandard
+from ..codecs.test_signal_gen import TestSignalSpec, generate_test_pattern
 
 
 class FormatStage(Stage):
@@ -74,6 +75,7 @@ class FormatStage(Stage):
         self.chroma_gain = float(cfg.get("chroma_gain", 1.0))
         self.edge_boost = float(cfg.get("edge_boost", 0.25))
         self.color_noise = float(cfg.get("color_noise", 0.25))
+        self.test_spec = TestSignalSpec.from_params(cfg)
 
     def on_params_changed(self) -> None:
         self._read_params()
@@ -188,8 +190,26 @@ class FormatStage(Stage):
             del self._chroma_hist[old]
 
     # ------------------------------------------------------------------
+    def on_params_changed(self) -> None:
+        cfg = self.cfg_of("format")
+        self.luma_bw = float(cfg.get("luma_bandwidth", 3.0)) * 1e6
+        self.chroma_bw = float(cfg.get("chroma_bandwidth", 0.75)) * 1e6
+        self.chroma_vavg = float(cfg.get("chroma_vertical_averaging", 0.85))
+        self.chroma_lag = float(np.clip(cfg.get("chroma_lag", 0.0), 0.0, 0.95))
+        self.chroma_gain = float(cfg.get("chroma_gain", 1.0))
+        self.edge_boost = float(cfg.get("edge_boost", 0.25))
+        self.color_noise = float(cfg.get("color_noise", 0.25))
+        self.test_spec = TestSignalSpec.from_params(cfg)
+
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
         rgb = buf.rgb
+        if self.test_spec.is_active():
+            rgb = generate_test_pattern(
+                width=rgb.shape[1], height=rgb.shape[0],
+                mode=self.test_spec.pattern_mode,
+                frame_index=int(buf.index), fps=self.ctx.fps,
+                std=self.std, amplitude_ire=self.test_spec.amplitude_ire,
+            )
         sig = SignalFrame.from_rgb(rgb, self.std)
         y, i, q = sig.y, sig.i, sig.q
 
@@ -223,4 +243,7 @@ class FormatStage(Stage):
         out.meta["signal"] = frame
         out.meta["format"] = "composite"
         out.meta["chroma_phase"] = out_phase
+        out.meta["tap_format_rgb"] = frame.to_rgb()
+        if self.test_spec.is_active():
+            out.meta["tap_camera_rgb"] = rgb
         return out

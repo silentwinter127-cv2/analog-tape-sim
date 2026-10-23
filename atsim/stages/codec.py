@@ -14,6 +14,7 @@ import numpy as np
 
 from ..codecs.dv import DVCodec, DVParams
 from ..codecs.mpeg1 import MPEG1Codec, MPEG1CodecParams
+from ..codecs.network_streaming_era import NetworkStreamingSpec, apply_network_streaming_era
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 from ..core.signal import SignalFrame
 
@@ -70,16 +71,36 @@ class CodecStage(Stage):
             quality=self.quality,
             base_step=float(cfg.get("dv_base_step", 0.0125)),
         ))
+        self.stream_spec = NetworkStreamingSpec.from_params(cfg)
 
     def on_params_changed(self) -> None:
         self._read_params()
 
+    def _apply_streaming_if_active(self, buf: FrameBuffer) -> FrameBuffer:
+        if not self.stream_spec.is_active():
+            return buf
+        sig: SignalFrame | None = buf.meta.get("signal")
+        base_rgb = sig.to_rgb() if sig is not None else np.clip(buf.rgb, 0.0, 1.0).astype(np.float32)
+        out_rgb, stream_info = apply_network_streaming_era(
+            base_rgb, self.stream_spec, frame_index=int(buf.index),
+            fps=float(self.ctx.fps), seed=int(self.ctx.seed) + 601,
+        )
+        meta = dict(buf.meta)
+        coded_sig = SignalFrame.from_rgb(out_rgb, buf.std)
+        meta["signal"] = coded_sig
+        meta["network_streaming_era"] = stream_info
+        comp = buf.composite
+        if comp is not None:
+            from ..core.signal import composite_encode
+            comp = composite_encode(coded_sig.y, coded_sig.i, coded_sig.q, buf.std, chroma_gain=0.63)
+        return FrameBuffer(out_rgb, comp, buf.index, buf.time, buf.std, meta)
+
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
-        if self.codec_kind <= 0:
+        if self.codec_kind <= 0 and not self.stream_spec.is_active():
             return buf
         sig: SignalFrame | None = buf.meta.get("signal")
         if sig is None:
-            return buf
+            return self._apply_streaming_if_active(buf)
 
         if self.codec_kind == 2 and self.mpeg1 is not None:
             rgb = sig.to_rgb()
@@ -94,17 +115,21 @@ class CodecStage(Stage):
                 "motion_compensation": self.mpeg1.p.motion_compensation,
                 "mean_abs_error": round(self._last_error, 5),
             }
-            return FrameBuffer(buf.rgb, None, buf.index, buf.time, buf.std, meta)
-        coded = self.codec.encode_decode(sig)
-        self._last_error = float(np.abs(coded.y - sig.y).mean())
-        meta = dict(buf.meta)
-        meta["signal"] = SignalFrame(coded.y.astype(np.float32),
-                                     coded.i.astype(np.float32),
-                                     coded.q.astype(np.float32))
-        meta["format"] = "dv"
-        meta["dv"] = {
-            "chroma_mode": self.chroma_mode,
-            "quality": self.quality,
-            "mean_abs_error": round(self._last_error, 5),
-        }
-        return FrameBuffer(buf.rgb, None, buf.index, buf.time, buf.std, meta)
+            out_buf = FrameBuffer(buf.rgb, None, buf.index, buf.time, buf.std, meta)
+            return self._apply_streaming_if_active(out_buf)
+        if self.codec_kind == 1:
+            coded = self.codec.encode_decode(sig)
+            self._last_error = float(np.abs(coded.y - sig.y).mean())
+            meta = dict(buf.meta)
+            meta["signal"] = SignalFrame(coded.y.astype(np.float32),
+                                         coded.i.astype(np.float32),
+                                         coded.q.astype(np.float32))
+            meta["format"] = "dv"
+            meta["dv"] = {
+                "chroma_mode": self.chroma_mode,
+                "quality": self.quality,
+                "mean_abs_error": round(self._last_error, 5),
+            }
+            out_buf = FrameBuffer(buf.rgb, None, buf.index, buf.time, buf.std, meta)
+            return self._apply_streaming_if_active(out_buf)
+        return self._apply_streaming_if_active(buf)

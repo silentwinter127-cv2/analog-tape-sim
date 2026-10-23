@@ -18,6 +18,7 @@ from .params import ParamSchema, merge_values
 
 LAYER_LABELS = {
     "camera": "01 成像系统 (摄像机)",
+    "film": "01b 胶片光化学 (胶片/LOMO)",
     "format": "02 信号编码 (格式)",
     "connector": "02c 链路接口",
     "tape": "03 记录介质 (磁带)",
@@ -290,7 +291,7 @@ def build_schema() -> ParamSchema:
                 "按一下机身 `SLOW SHUTTER` 键显示 `NIGHTSHOT 1`，再按一下显示 `NIGHTSHOT 2`——"
                 "两者即本模式下不同档位的慢快门/帧累积，可通过 `nv_accumulate` / `nv_shutter_frames` 控制档位）；"
                 "3 = Color Slow Shutter（保留彩色、只放慢快门，不拆红外滤镜）。"
-                "对照实拍素材 `10月13日.mp4`（`c_0001..c_0207`，遮除 OSD）分段实测："
+                "对照实拍 NightShot 素材（遮除 OSD）分段实测："
                 "TRV `NightShot`（`c_0063..c_0091`）mean 0.278、G 占比 0.377、R/G 0.731；"
                 "TRV `NightShot 1`（`c_0109..c_0135`）mean 0.268、G 占比 0.415、R/G 0.556；"
                 "TRV `NightShot 2`（`c_0136..c_0168`）mean 0.363、G 占比 0.440、R/G 0.464、B/G 0.812。")
@@ -704,10 +705,17 @@ def build_schema() -> ParamSchema:
                phys_max=0.6, source="CCD 过曝时的通道非线性",
                help="过曝区域向品红/紫偏移——参考素材里灯光边缘的那圈紫边。")
     cam.define("vcd_color_tone", "港式 VCD 冷暖分色与柔光肩部", 0.0, 0.0, 1.5, unit="0-1", group=g,
-               phys_min=0.0, phys_max=1.2, source="90年代末香港 VCD / 胶转磁短片实测色彩科学 (30666916021-1-192.mp4)",
+               phys_min=0.0, phys_max=1.2, source="90年代末港式 VCD / 胶转磁短片实测色彩科学",
                help="复现 90 年代末香港 VCD 纪实/MV 短片的标志性色彩曲线：暗部黑位微抬并带冷青灰底色（p05≈0.18）、"
                     "中间调人物肤色与紫荆铜雕呈暖金琥珀色（R/G≈1.11, B/G≈0.93）、玻璃幕墙与阴影呈翡翠青绿色（B/G≈1.04），"
                     "同时高光在 0.82 处平滑软肩滚降而不生硬死白。")
+    cam.define("ccd_flash_falloff", "SONY CCD 机顶氙气闪光灯与金属高光响应", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.2, source="SONY Cyber-shot 1/2.7英寸 Super HAD CCD 内存卡提取原图 (1024×768 药板闪光实拍)",
+               help="建模早期 SONY Cyber-shot CCD 数码相机近距机顶氙气闪光灯直闪的物理特征："
+                    "1. 中心亮（Y≈0.44）向四角遵循反平方律与广角 cos^4 衰减至暗部（Y≈0.075，中心/四角比 5.84x）；"
+                    "2. 暗部深色桌面保留高饱和暖红棕阶调（R/G≈1.31, B/G≈0.74）；"
+                    "3. 铝塑反光面中亮调呈冷银灰（R/G≈0.98, B/G≈1.05）并伴随微透镜高对比边缘蓝紫边与满阱锐利白斑；"
+                    "4. 机械快门遮光读出，完全无摄像模式下的垂直拖尾光柱。")
     g = "镜头"
     cam.define("lens_wear", "镜头磨损/镀膜老化", 0.0, 0.0, 1.0, unit="0-1", group=g,
                phys_max=0.6, source="镜片镀膜磨损与内部起雾",
@@ -739,7 +747,7 @@ def build_schema() -> ParamSchema:
                phys_min=0.2, phys_max=1.2,
                help="控制高光光条向画面外侧延伸的衰减尺度。")
     cam.define("coat_ghost", "变焦镜组镀膜鬼影与彩虹色散弧", 0.0, 0.0, 1.5, unit="0-1", group=g,
-               phys_min=0.0, phys_max=1.2, source="单层 MgF2 镀膜双反射鬼影链与广角端色散弧 (30666916021-1-192.mp4 开头 0.5s-1.2s)",
+               phys_min=0.0, phys_max=1.2, source="单层 MgF2 镀膜双反射鬼影链与广角端色散弧实测标定",
                help="建模短片开头逆光摇摄时的多层光学细节：1990 年代单层 MgF2 增透膜针对绿光（550nm）优化，"
                     "内部镜片二次反射会强烈反射红光与蓝紫光，形成中心对称的品红/蓝紫色反转重影（B-G≈+0.11）、"
                     "穿轴斜向焦散粉紫光带，以及广角端对角象限的青-绿-品红彩虹色散弧（B-R≈+0.10）。")
@@ -756,6 +764,70 @@ def build_schema() -> ParamSchema:
                help="三片传感器经棱镜分光，每片独立读出原色。特征不是「更好的单 CCD」，"
                     "而是噪点更低（读出噪声表现为亮度颗粒而非彩色斑点）、色彩分离干净、"
                     "细密纹理上无伪色摩尔纹。")
+
+    g = "演播室 CCU 机架控制与主同步 Genlock"
+    cam.define("ccu_enabled", "启用演播室 CCU 与 Genlock 控制", 0.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="Sony CCU-370 / Ikegami MA-79 演播室集中式摄像机控制单元与 SPG 黑场主同步发生器",
+               help="开启后接入演播室集中式 CCU 机架遥调（Iris、Master Pedestal、R/B 白平衡增益、R/B 黑平衡基座、动态高光膝点 Knee）与全馆 Blackburst 外同步锁相。")
+    cam.define("ccu_cam_id", "演播室摄像机机位特性", 0.0, 0.0, 3.0, unit="0-3", group=g,
+               step=1.0, phys_min=0.0, phys_max=3.0,
+               source="多机位同场照明下的不同品牌/老化个体色差模型",
+               help="0=CAM-1 Sony BVP-370 (D65 基准演播室座机)｜1=CAM-2 Ikegami HL-55 (暖调高反差采访机)｜"
+                    "2=CAM-3 BTS LDK-90 (偏冷暗部微青全景机)｜3=CAM-4 老旧游机 (阴极/CCD 暗电流抬升 + 绿偏)。"
+                    "视频工程师可通过下方 CCU R/B Gain 与 R/B Flare 旋钮将多台异构机位配平到完全一致。")
+    cam.define("ccu_iris_ev", "CCU 遥控光圈推杆 (Iris)", 0.0, -2.5, 2.5, unit="stops", group=g,
+               phys_min=-1.5, phys_max=1.5,
+               source="演播室 RCP 遥控面板纵推光圈杆 (f/1.4 – f/16)",
+               help="机房视觉工程师远程实时推拉摄像机镜头光圈，控制画面整体曝光进入高光 Knee 膝点的深度。")
+    cam.define("ccu_master_pedestal_ire", "总黑电平基座 (Master Pedestal)", 0.0, -15.0, 25.0, unit="IRE", group=g,
+               phys_min=-5.0, phys_max=12.0,
+               source="RCP 主黑电平旋钮（校准 7.5 IRE / 0 IRE 消隐基准黑位）",
+               help="整体平移三通道暗部黑位基座；配合波形监视器与 PLUGE 测试卡可精确消除暗部死黑截断或灰雾。")
+    cam.define("ccu_r_gain", "红通道白平衡增益 (R Gain)", 1.0, 0.5, 1.6, unit="x", group=g,
+               phys_min=0.75, phys_max=1.30,
+               source="CCU 红路视放白平衡配平旋钮",
+               help="调节高光与中间调红通道增益，用于多机位高光白平衡配平。")
+    cam.define("ccu_b_gain", "蓝通道白平衡增益 (B Gain)", 1.0, 0.5, 1.6, unit="x", group=g,
+               phys_min=0.75, phys_max=1.30,
+               source="CCU 蓝路视放白平衡配平旋钮",
+               help="调节高光与中间调蓝通道增益，用于多机位高光白平衡配平。")
+    cam.define("ccu_r_flare", "红通道黑平衡基座 (R Black / Flare)", 0.0, -0.25, 0.25, unit="-0.25..0.25", group=g,
+               phys_min=-0.12, phys_max=0.12,
+               source="CCU 红路暗部黑平衡与镜筒杂散光补偿旋钮",
+               help="独立微调暗部红通道基座，消除镜头内部杂散光（Flare）或不同机位暗部偏红/偏青。")
+    cam.define("ccu_b_flare", "蓝通道黑平衡基座 (B Black / Flare)", 0.0, -0.25, 0.25, unit="-0.25..0.25", group=g,
+               phys_min=-0.12, phys_max=0.12,
+               source="CCU 蓝路暗部黑平衡与镜筒杂散光补偿旋钮",
+               help="独立微调暗部蓝通道基座，消除暗部冷蓝或暖黄偏色。")
+    cam.define("ccu_knee_point", "动态高光膝点起点 (Knee Point)", 0.82, 0.50, 0.98, unit="0-1", group=g,
+               phys_min=0.72, phys_max=0.92,
+               source="广播级摄像机高光动态压缩起点 (80%–95% IRE)",
+               help="高于此电平的演播室聚光灯与高反光区域进入 Knee 线性压缩段，防止 100 IRE 硬削波死白。")
+    cam.define("ccu_knee_slope", "动态高光膝点斜率 (Knee Slope)", 0.35, 0.05, 1.0, unit="0-1", group=g,
+               phys_min=0.15, phys_max=0.65,
+               source="广播级摄像机 400%–600% 过曝动态余量压缩斜率",
+               help="斜率越小，高光压缩越强（聚光灯下人物额头与白衬衫细节保留越多）。")
+    cam.define("genlock_mode", "演播室主同步锁相模式 (Genlock)", 0.0, 0.0, 3.0, unit="0-3", group=g,
+               step=1.0, phys_min=0.0, phys_max=3.0,
+               source="Tektronix SPG-170A 黑场同步发生器 (Blackburst) 与多机位外同步锁相环",
+               help="0=锁定演播室主同步且自动补偿线长 (BB Locked & Timed)｜"
+                    "1=脐带线缆长度相移未补偿 (Cable Delay Uncompensated：线长直接引起副载波色相旋转与水平位移)｜"
+                    "2=外同步断线/内晶振自由漂移 (Free-Run Crystal Drift：色相连续翻滚 + 行场滑移滚屏)｜"
+                    "3=BNC 同步头接触不良间歇掉锁冲击 (Intermittent Genlock Drop)。")
+    cam.define("genlock_cable_len_m", "摄像机脐带/同轴线缆长度", 15.0, 0.0, 150.0, unit="m", group=g,
+               phys_min=2.0, phys_max=100.0,
+               source="Belden 8281 / 演播室三同轴 Triax 线缆传播速度 v_p = 0.66c (5.05 ns/m)",
+               help="同轴/脐带线每增加 1 米引入 5.05 ns 延迟，在 NTSC 3.58 MHz 下产生 6.51°/m 的副载波相移（PAL 4.43 MHz 下为 8.06°/m），"
+                    "超过 15 米未配平时在切换台上切机位会出现明显色相跳变与右侧消隐黑边。")
+    cam.define("genlock_sc_phase_deg", "CCU 副载波相位补偿 (SC Phase)", 0.0, -180.0, 180.0, unit="deg", group=g,
+               phys_min=-180.0, phys_max=180.0,
+               source="CCU 面板 Subcarrier Phase 360° 粗/细调旋钮",
+               help="看着矢量示波器旋转此旋钮，可将因长电缆延迟而偏转的摄像机色同步矢量精确拉回标准靶框。")
+    cam.define("genlock_h_phase_px", "CCU 水平行相位微调 (H Phase)", 0.0, -24.0, 24.0, unit="px", group=g,
+               phys_min=-12.0, phys_max=12.0,
+               source="CCU 面板 H-Phase 水平行定时对齐旋钮",
+               help="微调摄像机相对于演播室主同步的行触发时刻，消除多机位切换时的画面左右跳动与消隐边错位。")
 
     # ------------------------------------------------------------------ B
     fmt = s.layer("format")
@@ -863,6 +935,28 @@ def build_schema() -> ParamSchema:
                phys_max=20.0, source="色同步与色度相位误差",
                help="整场的色相旋转/漂移。")
 
+    g = "测试信号发生器与工程校准台"
+    fmt.define("test_gen_enabled", "启用广播级测试信号发生器", 0.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="Tektronix TSG-170A / Philips PM5544 标准电视测试信号发生器",
+               help="开启后由机内标准测试信号发生器替代外部画面源，直通送入后续模拟复合编码、配线架、磁带、TBC 与示波器，构成工程闭环校准台。")
+    fmt.define("test_pattern_mode", "标准测试图卡模式", 0.0, 0.0, 5.0, unit="0-5", group=g,
+               step=1.0, phys_min=0.0, phys_max=5.0,
+               source="SMPTE RP-219 / EBU Tech 3087 / FCC Multiburst / CCIR Rec.569 / Philips PM5544",
+               help="0=关闭（使用外部素材源）｜1=SMPTE RP-219 75%彩条 + 反向蓝条 + -I/White/+Q + PLUGE(-4/0/+4 IRE)｜"
+                    "2=EBU 100/0/75/0 PAL 标准彩条 + 线性亮度斜坡｜3=FCC 0.5–5.0 MHz 多波群频响测试卡 (Multiburst)｜"
+                    "4=5阶调制阶梯 (微分增益DG/微分相位DP) + 2T正弦平方脉冲与12.5T色亮群延迟脉冲｜"
+                    "5=Philips PM5544 / 电视台圆环几何与中心分辨率楔形卡（带动态场扫描秒针）。")
+    fmt.define("test_tone_mode", "校准音频测试信号", 0.0, 0.0, 3.0, unit="0-3", group=g,
+               step=1.0, phys_min=0.0, phys_max=3.0,
+               source="EBU R68 / SMPTE RP-155 广播音频基准电平与抖晃测量规范",
+               help="0=跟随原片伴音｜1=1 kHz (-18 dBFS / 0 VU) 正弦基准音｜2=3.15 kHz IEC 60386 走带抖晃 (Wow & Flutter) 测量载波｜"
+                    "3=20 Hz–15 kHz 对数扫频音（测量线性磁迹高频滚降与方位角损耗）。")
+    fmt.define("test_amplitude_ire", "测试信号峰值电平", 100.0, 50.0, 120.0, unit="IRE", group=g,
+               phys_min=75.0, phys_max=110.0,
+               source="IEEE Std 205 / Tektronix VM700A 信号发生器输出幅度微调",
+               help="100 IRE 为标准满幅度（714 mVpp）；调高至 110–120 IRE 可测试磁带 FM 白削波、同步压低与视放过载。")
+
     # ----------------------------------------------------- B2 数字编码分支
     cod = s.layer("codec")
     g = "编码分支"
@@ -920,6 +1014,40 @@ def build_schema() -> ParamSchema:
     cod.define("dv_base_step", "DV 量化基准", 0.0125, 0.002, 0.06, unit="0-1", group=g,
                source="DV 量化表量级",
                help="量化步长基准。暗部块状伪影的强度主要由它决定。")
+
+    g_str = "网络视听传播、平台转码与流媒体协议"
+    cod.define("stream_enabled", "启用网络流媒体与平台转码系统", 0.0, 0.0, 1.0, unit="bool", group=g_str, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="RealVideo / WMV / Web 2.0 FLV / HLS DASH 自适应流媒体模型",
+               help="打通『广播电视 → 录像带 → 数字采集 → 早期流媒体/平台多代上传转码 → 分组网络传输 → 客户端缓冲与二次录屏』跨时代传播链路。")
+    cod.define("stream_mode", "流媒体时代与协议模式", 0.0, 0.0, 5.0, unit="0-5", group=g_str, step=1.0,
+               phys_min=0.0, phys_max=5.0, source="1999 RealVideo .. 2020s HLS/DASH ABR",
+               help="0=跟随总开关｜1=早期拨号/宽带流媒体 (RealVideo G2 / WMV9 · 160x120~320x240 强环路滤波塑料涂抹与帧率抽帧)｜"
+                    "2=Web 2.0 早期视频网站 (2006 360p FLV/H.263 · 4:2:0 粗量化 + 关键帧 GOP 呼吸脉冲 + 平台角标水印)｜"
+                    "3=现代自适应流媒体 (HLS / DASH H.264 ABR · 720p↔240p↔1080p 阶跃切换与 TCP 预缓冲转圈卡顿 / UDP 丢包切片撕裂)｜"
+                    "4=平台多代搬运重压与二次录屏 (代际色度模糊、块效应叠加、双水印与录屏摩尔纹)｜"
+                    "5=2×2 跨时代网络流媒体对照实验室 (同屏对比：采集源母本 vs 1999 RealVideo vs 2007 平台多代转码 vs 现代 ABR/UDP 丢包 + 缓冲遥测)。")
+    cod.define("stream_bitrate_kbps", "流媒体目标视频码率", 380.0, 16.0, 8000.0, unit="kbps", group=g_str,
+               phys_min=28.0, phys_max=4500.0, source="拨号 28.8kbps RealVideo 至高清 H.264 码率包络")
+    cod.define("stream_bw_fluctuation", "网络可用带宽波动幅度", 0.45, 0.0, 1.0, unit="0-1", group=g_str,
+               phys_min=0.05, phys_max=0.85, source="TCP 锯齿拥塞窗口与无线信道吞吐起伏",
+               help="控制分组网络吞吐率随时间波动的剧烈程度；波动过大将触发 ABR 分辨率阶跃降级或客户端缓冲区欠载转圈 (Rebuffering Stall)。")
+    cod.define("stream_rtt_ms", "网络往返延迟 (RTT)", 85.0, 5.0, 800.0, unit="ms", group=g_str,
+               phys_min=10.0, phys_max=350.0, source="跨洋/骨干网与移动网络 RTT 延迟")
+    cod.define("stream_packet_loss", "分组丢包率 (Packet Loss)", 0.08, 0.0, 0.50, unit="0-0.5", group=g_str,
+               phys_min=0.0, phys_max=0.25, source="UDP/RTP 实时流切片丢失与参考帧误差传播",
+               help="在 UDP/RTP 流中引发水平宏块条带丢失与跨 P 帧运动向量绿/品红错位扩散；在 TCP/HLS 流中引发重传吞吐坍塌与缓冲卡顿。")
+    cod.define("stream_gop_len", "关键帧间隔 (GOP 长度)", 15.0, 4.0, 120.0, unit="帧", group=g_str, step=1.0,
+               phys_min=8.0, phys_max=60.0, source="帧间预测 P 帧误差累积与 I 帧全帧刷新周期",
+               help="P 帧期间运动预测残差逐帧退化模糊，到达 I 帧瞬间画面突然清晰跳变（经典早期流媒体 GOP 呼吸脉冲效应）。")
+    cod.define("stream_platform_generations", "平台搬运重编码代数", 2.0, 0.0, 5.0, unit="代", group=g_str, step=1.0,
+               phys_min=0.0, phys_max=4.0, source="跨平台下载→二创剪辑→二次上传 CRF 重编码代际损失")
+    cod.define("stream_quad_corner", "流媒体实验室画面角落选择 (0四分屏/1左上/2右上/3左下/4右下)", 0.0, 0.0, 4.0, unit="角落", group=g_str,
+               step=1.0, phys_min=0.0, phys_max=4.0, source="2×2 四分屏单角全屏拆选",
+               help="0=显示完整 2×2 四分屏对照；1=左上角（采集源/TBC母本）；2=右上角（1999 RealVideo/WMV）；3=左下角（Web 2.0 平台多代转码）；4=右下角（ABR 阶跃与网络缓冲遥测）。")
+    cod.define("stream_show_border", "流媒体实验室分框样式 (0无分框/1细十字线/2标准分框)", 2.0, 0.0, 2.0, unit="分框", group=g_str,
+               step=1.0, phys_min=0.0, phys_max=2.0, source="四分屏分框线显示控制")
+    cod.define("stream_show_text", "流媒体实验室文字叠加 (0不要文字/1仅标签/2完整遥测)", 0.0, 0.0, 2.0, unit="文字", group=g_str,
+               step=1.0, phys_min=0.0, phys_max=2.0, source="画面文字叠加开关（默认 0 纯净无字画面）")
 
     # ------------------------------------------------------------ RF 链路（无线电系统）
     rf = s.layer("rf")
@@ -1001,6 +1129,35 @@ def build_schema() -> ParamSchema:
               phys_min=16.0, phys_max=26.0, source="PAL/NTSC 色同步锁定与自动消色器 (Color Killer)",
               help="当衰落谷底 C/N 低于此门限时，解码芯片自动切断色度通道以防满屏彩雪，画面短暂退化为黑白。")
 
+    g = "换台瞬态与模拟恐怖失锁 (松下 NV-J27 高频头实测标定)"
+    rf.define("channel_switch_rate", "换台切台触发频率", 0.0, 0.0, 2.0, unit="次/秒", group=g,
+              phys_min=0.0, phys_max=1.2, source="松下 NV-J27 变容二极管调谐换台瞬态实测标定",
+              help="模拟电视或录像机高频头换台（或模拟恐怖频道劫持切台）的事件发生率。"
+                   "每次换台会依次经历：本振扫频穿越邻频/奈奎斯特斜坡 → 中频无载波满增益宽带雪花爆发 → "
+                   "耦合电容直流恢复充放电闪白/黑屏 → 行场同步与色同步重新拉入锁定。")
+    rf.define("channel_switch_dur_s", "单次换台失锁持续时长", 0.42, 0.08, 1.80, unit="s", group=g,
+              phys_min=0.15, phys_max=0.90, source="变容二极管 PLL 锁相环与 AGC 时间常数 (实测 0.25~0.65s)",
+              help="单次换台从本振脱锁、雪花爆发到新频道行场同步重新锁定的持续时间。")
+    rf.define("lo_sweep_mhz", "本振扫频与负像浮雕反相", 0.0, 0.0, 1.5, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0, source="SAW 声表面波滤波器 38.0MHz 奈奎斯特斜坡正交失真与包络过调制反相",
+              help="换台瞬间变容二极管电压跳变使本振扫过中频 SAW 滤波器边缘：残留边带正交失真产生强烈的"
+                   "高对比微分边缘浮雕感，且图像载波跌落导致包络检波器跨过零点发生明暗负片反相（暗部变亮白、高光变死黑）。")
+    rf.define("vsync_roll", "场同步失锁垂直滚屏", 0.0, 0.0, 1.5, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0, source="50Hz 场同步积分器失步与自由振荡频差 Δf_v",
+              help="换台或弱信号下场同步脉冲被雪花淹没，50Hz 场振荡器自由运行导致画面整场上下翻滚。")
+    rf.define("vbi_bar_vis", "场消隐黑带 (VBI 锤头同步带)", 0.65, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.2, phys_max=1.0, source="625行 PAL 场消隐期 25 行结构 (前均衡+场同步宽脉冲+VITC/图文亮斑)",
+              help="当发生垂直滚屏时，原本藏在屏幕上下边框外的 25 行场消隐带（含半行均衡脉冲缺口与场逆程图文/时间码白点）"
+                   "滚入可见画面中央，是模拟恐怖换台最核心的真实物理标志。")
+    rf.define("flagging", "行 AFC 顶部旗帜弯折", 0.0, 0.0, 1.5, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0, source="松下 NV-J27 磁头切换瞬态与电视机行 AFC 时间常数失配",
+              help="场消隐或磁头切换后行同步相位跳变，行 AFC 锁相环在画面顶部 15~35 行内按指数曲线拉入锁定，"
+                   "导致画面顶部像迎风飘扬的旗帜一样向一侧剧烈歪斜。")
+    rf.define("hanover_bars", "PAL 汉诺威盲窗错色条", 0.0, 0.0, 1.5, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0, source="PAL 逐行倒相 (V轴 ±90°) 色同步摆动门失步与 1H 延迟线相位失配",
+              help="PAL-D 解码器在换台或弱信号下色同步相位误差未通过 1H 延迟线抵消，导致奇数行与偶数行出现"
+                   "饱和度极高、色调互补交替的 2 行周期水平盲窗彩条（Hanover Bars）。")
+
     # ------------------------------------------------------------------ C
     tpe = s.layer("tape")
     g = "录制速度"
@@ -1078,7 +1235,7 @@ def build_schema() -> ParamSchema:
     g = "多世代翻录损耗（VHS 反复迭代标定）"
     tpe.define("generation_passes", "VHS 世代翻录次数", 1.0, 1.0, 25.0, unit="代", group=g,
                step=1.0, phys_min=1.0, phys_max=20.0,
-               source="实拍多世代 VHS 翻录测试（录像带的图像耗损.mp4：第 1 代 → 第 20 代）",
+               source="多世代 VHS 连续翻录实验标定（第 1 代 → 第 20 代）",
                help="模拟磁带对磁带（VCR → VCR）反复翻录迭代的世代数。1 代为母带直出；"
                     "随着世代数增加（如 5 代、8 代、15 代、18 代），每次翻录都会累积："
                     "① 629 kHz 欠载色度低通与 1H 梳状滤波导致的色度向右下方跨界偏移与洇色（每代约 +1.35 px / +1.15 行）；"
@@ -1102,7 +1259,7 @@ def build_schema() -> ParamSchema:
     g = "亮度电平"
     tpe.define("luma_pedestal", "消隐电平偏移", 0.0, -0.5, 0.3, unit="0-1", group=g,
                phys_max=0.05, phys_min=-0.35,
-               source="直流恢复/消隐钳位失常（S-VHS 烂碟实测约 -0.30）",
+               source="直流恢复/消隐钳位失常（S-VHS 劣化带实测约 -0.30）",
                help="亮度基底（消隐电平）的整体偏移。它与「磁粉脱落」是两回事："
                     "亮度是**基带电平**，绝对值直接承载明暗，必须钳位到参考；"
                     "色度是**围绕该参考的调制幅度**，参考错了它照样活着。"
@@ -1212,14 +1369,26 @@ def build_schema() -> ParamSchema:
     tpe.define("dropout_color", "失落补色残留", 0.45, 0.0, 1.0, unit="0-1", group=g,
                phys_max=0.6, source="失落补偿电路残留")
     tpe.define("dropout_softness", "失落边缘柔和度", 0.35, 0.0, 1.0, unit="0-1", group=g)
-    tpe.define("head_switching", "磁头切换强度", 0.85, 0.0, 1.2, unit="0-1", group=g,
-               phys_max=0.8, source="两个视频磁头切换期间的信号缺失",
-               help="画面底部那条细条，VHS 最有辨识度的痕迹之一。"
-                    "0.5 左右得到「细而清晰」的一条，超过 0.8 会变成大块噪点。")
-    tpe.define("head_switch_lines", "切换带行数", 16.0, 2.0, 40.0, unit="行/场", group=g,
-               phys_min=4.0, phys_max=16.0, source="VHS 磁头切换约 5-15 行/场",
-               help="每场末尾受影响的行数。因隔行交织，画面中表现为底部 "
-                    "2x 该行数 的一条带：8 行/场 → 底部约 16 行 ≈ 画面的 3.3%。")
+    tpe.define("doc_hold", "1H 延迟线失落补偿与彗星尾", 0.55, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.2, phys_max=0.9, source="松下 NV-J27 1H 延迟线 DOC 失落补偿器与 FM 限幅器失锁尖峰",
+               help="真实 VHS 录像机在磁粉脱落处的物理行为：并非单纯叠加灰白噪声，而是前端 FM 限幅器在包络跌落瞬间"
+                    "先爆发出极亮/极黑的零交越尖峰并向右拖出 RC 充放电彗星尾，随后包络检波器触发开关，强行复制"
+                    "上一扫描行 (y-1) 的无彩色基带信号进行修补。")
+    tpe.define("edit_glitch_rate", "暂停/覆录拼接故障率", 0.0, 0.0, 2.0, unit="次/秒", group=g,
+               phys_min=0.0, phys_max=0.8, source="松下 NV-J27 无飞抹磁头覆录拼接与 25Hz CTL 控制轨跳变",
+               help="模拟恐怖视频中常见的分镜突变：消费级录像机暂停后再录或换台录制时，新旧螺旋磁迹重叠（无飞抹磁头）"
+                    "且下沿 25Hz CTL 控制脉冲相位断裂，引发走带主导轴伺服短暂猎振、底部切换带向上蹿升与局部雪花切口。")
+    tpe.define("edit_glitch_severity", "拼接伺服失锁强度", 0.70, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.2, phys_max=1.0, source="主导轴伺服猎振包络与双磁迹差拍",
+               help="每次暂停/覆录拼接事件中 CTL 失锁导致的场跳动、行撕裂与跨轨雪花带的剧烈程度。")
+    tpe.define("head_switching", "磁头切换强度", 0.65, 0.0, 1.2, unit="0-1", group=g,
+               phys_max=0.8, source="IEC 60774-1 / SMPTE 170M 旋转磁鼓双磁头切换瞬态",
+               help="画面底部的磁头切换细条（含 1–2 行 RF 切换接缝脉冲与行 AFC 锁相环指数回拉钩状偏移）。"
+                    "0.5–0.7 为标准家用机切换痕迹，超过 0.9 为重度包络失锁。")
+    tpe.define("head_switch_lines", "切换带行数", 6.0, 2.0, 40.0, unit="行/场", group=g,
+               phys_min=4.0, phys_max=10.0, source="IEC 60774-1 规定场同步前 6.5±1.5 H 切换（约 5–8 行/场）",
+               help="每场末尾距垂直消隐的切换行数。标准 VHS 规定在 V-sync 前 6.5 H 切换（6 行/场 → 隔行交织后"
+                    "在 480 行画面底部占约 11 行 ≈ 2.3%）。")
     tpe.define("head_switch_mid_line", "行中途切换", 0.25, 0.0, 1.0, unit="0-1", group=g,
                phys_max=0.6, source="切换点落在行中间的情况")
 
@@ -1236,9 +1405,9 @@ def build_schema() -> ParamSchema:
                     "粒子噪声底，强度上限只有脱粉颗粒的约六分之一。")
 
     g = "跟踪失谐"
-    tpe.define("tracking_error", "跟踪误差", 0.45, 0.0, 1.0, unit="0-1", group=g,
-               phys_max=0.6, source="走带控制轨迹与磁头位置的相位差",
-               help="把整条切换带横向推开的量，即录像机前面板「跟踪」旋钮的表现。")
+    tpe.define("tracking_error", "跟踪误差", 0.22, 0.0, 1.0, unit="0-1", group=g,
+               phys_max=0.6, source="25/30Hz CTL 控制磁迹与磁鼓切换点的相位差",
+               help="录像机前面板「Tracking（循迹）」旋钮对应的相位偏移：决定磁头切换接缝处的初始行相位跳变幅度与 H-AFC 回拉斜率。")
     tpe.define("tracking_noise_rows", "失控行数", 0.0, 0.0, 240.0, unit="行", group=g,
                phys_min=0.0, phys_max=120.0, source="控制轨迹与磁头不同步的深度",
                help="底部有多少行失去同步。与磁头切换带的区别：切换带是固定硬边"
@@ -1273,29 +1442,171 @@ def build_schema() -> ParamSchema:
                step=8.0, phys_min=16.0, phys_max=16.0, source="DV 宏块为 16x16 亮度像素")
     tpe.define("shuttle_guard_bars", "跨轨噪波条（Cue/Review 搜索）", 0.0, 0.0, 1.0, unit="0-1",
                group=g, phys_min=0.0, phys_max=1.0,
-               source="螺旋扫描磁鼓倍速搜索 RF 包络周期塌陷（罗大佑《首都》MV 实测标定）",
+               source="螺旋扫描磁鼓倍速搜索 RF 包络周期塌陷实测标定",
                help="模拟磁带倍速快进/倒带搜索（Cue/Review）时，旋转磁头斜跨 |N-1| 条磁迹，"
                     "RF 包络周期性穿过相邻磁迹保护带/方位角零点，产生垂直等距向下滚动的"
                     "双峰解调雪花横条、行同步黑槽切口与行剪切。")
     tpe.define("shuttle_bar_luma", "噪波条灰白平台电平", 0.565, 0.20, 0.95, unit="IRE",
                group=g, phys_min=0.45, phys_max=0.82,
-               source="FM 限幅器失锁零交越自激电平（《首都》MV 19.5s 实测 0.562，6.0s 实测 0.750）",
+               source="FM 限幅器失锁零交越自激电平（5x 搜索实测 0.562，9x 搜索实测 0.750）",
                help="RF 包络跌破 FM 限幅器门限时，解调器锁定在限幅器自激中值形成的灰白横条亮度。")
     tpe.define("shuttle_PIP_bars", "画中画子窗轨数倍频", 0.0, 0.0, 1.0, unit="bool",
                group=g, step=1.0, phys_min=0.0, phys_max=1.0,
-               source="《首都》MV 6.0s 上半幅子窗（Y ∈ [0, 0.562H]，9x 倍速 8 条主+副噪波条）",
+               source="切换台上半幅子窗（Y ∈ [0, 0.562H]，9x 倍速 8 条主+副噪波条）",
                help="开启后仅在画面上半幅子窗（Y ∈ [0, 0.562H]）施加约 9x 倍速的密集跨轨噪波条"
-                    "（周期 129.3 px），下半幅保持正常重放（对应《首都》MV 分屏切换台合成结构）。")
+                    "（周期 129.3 px），下半幅保持正常重放（对应模拟切换台分屏子窗合成结构）。")
+
+    g = "机械传动与伺服状态机 (Transport & Servo)"
+    tpe.define("transport_state", "走带操作状态机", 0.0, 0.0, 4.0, unit="0-4", group=g, step=1.0,
+               phys_min=0.0, phys_max=4.0,
+               source="VHS 走带机构与主导轴/磁鼓双闭环伺服状态机 (IEC 60774-1 / 松下 NV-J27 机械手册)",
+               help="0 = 正常播放 (Play)｜1 = 静态暂停定格 (Pause/Still：双磁头在 5°56' 静止扫描角下跨越相邻磁迹保护带，产生固定双峰雪花横条与奇偶场微颤，伴音静音)｜"
+                    "2 = 压带轮啮合与 CTL 重锁定瞬态 (Play↔Pause Transient：压带轮啮合起动、主导轴加减速与 25/30Hz CTL 控制脉冲二阶欠阻尼重锁定过程)｜"
+                    "3 = 无飞抹磁头暂停起录切口 (Record-Pause Assembly Cut：旧磁迹未抹除斜向叠印 + 180° 色度副载波彩虹干涉带 + CTL 脉冲断裂纵向跳帧)｜"
+                    "4 = 停机卸带瞬态 (Stop/Unthread：导带柱退回、磁鼓包角坍塌引起的上下雪花帷幕与行失锁)。")
+    tpe.define("reel_progress", "带盘进度位置 (带头0→带尾1)", 0.50, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0,
+               source="VHS E-180 磁带盒供带盘 R_s(p) 与收带盘 R_t(p) 半径连续演化 (R_hub=13mm, R_max=41mm)",
+               help="0.0 = 带头 (BOT，供带盘满卷 R_s=41mm、收带盘空卷 R_t=13mm，高后张力导致画面顶部向右弯钩 Skew)；"
+                    "0.50 = 中段平衡区（供收带盘半径相等 R_s=R_t≈29.8mm，走带最稳）；"
+                    "1.0 = 带尾 (EOT，供带盘接近卷芯 R_s=13mm、角速度飙升 3.15 倍，低背张力引发画面顶部向左歪斜与底部导带柱卷边)。")
+    tpe.define("tension_ripple", "供收带盘张力纹波与卷边", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0,
+               source="张力杆弹簧-阻尼谐振 (f_pole) 与带盘偏心扭矩脉动 (ω_s = v_tape / R_s(p))",
+               help="控制带盘旋转偏心扭矩脉动、张力杆弹簧谐振以及带头/带尾边缘卷曲褶皱 (Edge Curl) 的耦合强度。")
+    tpe.define("belt_slip", "方形橡胶皮带老化打滑", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0,
+               source="主导轴飞轮氯丁橡胶方皮带松弛老化与粘滑掉速",
+               help="老式录像机橡胶传动皮带松弛硬化后，在负载峰值处发生间歇性指数打滑掉速与回弹：导致走带速度下坠、底部循迹雪花带间歇蹿升，并引发伴音音高同步下坠。")
+    tpe.define("roller_eccentricity", "压带轮硬化偏心抖晃", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0,
+               source="合成橡胶压带轮 (D≈14.6mm) 长期压迫变形引起的 ~1.45Hz (SP) 周期性摆动",
+               help="压带轮表面硬化或压出凹痕后，每转一周产生一次周期性线速度调制（SP 下约 1.45Hz 及二次谐波），造成整幅画面平滑的 S 形横向呼吸摆动与伴音周期性低频抖晃 (Wow)。")
+    tpe.define("servo_hunt", "主导轴/磁鼓伺服猎振", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.9,
+               source="主导轴 FG/PG 锁相环与 25/30Hz CTL 相位比较器欠阻尼猎振 (~3.2Hz)",
+               help="伺服环路滤波电容老化导致相位裕度下降，在 3.25Hz 附近产生持续的欠阻尼正弦猎振：画面左右周期性摆动，同时磁头切换带与跨轨雪花条上下呼吸起伏。")
+    tpe.define("servo_lock_tau", "伺服重锁定时间常数", 0.45, 0.08, 2.0, unit="s", group=g,
+               phys_min=0.15, phys_max=1.2,
+               source="压带轮啮合后主导轴 CTL 锁相环建立锁定的时间常数 τ_lock",
+               help="在状态 2（暂停↔播放瞬态）与状态 3（暂停起录切口）中，控制跨轨噪波条滚出画面、行时基恢复平稳以及伴音从静音滑升至正常音高所需的衰减时间（秒）。")
+    tpe.define("pause_noise_pos", "暂停静态噪波带垂直位置", 0.62, 0.08, 0.92, unit="0-1", group=g,
+               phys_min=0.15, phys_max=0.88,
+               source="暂停定格时磁带停靠相位对应的方位角零点高度",
+               help="在状态 1（Pause 静态定格）下，旋转磁头跨越相邻磁迹保护带形成的双峰雪花噪波横条在画面上的垂直落点（可用前面板 Tracking 旋钮微调移动）。")
+
+    g = "线性编辑机与早期非线编"
+    tpe.define("edit_mode", "编辑系统工作模式", 0.0, 0.0, 4.0, unit="mode", group=g, step=1.0,
+               phys_min=0.0, phys_max=4.0,
+               source="Sony RM-450 / BVE-9100 双机磁带线性编辑控制器 vs 2000年代初 Canopus DV Storm / Premiere 6 非线编系统",
+               help="0=关闭｜1=线性组合编辑 (Assemble Edit：全磁鼓重写控制轨与视频轨，入点产生静止抹音头闪黑与 H-AFC 弯钩，出点留下新旧 CTL 控制轨断裂与雪花撕裂)｜"
+                    "2=线性插入编辑 (Insert Edit：保留目标带原有连续 CTL 控制轨，由旋转飞抹磁头替换画面，无尾端断轨)｜"
+                    "3=早期非线编 · 实时时间线预览 (NLE Real-Time Preview：零入点偏移，但多轨转场/字幕负载触发半分辨率代理降级与解码缓冲区欠载掉帧重复)｜"
+                    "4=早期非线编 · 最终渲染导出 (NLE Final Export：全分辨率逐帧合成无掉帧，但对转场与叠字区间执行二次 DV25 8×8 DCT 重编码)。")
+    tpe.define("edit_point_slip_frames", "线性编辑入出点机械偏移", 2.0, 0.0, 4.0, unit="帧", group=g, step=1.0,
+               phys_min=0.0, phys_max=3.0,
+               source="磁带压带轮啮合与 29.97/25Hz CTL 控制脉冲计数滑移容差 (±1..3 frames)",
+               help="在线性编辑模式 (1/2) 下，双机预卷啮合与控制轨寻址造成的实际切点相对理想 EDL 入出点的帧偏移；非线编模式 (3/4) 采用文件样本寻址，恒为 0 帧偏移。")
+    tpe.define("edit_flying_erase", "旋转飞抹磁头 (Flying Erase Head)", 1.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0,
+               source="高档编辑录像机旋转上磁鼓飞抹磁头 (FEH) vs 家用机固定全宽抹音头",
+               help="在线性插入编辑 (Mode 2) 下：1=旋转飞抹磁头正常（紧贴视频写磁头前缘逐条抹除旧螺旋轨，切点干净）；0=无飞抹磁头或飞抹老化（新画面直接叠写在未抹净的旧斜向磁迹上，切点出现斜向重影与 180° 色度副载波彩虹差拍）。")
+    tpe.define("edit_preroll_sec", "双机同步预卷时长 (Pre-roll)", 5.0, 1.0, 8.0, unit="s", group=g,
+               phys_min=3.0, phys_max=7.0,
+               source="Sony BVE-9100 / RM-450 标准 5 秒倒带预卷 (Pre-roll) 伺服锁定时间",
+               help="源录像机与录制机提前倒带并加速建立主导轴/磁鼓相位锁定的预卷时间（秒）；预卷过短会导致切点附近残留伺服抖动。")
+    tpe.define("edit_nle_complexity", "非线编多轨合成负载复杂度", 0.65, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.90,
+               source="2000年代初 IDE 磁盘吞吐与单核 CPU 实时解码多轨 DV 流 + Alpha 字幕的缓冲区负载",
+               help="在模式 3（NLE 实时预览）下决定预览分辨率降级倍率与缓冲区欠载掉帧/卡顿概率；在模式 4（NLE 最终导出）下决定转场渲染段二次 DCT 重编码的量化损失。")
+    tpe.define("edit_console_osd", "显示编辑台/时间线工程监看 HUD", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0,
+               help="在画面顶部叠加 Sony BVE-9100 线性编辑双机时间码/CTL/飞抹状态栏，或早期 NLE 时间线缓存/掉帧/渲染状态栏。")
 
     g = "广播链路信噪比"
     rf.define("broadcast_noise", "广播噪声", 0.0, 0.0, 1.0, unit="0-1", group=g,
                phys_max=0.7,
-               source="1992 淄博电视台弱信号录像：高频为基线 2 倍而饱和仅 0.178",
+               source="1992 地方电视台开路弱信号录像：高频为基线 2 倍而饱和仅 0.178",
                help="接收端在解调前的宽带噪声。它与磁带噪声的关键区别是**同时淹没"
                     "亮度与色度**——实测参考素材高频升到 0.024 而饱和度只有 0.178，"
                     "即画面被噪声抹平而不是偏色。磁带劣化则相反：色度先死、"
-                    "亮度还撑得住（参考 S-VHS 烂碟：sat 0.94 而 mean 0.09）。"
+                    "亮度还撑得住（参考 S-VHS 钳位失常带：sat 0.94 而 mean 0.09）。"
                     "两者用不同的参数，因为它们本来就不是同一个环节的故障。")
+
+    g = "卫星接收机 Satellite IRD 与模拟/数字悬崖效应"
+    rf.define("sat_ird_mode", "卫星接收工作站模式 (0关/1模拟C波段FM/2数字DVB-S/3同屏悬崖实验室)", 0.0, 0.0, 3.0, unit="模式", group=g,
+              step=1.0, phys_min=0.0, phys_max=3.0,
+              source="ITU-R BO.652 模拟卫星 FM 门限效应 vs ETSI EN 300 421 DVB-S QPSK+Viterbi+RS 数字悬崖效应",
+              help="0=关闭｜1=模拟 C 波段 FM 卫星电视（低于 11.5 dB 门限时爆发标志性鱼骨黑白打火噪点 Sparkles，但画面内容渐进退化仍可辨认）｜"
+                   "2=数字 DVB-S QPSK 卫星综合解码器（高于 6.5 dB 门限时 Reed-Solomon 纠错令画面 100% 干净无雪花，跌入 4.4–6.5 dB 悬崖区瞬间爆发 MPEG-2 宏块撕裂、PTS 失步与静帧冻结，低于 4.4 dB 直接服务丢失）｜"
+                   "3=模拟 C 波段 FM vs 数字 DVB-S 同屏悬崖效应对照实验室（2×2 四象限：原信号 + 模拟 FM + 数字 DVB-S + 载噪比响应曲线与 TS 统计仪表盘）。")
+    rf.define("sat_cn_db", "卫星晴空基准载噪比 (C/N)", 12.0, 0.0, 26.0, unit="dB", group=g,
+              phys_min=3.0, phys_max=20.0,
+              source="4 GHz C 波段 / 12 GHz Ku 波段抛物面天线下行链路功率预算",
+              help="晴空且天线对准时的卫星下行中频基准载噪比 C/N0（dB）。调低此值或增大雨衰即可观察模拟 FM 渐进打火噪点与数字 DVB-S 悬崖效应的本质分野。")
+    rf.define("sat_rain_fade_db", "暴雨衰减与日凌干扰 (Rain Fade / Sun Outage)", 0.0, 0.0, 20.0, unit="dB", group=g,
+              phys_min=0.0, phys_max=15.0,
+              source="ITU-R P.618 降雨衰减模型与黑体太阳噪声温度 T_sun 抬升",
+              help="模拟强对流暴雨吸收散射或春分/秋分日凌（太阳进入抛物面天线主瓣）引发的载噪比骤降与系统热噪底抬升。")
+    rf.define("sat_dish_mispoint_deg", "抛物面天线指向偏差角", 0.0, 0.0, 4.0, unit="deg", group=g,
+              phys_min=0.0, phys_max=2.5,
+              source="抛物面天线主瓣高斯方向图 G(θ) ≈ -12·(θ / θ_3dB)² dB",
+              help="天线方位角/俯仰角受强风或机械松动偏离卫星轨位的角度（半功率波束宽度 θ_3dB = 1.6°）。")
+    rf.define("sat_lnb_drift_khz", "高频头 LNB 本振温度频偏", 0.0, -500.0, 500.0, unit="kHz", group=g,
+              phys_min=-250.0, phys_max=250.0,
+              source="室外 LNB 介质谐振器 (DRO) 昼夜温差本振频率漂移",
+              help="LNB 本振频偏导致模拟 FM 解调器工作点偏移（产生直流基座偏移、50Hz 截断削波与相位噪声），并在数字 DVB-S 下消耗载波恢复环路裕量。")
+    rf.define("sat_ird_osd", "显示卫星画面文字与遥测 HUD (0不要文字/1仅标签/2完整HUD)", 0.0, 0.0, 2.0, unit="文字", group=g,
+              step=1.0, phys_min=0.0, phys_max=2.0,
+              help="默认 0=不要文字（纯净画面）；1=仅显示四角通道名；2=显示完整 C/N、BER 与 MPEG-TS 遥测文字。")
+    rf.define("sat_quad_corner", "卫星对照角落选择 (0四分屏/1左上/2右上/3左下/4右下)", 0.0, 0.0, 4.0, unit="角落", group=g,
+              step=1.0, phys_min=0.0, phys_max=4.0,
+              source="卫星悬崖对照分屏角落拆选",
+              help="在 2×2 卫星对照模式（sat_ird_mode=3）下拆成每个角落单独全屏选择：0=2×2四分屏，1=左上角（晴空基带基准），2=右上角（模拟C波段FM），3=左下角（数字DVB-S），4=右下角（C/N悬崖曲线）。")
+    rf.define("sat_show_border", "卫星对照分框样式 (0无分框/1细十字线/2标准分框)", 1.0, 0.0, 2.0, unit="分框", group=g,
+              step=1.0, phys_min=0.0, phys_max=2.0,
+              source="分屏分框显示控制",
+              help="0=无分框无缝拼接，1=细十字分框线，2=标准演播室分框。")
+
+    g = "电视发射机激励链与端到端开路广播测试台"
+    rf.define("tx_quad_corner", "发射测试台角落选择 (0四分屏/1左上/2右上/3左下/4右下)", 0.0, 0.0, 4.0, unit="角落", group=g,
+              step=1.0, phys_min=0.0, phys_max=4.0,
+              source="端到端开路广播测试台角落拆选",
+              help="在 2×2 四象限测试台（tx_chain_mode=3）下拆成每个角落单独全屏选择：0=2×2四分屏全览，1=左上角（1.主控直通基带），2=右上角（2.发射机天线探头），3=左下角（3.模拟开路接收），4=右下角（4.数字地面 DTT 接收）。")
+    rf.define("tx_show_border", "发射测试台分框样式 (0无分框/1细十字线/2标准分框)", 1.0, 0.0, 2.0, unit="分框", group=g,
+              step=1.0, phys_min=0.0, phys_max=2.0,
+              source="分屏分框显示控制",
+              help="控制 2×2 四分屏之间的分框线：0=无分框无缝拼接，1=细十字分框线，2=标准演播室分框。")
+    rf.define("tx_show_text", "发射测试台画面文字 (0不要文字/1仅角落标签/2标签+底部遥测栏)", 0.0, 0.0, 2.0, unit="文字", group=g,
+              step=1.0, phys_min=0.0, phys_max=2.0,
+              source="纯净画面无文字开关",
+              help="默认 0=不要文字（纯净画面，无顶部黑条与底部遥测文字）；1=仅显示四角通道标签；2=显示四角通道标签与底部工程遥测栏。")
+    rf.define("tx_chain_mode", "电视发射机激励链工作模式 (0关/1模拟VSB+HPA/2数字COFDM/3四分屏/4..7单选角落)", 0.0, 0.0, 7.0, unit="模式", group=g,
+              step=1.0, phys_min=0.0, phys_max=7.0,
+              source="ITU-R BT.470 / FCC Part 73 模拟残留边带发射机 & DVB-T COFDM 数字发射机激励链规范",
+              help="0=关闭｜1=模拟大功率电视发射机激励与天馈链（高稳晶振 → VSB 残留边带激励器 → 速调管/固态高功放 HPA AM-AM 微分增益与 AM-PM 微分相位 → 920kHz/1.57MHz 图像-色度-伴音互调 → 腔体双工器群延迟与铁塔馈线 VSWR 重影 → 开路信道与接收机）｜"
+                   "2=数字地面电视 (DTT COFDM) 发射与接收链（功放过激励削波抬升 MER 底噪，触发数字接收机 QEF/Cliff 悬崖效应）｜"
+                   "3=端到端开路广播 2×2 四象限对照测试台（同屏对比：主控直通基带参考、发射机天线口监测、模拟开路接收终端、数字地面接收终端及失真贡献分解表）。")
+    rf.define("tx_pa_drive", "高功放 (HPA) 激励过载深度 (AM-AM 微分增益)", 0.35, 0.0, 1.5, unit="0-1.5", group=g,
+              phys_min=0.05, phys_max=1.10,
+              source="电子管/速调管与 LDMOS 固态高功放 Rapp 饱和包络模型",
+              help="控制末级高功放逼近 1 dB 压缩点的驱动深度：由于模拟电视采用负极性调幅（黑电平载波功率高、白电平接近零载波），高功放饱和会非线性压缩高光色度副载波幅度（产生微分增益 DG%）并压扁同步顶。")
+    rf.define("tx_pa_am_pm_deg", "高功放 AM-PM 微分相位失真", 8.0, 0.0, 45.0, unit="deg", group=g,
+              phys_min=0.0, phys_max=28.0,
+              source="速调管/行波管束流速度调制与固态功放结电容随包络电压变化的 AM-PM 相移",
+              help="亮度从黑电平过渡到白电平时，高功放寄生相移导致 3.58/4.43 MHz 色度副载波发生随亮度变化的相位旋转（微分相位 DP°，表现为高光区域色相偏转）。")
+    rf.define("tx_filter_gd_ns", "VSB 残留边带与腔体双工器群延迟", 65.0, 0.0, 400.0, unit="ns", group=g,
+              phys_min=15.0, phys_max=250.0,
+              source="声表面波 VSB 成形滤波器与大功率波导腔体合成器 (Cavity Diplexer) 边缘群延迟峰值",
+              help="发射机带通滤波器在通带边缘的陡峭群延迟斜率：导致 3.58/4.43 MHz 色度包络相对宽带亮度向右延迟错位，并在垂直硬边处激发 2T K 因子振铃过冲。")
+    rf.define("tx_feeder_vswr", "铁塔主馈线驻波比 (VSWR)", 1.15, 1.0, 3.5, unit="VSWR", group=g,
+              phys_min=1.0, phys_max=2.2,
+              source="发射塔长馈管终端天线失配反射系数 Γ = (VSWR - 1) / (VSWR + 1)",
+              help="天线振子结冰、进水或阻抗失配在数百米铁塔长馈线内产生往返反射，在发射端即形成固定延迟的馈线驻波重影与频响波纹。")
+    rf.define("tx_sound_intermod", "伴音-色度-图像三载波互调 (920kHz 差拍)", 0.25, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.75,
+              source="共用功放 (Common Amplification) 图像 f_v、色度 f_sc 与伴音 f_a 三阶互调产物",
+              help="当图像与伴音共用末级功放或双工器隔离度下降时，伴音载波 (+4.5/+6.0 MHz) 与色度副载波 (3.58/4.43 MHz) 产生 920 kHz / 1.57 MHz 差拍斜向网纹，同时高亮度扫描行侵入伴音鉴频器产生 50/60 Hz 画面蜂音 (Intercarrier Buzz)。")
 
     # ------------------------------------------------------------------
     # Physical connectors between the source and the recorder.  Kept per-connector
@@ -1366,6 +1677,208 @@ def build_schema() -> ParamSchema:
               phys_min=0.0, phys_max=0.5,
               help="屏蔽层破损会让外部射频进入。与「氧化」的区别：氧化是接点**自己产生**"
                    "干扰，屏蔽损失是**外部**干扰进来。")
+
+    g = "电源与电气母线 (Power & Electrical Bus)"
+    cn.define("psu_ripple", "电源滤波纹波 (PSU Ripple)", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.65,
+              source="整流滤波电解电容 ESR 升高与容量干涸导致的 50/60Hz 及 100/120Hz 全波纹波",
+              help="模拟线性/开关电源滤波电解电容老化干涸：在共享直流母线上注入 100/120Hz 全波整流充放电锯齿波与 "
+                   "50/60Hz 半波分量。由于电容放电斜率 dV/dt = -I_load/C，动态负载越重纹波越深，同时造成画面滚动交流哼声带、"
+                   "垂直边缘 S 形「交流声蛇形扭曲 (Hum Snake)」与伴音 50/100Hz 整流蜂音。")
+    cn.define("battery_level", "电池剩余电量 (Battery SoC)", 1.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.10, phys_max=1.0,
+              source="NiCd / NiMH / Li-ion 摄像机与便携录像机电池 Shepherd 电化学放电曲线",
+              help="1.0 为满电标称电压；放电至 0.35 以下进入 Shepherd 曲线陡降膝点，开路电压 V_oc 下跌且电池内阻 R_int 急剧攀升。")
+    cn.define("battery_sag", "电池内阻压降 (Dynamic Load Sag)", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.75,
+              source="高内阻老化电池在红外灯/变焦马达/走带伺服/高亮画面冲击下的母线压降 V_bus = V_oc - I_load * R_int",
+              help="供电内阻系数。当红外夜视灯、W-T 电动变焦马达、主导轴粘带/快进伺服或 CRT 大面积高光抽取引发瞬态大电流时，"
+                   "母线电压 V_bus 动态塌陷，导致摄像曝光变暗与底噪激增、走带伺服掉速（画面撕裂+音频变调下坠）、同步分离门限漂移及显像管画幅收缩。")
+    cn.define("load_coupling", "跨设备负载耦合度 (Load Coupling)", 0.0, 0.0, 1.5, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0,
+              source="成像/伺服装载/显像管高压共地共母线动态耦合",
+              help="控制摄像机（红外灯+变焦电机）、走带机构（主导轴/磁鼓伺服）与显示器（阴极束流）通过公共电源母线相互拉扯电压的耦合强度。")
+    cn.define("startup_surge", "冷机上电冲击瞬态 (Power-On Surge)", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.80,
+              source="开机瞬间主滤波电容充电浪涌、显像管灯丝预热与主导轴伺服锁相建立过程",
+              help="建模开机前 2.4 秒的冷机上电瞬态：滤波电容浪涌压降、稳压器过冲闪亮、以及主导轴/磁鼓从慢速爬升锁相的动态过程。")
+    cn.define("emi_crosstalk", "电机/行包电磁串扰 (EMI Crosstalk)", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.65,
+              source="主导轴/变焦直流电机换向器火花与行输出变压器对视频/音频母线的传导耦合",
+              help="直流有刷电机（变焦马达、主导轴电机）换向火花与 CRT 行输出高压包脉冲沿共享电源线串入视频基带（细密水平火花纹）与伴音通道。")
+
+    g = "多路模拟切换台与特技混合器 (Analog Video Switcher / SEG)"
+    cn.define("switcher_mode", "切换台工作模式", 0.0, 0.0, 5.0, unit="mode", group=g, step=1.0,
+              phys_min=0.0, phys_max=5.0,
+              source="松下 WJ-AVE5 / WJ-MX12 / 索尼 XV-AL100 模拟视频特技切换台 (SEG)",
+              help="0=关闭(直通 Bus A)｜1=非同步信号源硬切瞬态 (Non-Genlocked Hot Switch：无帧同步器硬切引发下游 H-AFC 弯钩撕裂、V-Hold 场跳动滚屏与色同步相位突变)｜"
+                   "2=模拟 T-Bar 叠化 (Mix / Dissolve：双路消隐基座叠加漂移与非锁相副载波差拍网纹)｜"
+                   "3=模拟电压斜坡划像 (Analog Ramp Wipe：水平/垂直/对角/菱形/圆形划像与比较器彩边)｜"
+                   "4=模拟亮度键控 (Analog Luma Key：高速电压比较器切键、700ns 群延迟错位与副载波拉链边)｜"
+                   "5=模拟色度键控 (Analog Chroma Key：窄带色差蓝幕抠像、色度群延迟黑边与 3.58/4.43MHz 副载波残留镶边)。")
+    cn.define("switcher_b_source", "副路/叠层信号源 (Bus B) 选择", 0.0, 0.0, 5.0, unit="src", group=g, step=1.0,
+              phys_min=0.0, phys_max=5.0,
+              source="切换台 Preset / Ext Key 输入母线与自定义叠层发生器",
+              help="当节点图中 `video_switcher` 节点的 `in_b` 端口已接入第二条上游信号链时，自动使用外部 `in_b` 信号；"
+                   "单输入或固定链路下可自由切换自定义叠层源：0=自适应自定义叠层/副机位 (Camera B)｜1=自定义文字与字幕底栏叠层｜"
+                   "2=自定义画中画小窗叠层 (PIP Window)｜3=自定义上传叠层图/副视频｜4=自定义色调/光效渐变叠层｜5=经典 SMPTE 演播室彩条。")
+    cn.define("switcher_overlay_style", "自定义叠层样式", 0.0, 0.0, 5.0, unit="style", group=g, step=1.0,
+              phys_min=0.0, phys_max=5.0,
+              source="切换台自定义图文/画中画/外接图层合成器",
+              help="0=自动适配（已导入叠层图时使用上传图，划像时使用纯净副机位，键控时使用画中画小窗）｜"
+                   "1=自定义文字 + 字幕底栏 (Lower-Third + Text)｜2=仅自定义文字/角标 (Text / Bug Only)｜"
+                   "3=自定义画中画小窗 + 标题 (PIP Window + Title)｜4=全画幅纯净副机位画面 (Full-Frame Camera B)｜"
+                   "5=经典演播室徽标与字幕条 (Classic Emblem + Banner)。")
+    cn.define("switcher_overlay_text", "自定义叠层文本", "STUDIO B · LIVE", 0.0, 1.0, unit="text", kind="text", group=g,
+              source="切换台内置字幕/角标叠层字符发生器（支持中英文自定义输入，留空则不显示文字）",
+              help="可输入任意中英文自定义叠层标题、台标或注释文本；清空此项即可隐藏叠层文字。")
+    cn.define("switcher_overlay_path", "自定义叠层图/视频路径", "", 0.0, 1.0, unit="text", kind="text", group=g,
+              source="顶部「🖼 导入叠层」按钮上传的自定义图片(PNG/JPG，支持透明通道)或视频路径",
+              help="可通过顶部工具栏「🖼 导入叠层」一键上传图片或视频作为划像/色键/亮键的自定义叠层源；清空即可恢复参数化叠层。")
+    cn.define("switcher_overlay_x", "自定义叠层水平位置 X", 0.50, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.05, phys_max=0.95,
+              help="控制自定义叠层（画中画窗口、字幕条、角标、上传图层或菱形/圆形划像中心）的水平中心坐标 (0=最左, 0.5=居中, 1=最右)。")
+    cn.define("switcher_overlay_y", "自定义叠层垂直位置 Y", 0.78, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.05, phys_max=0.95,
+              help="控制自定义叠层（画中画窗口、字幕条、角标、上传图层或菱形/圆形划像中心）的垂直中心坐标 (0=最上, 0.5=居中, 1=最下)。")
+    cn.define("switcher_overlay_scale", "自定义叠层缩放尺寸", 1.00, 0.15, 2.50, unit="x", group=g,
+              phys_min=0.30, phys_max=2.00,
+              help="控制自定义叠层窗口、字幕条、文字或上传叠层图像的缩放比例。")
+    cn.define("switcher_overlay_opacity", "自定义叠层不透明度", 0.92, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.10, phys_max=1.0,
+              help="控制自定义叠层图元、画中画窗口或划像副画面叠层的混合不透明度。")
+    cn.define("switcher_overlay_r", "自定义叠层主色 R", 0.95, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0,
+              help="自定义叠层边框、装饰条、文字或渐变叠层的红色分量 (R)。")
+    cn.define("switcher_overlay_g", "自定义叠层主色 G", 0.86, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0,
+              help="自定义叠层边框、装饰条、文字或渐变叠层的绿色分量 (G)。")
+    cn.define("switcher_overlay_b", "自定义叠层主色 B", 0.28, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0,
+              help="自定义叠层边框、装饰条、文字或渐变叠层的蓝色分量 (B)。")
+    cn.define("switcher_tbar", "T-Bar 推杆位置 / 划像进度", 0.50, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0,
+              source="模拟特技切换台机械 T-Bar 电位器推杆 (0.0 = Bus A .. 1.0 = Bus B)",
+              help="在叠化 (Mode 2) 下控制 Bus A 与 Bus B 的混合比例；在划像 (Mode 3) 下控制斜坡比较器的擦除进度；在硬切 (Mode 1) 下控制场中切换行位置。")
+    cn.define("switcher_wipe_pattern", "模拟划像图形 (Wipe Pattern)", 0.0, 0.0, 4.0, unit="pat", group=g, step=1.0,
+              phys_min=0.0, phys_max=4.0,
+              source="模拟行/场锯齿波与抛物波函数发生器",
+              help="0=水平拉幕划像 (Left→Right)｜1=垂直拉幕划像 (Top→Bottom)｜2=45°对角斜切划像｜3=中心菱形光圈 (Diamond Iris)｜4=中心圆形光圈 (Circle Iris)。")
+    cn.define("switcher_hot_cut_rate", "非同步硬切频率", 1.25, 0.10, 6.0, unit="次/秒", group=g,
+              phys_min=0.25, phys_max=3.5,
+              source="多机位无锁相导播切换或磁带拼接跳切频率",
+              help="在模式 1 (Hot Switch) 下，主副信号源之间发生非同步硬切的速率。")
+    cn.define("switcher_genlock_err", "异源时基与副载波失配度 (Genlock Error)", 0.65, 0.0, 1.5, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.2,
+              source="两台独立晶振摄像机/录像机之间的行相移 Δτ_H、场计数差 ΔY 与副载波频偏 Δφ_sc",
+              help="0 为两路信号已通过帧同步器/黑场发生器严格锁相 (Genlocked)；大于 0 时，硬切瞬间爆发 H-AFC 顶部弯钩撕裂、V-Hold 场跳动滚屏（露出 VBI 消隐带）与 APC 副载波色相突变，叠化时产生非相干副载波差拍网纹。")
+    cn.define("switcher_key_clip", "模拟键控比较器门限 (Key Clip)", 0.42, 0.05, 0.95, unit="IRE", group=g,
+              phys_min=0.15, phys_max=0.85,
+              source="LM311 / 差分对高速键控电压比较器参考电位",
+              help="亮键 (Luma Key) 或色键 (Chroma Key) 的触发电压门限。")
+    cn.define("switcher_key_gain", "模拟键控放大斜率 (Key Gain)", 0.65, 0.05, 1.5, unit="0-1", group=g,
+              phys_min=0.20, phys_max=1.2,
+              source="模拟线性键控器边缘放大器增益",
+              help="控制划像与键控过渡带的陡峭程度：越低边缘越柔和（半透明混合），越高越接近硬切。")
+    cn.define("switcher_key_jitter", "比较器行触发抖动 (Comparator Jitter)", 0.35, 0.0, 1.5, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0,
+              source="模拟斜坡发生器与键控比较器受电源纹波/热噪声调制产生的逐行切点抖动",
+              help="使划像边界与键控轮廓在相邻扫描行之间发生细腻的模拟锯齿颤动。")
+    cn.define("switcher_subcarrier_spill", "副载波残留拉链边与群延迟镶边", 0.45, 0.0, 1.5, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.2,
+              source="0.6MHz 色度窄带群延迟 (~700ns) 错位与 3.58/4.43MHz 副载波未完全陷波残留",
+              help="还原 80/90 年代模拟复合键控最标志性的两大物理缺陷：1. 色度窄带滤波器比宽带亮度慢约 700ns（约 5 像素），导致抠像蒙版相对前景画面整体右移，在左侧露出暗黑/蓝幕切边、右侧溢出亮边；2. 复合信号中的副载波调制比较器门限，在边缘形成 4 像素周期的彩色拉链锯齿 (Subcarrier Zipper)。")
+    cn.define("switcher_pedestal_add", "双母线黑电平叠加与溢色漂移", 0.25, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.75,
+              source="无后肩重钳位的模拟电阻混合母线 7.5 IRE 双基座叠加",
+              help="在 T-Bar 半叠化（50/50 Mix）或键控叠加时，两路信号的消隐黑电平基座相加导致画面暗部发灰抬升。")
+
+    g = "广播级配线架与 75Ω 分配放大器 (Patchbay, DA & 75Ω Termination)"
+    cn.define("da_enabled", "启用配线架与分配放大器", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+              phys_min=0.0, phys_max=1.0,
+              source="广播级演播室 75Ω 视频分配放大器 (Grass Valley / Leitch / Extron MDA) 与跳线配线架",
+              help="开启后在信号链中启用 75Ω 源-负载端接分压、同轴电缆反射/趋肤效应、有源分配放大器均衡与配线架交叉点物理模型。")
+    cn.define("da_termination_mode", "75Ω 端接与分配模式", 0.0, 0.0, 3.0, unit="mode", group=g, step=1.0,
+              phys_min=0.0, phys_max=3.0,
+              source="SMPTE 170M / ITU-R BT.470 75Ω 源内阻与终端匹配规范 (V_load = 2*V_nom * R_L / (75 + R_L))",
+              help="0=标准 75Ω 单端接匹配 (1.0 Vpp / 0 dB, 反射系数 Γ=0)｜"
+                   "1=未端接高阻开路环通 (High-Z Open Loop-Through, R_L≈10kΩ：电压翻倍至 ~2.0 Vpp / +6 dB，导致高光硬削波死白、色彩过饱和及正向延迟重影 Γ≈+0.98)｜"
+                   "2=违规三通无源并接 / 双端接或多端接 (Passive T-Split, R_L=75Ω/N：双端接 37.5Ω 跌落 -3.52 dB、三端接 25Ω 跌落 -6.02 dB，画面昏暗发灰、-40 IRE 同步顶被压扁引发下游 H-AFC 撕裂，并产生负向反相重影 Γ<0)｜"
+                   "3=有源分配放大器隔离驱动 (Active DA 1-in-N-out：高阻环通输入 + 独立 75Ω 背端接运放驱动，支持多路无损分发与电缆高频均衡补偿)。")
+    cn.define("da_load_count", "并接/分配负载路数 N", 2.0, 1.0, 6.0, unit="路", group=g, step=1.0,
+              phys_min=1.0, phys_max=4.0,
+              source="无源三通并接终端数 N 或有源 DA 扇出通道数",
+              help="在模式 2（违规无源三通并接）下决定并联 75Ω 负载个数 N（R_L = 75Ω/N，N=2 为 37.5Ω 双端接，N=3 为 25Ω 三端接）；在模式 3（有源 DA）下表示有源扇出路数。")
+    cn.define("da_cable_len_m", "同轴线缆长度 (RG-59/8281)", 15.0, 1.0, 150.0, unit="m", group=g,
+              phys_min=2.0, phys_max=100.0,
+              source="Belden 8281 / RG-59 75Ω 同轴电缆传播速度 v_p≈0.66c (往返延迟 10.1 ns/m) 与趋肤效应高频衰减",
+              help="决定阻抗失配时的往返反射重影水平间距 Δx，以及长距离传输时的趋肤效应高频滚降。")
+    cn.define("da_gain_db", "有源 DA 增益微调", 0.0, -6.0, 6.0, unit="dB", group=g,
+              phys_min=-3.0, phys_max=3.0,
+              source="广播级分配放大器前面板 Gain 电位器 (-6 dB .. +6 dB)",
+              help="有源分配放大器 (Mode 3) 或基准通道的电压增益微调（dB）。")
+    cn.define("da_eq_boost", "有源 DA 电缆均衡高频补偿", 0.0, 0.0, 1.5, unit="0-1", group=g,
+              phys_min=0.0, phys_max=1.0,
+              source="有源分配放大器前面板 Cable EQ 高频峰值补偿网络",
+              help="补偿长距离同轴电缆的高频亮度与 3.58/4.43MHz 色度副载波衰减；在短电缆上过度开启会产生硬边高频过冲振铃。")
+    cn.define("patch_crosstalk", "配线架/矩阵交叉点电容串扰", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.65,
+              source="高密度跳线配线架 (Patchbay) 或模拟矩阵切换器相邻通道寄生电容耦合 C_xp * dV_B/dt",
+              help="相邻跳线孔或矩阵交叉点中的强信号向本通道发生微分电容串扰：在画面中浮现相邻母线（Bus B 或演播室彩条母线）的边缘微分浮雕轮廓与副载波差拍斜纹。")
+    cn.define("patch_contact_aging", "跳线插孔触点氧化与接触噪波", 0.0, 0.0, 1.0, unit="0-1", group=g,
+              phys_min=0.0, phys_max=0.65,
+              source="Bantam / 1/4\" 常闭跳线插孔 (Normalled Jack) 簧片硫化氧化与屏蔽地松动",
+              help="老化跳线插孔引入接触电阻压降、屏蔽壳松动工频微哼声，以及间歇性的行向接触火花噪波与局部丢色。")
+    cn.define("patch_format_mismatch", "跳线信号格式误插", 0.0, 0.0, 3.0, unit="mode", group=g, step=1.0,
+              phys_min=0.0, phys_max=3.0,
+              source="配线架跨信号制式误跳线故障表征 (Composite / S-Video Y / YPbPr / SDI)",
+              help="0=正常格式匹配｜1=S-Video 亮度 (Y) 误插复合输入（丢失色同步与色度，画面变为锐利纯黑白并带残留亮边点爬行）｜"
+                   "2=分量 YPbPr / RGB 绿通道误插复合输入（无副载波基带色差导致绿/品红偏色与行同步滑移）｜"
+                   "3=SDI / 数字码流误插模拟复合监视器（满屏高频数字雪花杂波与失锁滚道）。")
+
+    g_env = "二维空间物理环境场与多维耦合"
+    cn.define("env_field_enabled", "启用二维空间物理环境场 (EnvironmentField)", 0.0, 0.0, 1.0, unit="bool", group=g_env, step=1.0,
+              phys_min=0.0, phys_max=1.0, source="空间连续二维环境场 (温湿度/电磁/声学/光学四场耦合)",
+              help="每台设备根据自身在机房/拍摄空间中的二维坐标 (x, y) 读取局域温度、相对湿度、光照频谱与电磁干扰场，而非共用单一全局标量。")
+    cn.define("env_field_mode", "空间环境场视图与测试模式", 0.0, 0.0, 5.0, unit="0-5", group=g_env, step=1.0,
+              phys_min=0.0, phys_max=5.0, source="四场物理耦合与 2×2 空间热力图实验室",
+              help="0=跟随总开关｜1=温湿度与结露粘带耦合 (冷机抱入暖房镜片起雾与磁鼓结露粘带)｜2=变压器/发射塔空间电磁场与接地环路耦合｜"
+                   "3=房间声学混响/驻波与混合光源杂散光耦合｜4=四场全耦合 + 机房环境场 HUD 探针｜5=2×2 空间物理环境场与设备坐标四分屏实验室。")
+    cn.define("env_room_temp_c", "机房/暖通空调基准温度", 24.0, -10.0, 45.0, unit="°C", group=g_env,
+              phys_min=10.0, phys_max=35.0, source="ASHRAE 演播室/客厅温控基准")
+    cn.define("env_room_rh_pct", "机房/环境相对湿度 (RH)", 65.0, 15.0, 98.0, unit="%", group=g_env,
+              phys_min=30.0, phys_max=85.0, source="Magnus-Tetens 露点方程输入")
+    cn.define("env_device_init_temp_c", "设备入场初始机壳温度 (冷机抱入暖房)", 6.0, -15.0, 40.0, unit="°C", group=g_env,
+              phys_min=-5.0, phys_max=30.0, source="牛顿冷却定律与机壳热惯性 τ_th",
+              help="当冷机温度低于局域空气露点温度 T_dew(x, y) 时，摄像机前镜片瞬间结露起雾、录像机磁鼓发生高危水膜粘带，并随设备升温跨帧自然消散。")
+    cn.define("env_emi_source_power", "局域变压器/发射塔电磁辐射源功率", 0.55, 0.0, 2.0, unit="0-2", group=g_env,
+              phys_min=0.0, phys_max=1.2, source="近场 1/r² 磁偶极子辐射与接地环路感应电动势")
+    cn.define("env_shielding_eff", "机箱/同轴线缆电磁屏蔽效能", 0.50, 0.0, 0.98, unit="0-1", group=g_env,
+              phys_min=0.20, phys_max=0.95, source="铜编织网屏蔽层与机架接地抑制比")
+    cn.define("env_light_mix", "窗户日光 vs 钨丝灯/荧光灯空间混合比", 0.35, 0.0, 1.0, unit="0-1", group=g_env,
+              phys_min=0.0, phys_max=1.0, source="二维空间色温梯度与 CRT 玻壳杂散光漫反射")
+    cn.define("env_acoustic_rt60", "房间混响时间 RT60 与驻波耦合", 0.48, 0.05, 2.5, unit="s", group=g_env,
+              phys_min=0.15, phys_max=1.6, source="Sabine 室内混响方程与早期反射梳状滤波")
+    cn.define("env_cam_x", "摄像机空间坐标 X", 0.22, 0.0, 1.0, unit="0-1", group=g_env,
+              phys_min=0.0, phys_max=1.0, source="二维机房平面横坐标 (0=左窗侧, 1=右机柜侧)")
+    cn.define("env_cam_y", "摄像机空间坐标 Y", 0.30, 0.0, 1.0, unit="0-1", group=g_env,
+              phys_min=0.0, phys_max=1.0, source="二维机房平面纵坐标 (0=上空调侧, 1=下潮湿死角/电源柜侧)")
+    cn.define("env_vtr_x", "录像机 (VTR) 空间坐标 X", 0.72, 0.0, 1.0, unit="0-1", group=g_env,
+              phys_min=0.0, phys_max=1.0, source="录像机在二维环境场中的横坐标")
+    cn.define("env_vtr_y", "录像机 (VTR) 空间坐标 Y", 0.68, 0.0, 1.0, unit="0-1", group=g_env,
+              phys_min=0.0, phys_max=1.0, source="录像机在二维环境场中的纵坐标")
+    cn.define("env_crt_x", "CRT 监视器空间坐标 X", 0.80, 0.0, 1.0, unit="0-1", group=g_env,
+              phys_min=0.0, phys_max=1.0, source="CRT 监视器在二维环境场中的横坐标")
+    cn.define("env_crt_y", "CRT 监视器空间坐标 Y", 0.28, 0.0, 1.0, unit="0-1", group=g_env,
+              phys_min=0.0, phys_max=1.0, source="CRT 监视器在二维环境场中的纵坐标")
+    cn.define("env_quad_corner", "空间环境场分屏角落选择", 0.0, 0.0, 4.0, unit="0-4", group=g_env, step=1.0,
+              phys_min=0.0, phys_max=4.0, source="四分屏单象限全屏放大检视",
+              help="0=2×2 四分屏同屏对照｜1=左上角全屏 (温湿度露点场+结露画面)｜2=右上角全屏 (电磁干扰场+地环路画面)｜"
+                   "3=左下角全屏 (光学/声学场耦合画面)｜4=右下角全屏 (各设备局域物理遥测仪表盘)。")
+    cn.define("env_show_border", "空间环境场分框线显示", 2.0, 0.0, 2.0, unit="0-2", group=g_env, step=1.0,
+              phys_min=0.0, phys_max=2.0, source="四分屏边框模式 (0=无边框, 1=细十字线, 2=工业外框)")
+    cn.define("env_show_text", "空间环境场文字叠加显示", 0.0, 0.0, 2.0, unit="0-2", group=g_env, step=1.0,
+              phys_min=0.0, phys_max=2.0, source="0=隐藏全部文字(纯净画面)｜1=紧凑角标｜2=完整物理遥测文字")
 
     # ------------------------------------------------------------------ D
     ply = s.layer("player")
@@ -1446,6 +1959,81 @@ def build_schema() -> ParamSchema:
                help="0=NO SIGNAL｜1=SEARCH / CHAPTER｜2=PLAY。"
                     "真实的字符发生器只有固定的若干条信息，不接受任意文字，"
                     "所以这里也用编号选择而不是自由输入。")
+
+    g = "同步与时钟系统 (Sync & Clock)"
+    ply.define("sync_clip", "同步脉冲压缩/削波 (Sync Clip)", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.75,
+               source="复合视频 -40 IRE 同步顶幅度衰减与同步分离比较器门限偏移 (LM1881 / TA8690)",
+               help="建模 -40 IRE 行/场同步脉冲被磁带饱和、多代翻录或电源压降削波压缩。同步顶变浅会导致：1. 垂直消隐后行 AFC 锁相环恢复变慢，产生画面顶部弯钩畸变 (Flagging)；2. 高亮扫描行通过交流耦合电容压低同步顶（Sync Crushing），造成亮部水平撕裂与色同步选通门错位；3. 超过门限时触发场失锁滚屏。")
+    ply.define("h_hold", "行同步保持失调 (H-Hold)", 0.0, -1.0, 1.0, unit="-1..1", group=g,
+               phys_min=-0.45, phys_max=0.45,
+               source="行频压控振荡器 (H-VCO 15.625/15.734 kHz) 自由振荡频偏与鉴相器牵引范围",
+               help="调节行频振荡器自由谐振频率偏置。小幅偏移在画面顶部产生经典的行 AFC 牵引弯钩 (Flagging)；超出锁相保持范围时行同步彻底失锁，画面斜向撕裂并暴露行消隐带 (HBI)。")
+    ply.define("v_hold", "场同步保持失调 (V-Hold)", 0.0, -1.0, 1.0, unit="-1..1", group=g,
+               phys_min=-0.50, phys_max=0.50,
+               source="场频振荡器 (50/59.94 Hz) Adler 注入锁定方程与失锁垂直滚屏",
+               help="调节场频振荡器自由周期偏置。当偏置或同步削波突破锁定门限时，画面按 Adler 注入锁定动力学发生非匀速纵向滚屏（接近锁相点时减速犹豫、滑过时加速），并在上下场交界处完整显现包含均衡脉冲、场同步齿脉冲与 VITC 时间码的物理垂直消隐带 (VBI Bar)。")
+    ply.define("clock_drift_ppm", "采样时钟频偏 (Clock Drift)", 0.0, -500.0, 500.0, unit="ppm", group=g,
+               phys_min=-150.0, phys_max=150.0,
+               source="收发两端石英晶振频偏 (ITU-R BT.601 ±50 ppm 容限与廉价采集卡晶振老化)",
+               help="录制端与回放/采集端采样时钟的百万分率频偏 (ppm)：引起逐行累积的水平比例伸缩斜切、副载波色同步相位沿扫描线连续漂移，以及大频偏下数字 FIFO / TBC 缓冲区的周期性滑帧跳变。")
+    ply.define("clock_jitter", "采样时钟相位抖动 (Clock Jitter)", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.60,
+               source="PLL 锁相环相位噪声与 ADC 采样孔径抖动",
+               help="高频采样时钟相位噪声与孔径抖动，造成边缘亚像素毛刺与色度副载波高频相位噪波。")
+    ply.define("std_mismatch", "跨制式失配 (PAL↔NTSC)", 0.0, 0.0, 2.0, unit="0-2", group=g, step=1.0,
+               phys_min=0.0, phys_max=2.0,
+               source="50Hz PAL (15625Hz/4.43MHz) 与 59.94Hz NTSC (15734Hz/3.58MHz) 异制式重放",
+               help="0=制式正常匹配｜1=PAL (50Hz) 信号误入 NTSC (59.94Hz) 系统（9.94Hz 差拍场滚屏 + 行频斜切 + 4.43/3.58MHz 副载波失锁消色与彩虹斜纹）｜2=NTSC (59.94Hz) 信号误入 PAL (50Hz) 系统（反向场滚屏 + PAL 逐行倒相开关失配引发的汉诺威百叶窗色条 Hanover Bars）。")
+    ply.define("pulse_cross", "脉冲十字监视 (Pulse Cross HBI/VBI)", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0,
+               source="广播级监视器 (Sony PVM / Ikegami) Pulse-Cross 行场半周期延迟检视模式",
+               help="开启后将行相位延迟半行 (W/2)、场相位延迟半场 (H/2) 并自动抬升消隐基底亮度，把真实的水平消隐带 (HBI：前肩、-40 IRE 行同步顶、后肩与 8–10 周期色同步脉冲串) 与垂直消隐带 (VBI：前后均衡脉冲、场同步阔脉冲开槽与 VITC 时间码) 移至画面正中央十字交叉处，供直观检视同步与色同步波形。")
+
+    g = "转录与复制工作站"
+    ply.define("transfer_station_mode", "转录/复制工作站模式", 0.0, 0.0, 4.0, unit="mode", group=g, step=1.0,
+               phys_min=0.0, phys_max=4.0,
+               source="模拟数字化采集站 (Ingest) / 多代磁带复制站 (Dubbing) / 数字格式转码站 (Transcode) / 四路复制链对照实验室",
+               help="0=关闭｜1=A.模拟磁带数字化采集站 (VHS/Video8/Betacam → TBC → BT.601 采集卡 ADC，保留源缺陷并建模采样锁定、HBI 裁切与音画时钟漂移)｜"
+                    "2=B.磁带多代复制站 (源机 → 分配/TBC → 目标机 1..8 代复制，区分可被 TBC 抑制的时基抖动与不可逆累积的带宽/色度/底噪非线性退化)｜"
+                    "3=C.数字格式转码站 (4:2:2 → 4:1:1 DV25 → 4:2:0 MPEG-1 VCD 多代色度抽样交集损失与 8×8 DCT 重编码块伪影)｜"
+                    "4=四路复制链对照实验室 (2×2 同屏对比：Gen-0 母带、无 TBC 多代模拟复制、带 TBC 多代模拟复制、数字跨格式转码 + TransferEvent 溯源遥测)。")
+    ply.define("transfer_generations", "转录/复制累计代数 (Gen Index)", 3.0, 1.0, 8.0, unit="代", group=g, step=1.0,
+               phys_min=1.0, phys_max=6.0,
+               source="TransferEvent.generation_index (1..8 代连续复制或转码)",
+               help="信号经历的连续磁带复制或数字重编码代数。每一代均生成独立的 TransferEvent 历史记录。")
+    ply.define("transfer_tbc_mode", "转录链路时基校正模式", 1.0, 0.0, 2.0, unit="mode", group=g, step=1.0,
+               phys_min=0.0, phys_max=2.0,
+               source="TransferEvent.timebase_mode (无 TBC 自由运行 / 行 TBC / 全帧同步 TBC + Genlock)",
+               help="0=无 TBC (Free-Run：采集卡 PLL 随磁带行抖动滑移，多代复制时行时基误差逐代加速发散)｜"
+                    "1=行 TBC (Line TBC：逐行重锁定水平同步与色同步相位，大幅抑制几何扭曲，但带宽滚降与色度退化照常累积)｜"
+                    "2=全帧同步 TBC + Genlock (Full-Frame Synchronizer：锁定行场时基与音频采样基准)。")
+    ply.define("transfer_codec_target", "数字转码目标格式链", 3.0, 0.0, 3.0, unit="mode", group=g, step=1.0,
+               phys_min=0.0, phys_max=3.0,
+               source="ITU-R BT.601 4:2:2 / IEC 61834 DV25 4:1:1 / ISO 11172-2 MPEG-1 VCD 4:2:0",
+               help="0=BT.601 YUV422 8-bit 采集直出｜1=DV25 (4:1:1 横向 1/4 色度抽样 + 25Mbps 8×8 DCT)｜"
+                    "2=MPEG-1 VCD (352×240 CIF + 4:2:0 色度 + 1.15Mbps 运动补偿)｜"
+                    "3=4:2:2 → DV25 (4:1:1) → MPEG-1 VCD (4:2:0) 跨格式级联转码（色度分辨率跌至 1/4×1/2 = 1/8）。")
+    ply.define("transfer_adc_crop", "采集卡消隐裁切与 ADC 钳位", 0.45, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.10, phys_max=0.85,
+               source="BT878 / SAA7134 / TC-UB530 采集卡抗混叠滤波器群延迟振铃与 BT.601 16..235 量化范围钳位",
+               help="控制数字化采集站左右行消隐 (HBI) 窗口裁切边缘振铃，以及 8-bit 16..235 量化动态范围截断强度。")
+    ply.define("transfer_av_drift_ms", "音画时钟同步漂移 (A/V Sync Offset)", 35.0, -250.0, 250.0, unit="ms", group=g,
+               phys_min=-120.0, phys_max=120.0,
+               source="独立声卡 48kHz 晶振与视频采集卡行锁时钟未同步导致的音画滑移 (TransferEvent.audio_sync_offset)",
+               help="每次转录或复制引入的音画同步时间偏移（毫秒），随复制代数累积并同步反映在伴音时间轴与 TransferEvent 记录中。")
+    ply.define("transfer_quad_corner", "复制实验室角落选择 (0四分屏/1左上/2右上/3左下/4右下)", 0.0, 0.0, 4.0, unit="角落", group=g,
+               step=1.0, phys_min=0.0, phys_max=4.0,
+               source="四路复制链对照角落拆选",
+               help="在四路复制对照模式（transfer_station_mode=4）下拆成每个角落单独全屏选择：0=2×2四分屏，1=左上角（Gen-0母带），2=右上角（路径A无TBC多代模拟复制），3=左下角（路径B带TBC多代模拟复制），4=右下角（路径C数字转码链）。")
+    ply.define("transfer_show_border", "复制实验室分框样式 (0无分框/1细十字线/2标准分框)", 1.0, 0.0, 2.0, unit="分框", group=g,
+               step=1.0, phys_min=0.0, phys_max=2.0,
+               source="分屏分框显示控制",
+               help="0=无分框无缝拼接，1=细十字分框线，2=标准分框。")
+    ply.define("transfer_show_text", "复制实验室画面文字 (0不要文字/1仅标签/2标签+状态栏)", 0.0, 0.0, 2.0, unit="文字", group=g,
+               step=1.0, phys_min=0.0, phys_max=2.0,
+               source="纯净画面无文字开关",
+               help="默认 0=不要文字（纯净画面）；1=仅显示四角标签；2=显示四角标签与底部统计栏。")
 
     # ------------------------------------------------------------------ E
     dsp = s.layer("display")
@@ -1575,6 +2163,220 @@ def build_schema() -> ParamSchema:
     dsp.define("bezel", "球面框体与边角遮罩", 0.0, 0.0, 1.0, unit="0-1", group="环境与框体",
                phys_min=0.0, phys_max=0.8,
                help="显像管超椭圆黑框、内侧暗角阴影与球面玻璃菲涅尔边缘高光。")
+
+    g = "屏摄重拍系统 (Camera-off-CRT Reshoot)"
+    dsp.define("reshoot_enabled", "启用虚拟相机屏摄重拍", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0,
+               source="用虚拟 CMOS/CCD 相机重新拍摄正在扫描发光的 CRT 荧光屏（快门积分窗口 vs 垂直场扫描脉冲）",
+               help="开启后，不再直接输出理想整帧光栅，而是用一台具备独立快门速度、帧率与卷帘读出时序的虚拟相机对 CRT 荧光屏进行二次拍摄："
+                    "快门曝光窗口 [t, t+τ_shutter] 与 CRT 50/59.94Hz 电子束逐行轰击及 P22 荧光粉毫秒级指数余辉发生时域差拍，"
+                    "自然生成相机屏摄特有的明暗滚动扫描横带（Roll Bar）。")
+    dsp.define("reshoot_shutter_hz", "重拍相机快门倒数 (1/T)", 60.0, 20.0, 500.0, unit="Hz", group=g,
+               phys_min=25.0, phys_max=250.0,
+               source="相机快门曝光时间 τ_shutter = 1 / reshoot_shutter_hz（如 1/60s、1/100s、1/125s、1/250s）",
+               help="快门速度越快（如 125Hz 即 1/125s），单次曝光内电子束仅扫过屏幕的一部分（D = f_CRT / f_shutter < 1），"
+                    "形成明显的亮带与未扫到的暗谷；当快门慢于场周期（如 1/50s 拍 59.94Hz NTSC）时，局部区域在一帧内被电子束扫过两次，"
+                    "形成一条二次曝光亮横带。")
+    dsp.define("reshoot_fps_offset", "相机与场频差拍偏置 (Δf)", 0.60, -15.0, 15.0, unit="Hz", group=g,
+               phys_min=-10.0, phys_max=10.0,
+               source="重拍相机帧率 f_cam 与 CRT 实际场频 f_CRT 的微差（如 60.00Hz 手机拍摄 59.94Hz NTSC 电视）",
+               help="决定屏摄扫描横带在画面上纵向滚动的速度与方向。Δf = 0 时扫描带静止在固定行位置；"
+                    "Δf > 0 或 < 0 时扫描横带以 |Δf| Hz 的差拍周期平滑向上或向下滚动。")
+    dsp.define("reshoot_rolling_shutter", "CMOS 卷帘快门读出斜率", 0.35, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.85,
+               source="CMOS 传感器逐行曝光读出延迟 τ_readout（0=CCD 全局快门，>0=CMOS 卷帘快门）",
+               help="0.0 为 CCD 全局快门（整幅画面同一毫秒开启快门）；>0 为手机/数码相机 CMOS 卷帘快门（自上而下逐行开启曝光），"
+                    "与同样自上而下扫描的 CRT 电子束发生多普勒式收窄/展宽效应。")
+    dsp.define("reshoot_moire", "像素-荫罩二维摩尔纹", 0.0, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=1.0,
+               source="相机传感器拜耳像素网格与球面 CRT 荧光粉荫罩/扫描线重采样空间频率混叠 (Δk = k_CRT - k_sensor)",
+               help="当相机镜头对准带有球面曲率与垂直荫罩（特丽珑荫栅 / 槽孔 / 三角点阵）的 CRT 屏幕时，"
+                    "球面透视放大率变化使屏幕空间频率沿径向连续漂移，与相机拜耳 CFA 采样网格差拍产生标志性的彩色环形/双曲水波摩尔纹。")
+    dsp.define("reshoot_tilt_deg", "重拍机位旋转倾角", 0.0, -15.0, 15.0, unit="deg", group=g,
+               phys_min=-8.0, phys_max=8.0,
+               source="手持或三脚架相机相对电视机水平扫描线的滚转角 θ_tilt",
+               help="微小机位倾角（如 1.5°–4°）会改变相机像素列与 CRT 竖直荫罩条纹的夹角，使摩尔纹条纹的周期与旋转方向发生灵敏变化。")
+    dsp.define("reshoot_perspective", "屏摄离轴透视与微距景深", 0.0, -1.0, 1.0, unit="-1..1", group=g,
+               phys_min=-0.6, phys_max=0.6,
+               source="相机微偏离屏幕法线拍摄时的三维单应性透视梯形畸变、电视边框入镜与远端浅景深虚化",
+               help="模拟从略微偏左/偏右机位近距离翻拍电视屏幕：引入三维透视近大远小畸变、露出显示器深灰塑料外框边缘，并在远离焦平面的一侧产生微距浅景深柔化。")
+    dsp.define("reshoot_ambient_glare", "房间环境光与荧光粉漫反", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.75,
+               source="未激发 P22 荧光粉涂层（灰白粉末反射率 ~25%）对室内环境光的漫反射黑位抬升与曲面玻璃灯具倒影",
+               help="CRT 在开灯房间内无法呈现纯黑：未发光的灰白色荧光粉层会漫反射室内环境光，把屏幕黑位冲淡成灰绿/暖灰底色，"
+                    "同时凸面铅玻璃表面映出窗户或吸顶灯的菲涅尔高光倒影。")
+    dsp.define("reshoot_wb_shift", "屏摄 9300K 色温偏移与过曝", 0.0, -1.0, 1.0, unit="-1..1", group=g,
+               phys_min=-0.5, phys_max=0.85,
+               source="中日消费级彩电 9300K (D93) 荧光粉白点在 5200K 相机白平衡下的冷青偏色与点测光中心过曝",
+               help="正值模拟 5200K 日光/室内白平衡相机拍摄 9300K 冷白 CRT 荧光屏时的典型冷青蓝偏色与高光自动曝光溢出；负值为暖调偏移。")
+
+    g = "多画面监视墙与独立 CRT 阵列"
+    dsp.define("mv_enabled", "启用演播室多画面监视墙", 0.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="90年代电视台导播室 / 总控机房 (MCR) 多路 CRT 监视器墙",
+               help="开启后将显示阶段切换为演播室多路 CRT 监视墙，同屏监看「摄像机/信号源 (CH1)」、「磁带原始重放 TBC Off (CH2)」、"
+                    "「TBC 时基校正输出 (CH3)」与「主监播出 PGM (CH4)」，或节点图接入的 4–6 路独立信号源。")
+    dsp.define("mv_layout", "监视墙布局模式", 0.0, 0.0, 2.0, unit="0-2", group=g,
+               step=1.0, phys_min=0.0, phys_max=2.0,
+               source="演播室 2×2 四分屏 / 总控 3×2 六分屏 / 导播 1+3 主副监看墙",
+               help="0=2×2 导播室四分屏监视墙 (CAM / VTR-RAW / TBC-OUT / PGM)｜"
+                    "1=3×2 总控机房六画面监视桥（含配线架与绿粉/单色波形监看管）｜"
+                    "2=1+3 导播主副非对称监视墙（左侧大屏主监 PGM + 右侧三路预监 PVW）。")
+    dsp.define("mv_unit_variance", "各监视器独立 CRT 个体老化差异", 0.55, 0.0, 1.2, unit="0-1", group=g,
+               phys_min=0.15, phys_max=0.95,
+               source="SONY PVM-14L5 (D65) / JVC TM-H150CG (欠扫描) / Ikegami 老化绿偏管 / 家用 9300K 彩电同墙个体差",
+               help="关键物理区分：监视墙上每一台 CRT 拥有独立的阴极老化色温（D65 标准、绿枪偏高、9300K 冷蓝或 单色黑白同步监看管）、"
+                    "独立伽马、独立几何枕形/欠扫描边框与高压呼吸——监视器自身的偏色只改变你在该窗口看到的外观，绝不污染底层视频信号本身。")
+    dsp.define("mv_fault_channel", "注入通道失锁/断流故障槽位", 0.0, 0.0, 6.0, unit="0-6", group=g,
+               step=1.0, phys_min=0.0, phys_max=6.0,
+               source="总控监视墙单通道断流/失锁演练",
+               help="0=全部通道正常｜1..6=指定第 1..6 号监视器窗口发生信号中断或同步失锁（触发下方设定的硬件失锁物理响应，并点亮红色闪烁 FAULT Tally 灯）。")
+    dsp.define("mv_fault_mode", "通道无信号/失锁物理响应模式", 0.0, 0.0, 5.0, unit="0-5", group=g,
+               step=1.0, phys_min=0.0, phys_max=5.0,
+               source="各类模拟/数字监视器与录像机在丢失同步脉冲时的真实硬件行为",
+               help="0=按通道设备类型自动分配｜1=纯黑无同步底噪 (Black No-Sync)｜2=RF 高频头 AGC 满增益白雪花 (RF Snow)｜"
+                    "3=场行自由振荡斜向滚屏消隐带 (Free-Run Roll)｜4=数字 TBC 末帧死锁残影冻结 (Frame Freeze)｜"
+                    "5=JVC/松下录像机本机蓝屏 + NO SIGNAL 字符替换 (VTR Blue OSD)。")
+    dsp.define("mv_tally_umd", "显示监视墙文字标牌与 Tally (0不要文字/1显示)", 0.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="演播室监视桥顶部 Tally 灯箱与底部 UMD 源名显示器（默认关闭以保持纯净无文字画面）",
+               help="默认 0=不要文字与标牌（纯净多画面）；1=在每台监视器外框顶部点亮 Tally 灯并在底部内嵌 UMD 通道铭牌。")
+    dsp.define("mv_quad_corner", "监视墙单窗角落选择 (0全墙/1左上/2右上/3左下/4右下)", 0.0, 0.0, 6.0, unit="窗口", group=g,
+               step=1.0, phys_min=0.0, phys_max=6.0,
+               source="监视墙单路窗口拆选",
+               help="0=完整多画面监视墙；1..4=单独全屏查看第 1..4 号角落窗口（3×2 模式下支持 1..6）。")
+    dsp.define("mv_show_border", "监视墙分框样式 (0无分框/1细十字线/2机架边框)", 1.0, 0.0, 2.0, unit="分框", group=g,
+               step=1.0, phys_min=0.0, phys_max=2.0,
+               source="监视墙分框与金属隔断控制",
+               help="0=无分框无缝拼接，1=细十字分框线，2=演播室机架金属边框。")
+
+    g_prc = "人类视觉感知与机房操作者闭环"
+    dsp.define("percept_enabled", "启用人类视觉感知与机房操作者闭环系统", 0.0, 0.0, 1.0, unit="bool", group=g_prc, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="Mannos-Sakrison 空间对比敏感度函数 (CSF) + 机房值班员 PID 认知控制模型",
+               help="量化『设备物理输出 ≠ 观众主观视觉体验』，并模拟机房值班工程师基于波形监视器与报警做出手动跟踪微调、CCU 配平与高压误切的行为闭环。")
+    dsp.define("percept_mode", "视觉感知与操作者行为模式", 0.0, 0.0, 4.0, unit="0-4", group=g_prc, step=1.0,
+               phys_min=0.0, phys_max=4.0, source="心理物理学 CSF 滤波与人因控制回路",
+               help="0=跟随总开关｜1=观众心理物理感知视图 (基于观看距离 CPD、屏幕尼特与环境照度的 CSF 空间滤波，解释为何远看 CRT 比近看像素截图更清晰柔和)｜"
+                    "2=机房值班员闭环矫正后画面 (操作者实时监看并推拉 Tracking 旋钮与 CCU 增益，含认知反应延迟、欠阻尼过调震荡与高压误切事故)｜"
+                    "3=物理误差 vs 人眼感知显著度 (JND) 差异热力图｜"
+                    "4=2×2 感知与操作者行为闭环实验室 (同屏对比：未干预物理输出 vs 观众视网膜 CSF 感知画面 vs 操作者闭环矫正画面 vs JND 显著度与评分面板)。")
+    dsp.define("percept_viewing_dist_h", "观众观看距离 (屏幕高度倍数 H)", 3.5, 1.0, 10.0, unit="×H", group=g_prc,
+               phys_min=1.5, phys_max=7.0, source="ITU-R BT.500 标准电视观看距离 (客厅 3.5~6H / 桌面近看 1.2~2H)",
+               help="决定每视角一度对应的空间频率 (CPD)：距离越远 CPD 越高，人眼 CSF 自动滤除扫描线、荫罩与高频彩噪，提升主观清晰度与舒适度。")
+    dsp.define("percept_display_nits", "显示器峰值绝对亮度", 120.0, 20.0, 600.0, unit="cd/m²", group=g_prc,
+               phys_min=60.0, phys_max=350.0, source="SMPTE RP-166 演播室监视器 100 nits / 家用彩电 150~250 nits",
+               help="影响人眼明视觉/暗视觉对比敏感度峰值与 Ferry-Porter 临界闪烁融合频率 (CFF)。")
+    dsp.define("percept_ambient_lux", "观看环境照度", 45.0, 1.0, 1000.0, unit="lux", group=g_prc,
+               phys_min=5.0, phys_max=400.0, source="暗室 5 lux / 演播室 30 lux / 客厅日光 250 lux",
+               help="环境光在显像管玻璃表面的漫反射会抬升视觉黑位 (Veiling Glare) 并改变暗部噪波的感知可见度。")
+    dsp.define("operator_skill", "机房操作者熟练度", 0.78, 0.10, 1.0, unit="0-1", group=g_prc,
+               phys_min=0.35, phys_max=0.98, source="广播机房值班工程师人因工程参数",
+               help="熟练工程师能快速平滑收敛跟踪误差与色偏；新手则反应迟缓且容易在最佳点两侧反复过调猎振 (Overshoot Hunting)。")
+    dsp.define("operator_stress", "机房时间压力与疲劳度", 0.35, 0.0, 1.0, unit="0-1", group=g_prc,
+               phys_min=0.05, phys_max=0.85, source="Yerkes-Dodson 压力唤醒与误操作概率模型",
+               help="高直播压力与多路报警并发时，操作者增益激进导致二阶欠阻尼过调震荡，甚至偶发按错切换台交叉点的误切事故 ( Panic Mis-cut )。")
+    dsp.define("percept_quad_corner", "感知实验室画面角落选择 (0四分屏/1左上/2右上/3左下/4右下)", 0.0, 0.0, 4.0, unit="角落", group=g_prc,
+               step=1.0, phys_min=0.0, phys_max=4.0, source="2×2 四分屏单角全屏拆选",
+               help="0=显示完整 2×2 四分屏对照；1=左上角（未干预物理输出）；2=右上角（观众视网膜 CSF 感知画面）；3=左下角（操作者闭环矫正画面）；4=右下角（JND 感知显著度与人因轨迹面板）。")
+    dsp.define("percept_show_border", "感知实验室分框样式 (0无分框/1细十字线/2标准分框)", 2.0, 0.0, 2.0, unit="分框", group=g_prc,
+               step=1.0, phys_min=0.0, phys_max=2.0, source="四分屏分框线显示控制")
+    dsp.define("percept_show_text", "感知实验室文字叠加 (0不要文字/1仅标签/2完整遥测)", 0.0, 0.0, 2.0, unit="文字", group=g_prc,
+               step=1.0, phys_min=0.0, phys_max=2.0, source="画面文字叠加开关（默认 0 纯净无字画面）")
+
+    # --- Ref: CRT 强磁场、铁磁荫罩剩磁、PTC 消磁线圈与特殊环境物理系统 ---
+    g_mag = "CRT 强磁场与特殊环境 (强磁/剩磁/消磁线圈)"
+    dsp.define("crt_magnet_mode", "CRT 强磁环境模式 (0关/1永磁体贴面/2旋转涡流/3撤磁剩磁+PTC消磁/4工频磁蛇/5四象限实验室)", 0.0, 0.0, 5.0, unit="模式", group=g_mag,
+               step=1.0, phys_min=0.0, phys_max=5.0,
+               source="强永磁体近场洛伦兹偏转 F=-e(v×B) 与铁磁荫罩剩磁物理标定",
+               help="0=关闭；1=强钕铁硼永磁体贴近/按压屏幕（中心电子束排空黑洞 + 十字枕形内凹折叠 + 同心彩虹纯度环）；"
+                    "2=强磁铁在屏面动态游走与极轴旋转（洛伦兹旋度涡流扭曲 + 彩虹色环实时旋转）；"
+                    "3=撤走磁铁后的铁磁荫罩永久剩磁色斑 + 电视内置 PTC 热敏电阻消磁线圈（Degaussing Coil）衰减振荡消磁；"
+                    "4=外部大功率变压器 50/60Hz 漏磁扭动 + 潮湿阳极高压电晕放电；"
+                    "5=2×2 CRT 强磁场与消磁物理四象限对照实验室。")
+    dsp.define("crt_magnet_strength", "永磁体表磁强度 (NdFeB Tesla)", 0.0, 0.0, 1.5, unit="T", group=g_mag,
+               phys_min=0.0, phys_max=1.2,
+               source="N52 钕铁硼强磁柱近场磁偶极子感应强度 (0.1–1.2 Tesla)",
+               help="控制永磁体对 CRT 电子束的洛伦兹力偏转幅度、中心电子束排空黑洞半径以及同心色纯度彩虹环阶数。")
+    dsp.define("crt_magnet_x", "磁铁屏面横坐标 X", 0.52, 0.05, 0.95, unit="0-1", group=g_mag,
+               phys_min=0.1, phys_max=0.9, help="强磁铁在显像管玻壳正面的归一化水平位置。")
+    dsp.define("crt_magnet_y", "磁铁屏面纵坐标 Y", 0.48, 0.05, 0.95, unit="0-1", group=g_mag,
+               phys_min=0.1, phys_max=0.9, help="强磁铁在显像管玻壳正面的归一化垂直位置。")
+    dsp.define("crt_magnet_z_dist", "磁铁距玻壳距离 Z", 0.14, 0.04, 0.60, unit="d/W", group=g_mag,
+               phys_min=0.06, phys_max=0.45,
+               help="磁铁距荧光屏的距离：越靠近（如 0.08），中心磁通密度按 1/r³ 剧增，形成边缘锐利的黑洞与多层彩虹环；拉远则呈宽缓枕形凹陷。")
+    dsp.define("crt_magnet_angle_deg", "磁铁磁矩极轴倾角", 25.0, -180.0, 180.0, unit="deg", group=g_mag,
+               phys_min=-180.0, phys_max=180.0,
+               help="磁偶极子在屏幕平面内的极轴朝向角；旋转磁铁时十字内凹瓣与彩虹纯度环随之同步旋转。")
+    dsp.define("crt_magnet_polarity", "磁铁极性 (N极/S极)", 1.0, -1.0, 1.0, unit="极性", group=g_mag,
+               phys_min=-1.0, phys_max=1.0,
+               help="+1.0 为 N 极朝向屏幕（顺时针洛伦兹旋度），-1.0 为 S 极朝向屏幕（逆时针洛伦兹旋度与反相色环）。")
+    dsp.define("crt_magnet_motion", "磁铁动态逼近/旋转轨迹", 0.0, 0.0, 1.0, unit="0-1", group=g_mag,
+               phys_min=0.0, phys_max=1.0,
+               help="开启后模拟手持强磁铁从远处逼近屏幕、贴面旋转并划过屏幕的连续物理过程。")
+    dsp.define("crt_magnet_remanence", "荫罩/荫栅铁磁剩磁色斑 (Remanence)", 0.0, 0.0, 1.0, unit="0-1", group=g_mag,
+               phys_min=0.0, phys_max=0.9,
+               source="低碳钢/殷钢荫罩 Jiles-Atherton 磁滞回线剩磁 M_r",
+               help="强磁铁撤走后，铁磁性金属荫罩或支撑框被永久磁化留下的静态彩色纯度污斑（需启动消磁线圈方可消除）。")
+    dsp.define("crt_degauss_trigger", "启动 PTC 消磁线圈 (Degaussing Coil)", 0.0, 0.0, 1.0, unit="0-1", group=g_mag,
+               phys_min=0.0, phys_max=1.0,
+               source="CRT 玻壳外围双盘 PTC 热敏电阻 50/60Hz 衰减交变消磁回路",
+               help="模拟按下显示器 Degauss 消磁按钮或冷机开机瞬间：50/60Hz 强交变包络令全屏剧烈抖动翻滚并伴随嗡鸣，在 ~2.5 秒内按指数衰减将荫罩剩磁色斑彻底归零。")
+    dsp.define("crt_ac_hum_field", "外部工频交流漏磁 (AC Hum Snake)", 0.0, 0.0, 1.0, unit="0-1", group=g_mag,
+               phys_min=0.0, phys_max=0.8,
+               help="模拟 CRT 紧贴未屏蔽大功率电源变压器/音箱分频器时，50/60Hz 交变漏磁场引起的全屏S形扭动与滚动彩带。")
+    dsp.define("crt_corona_discharge", "高压阳极帽受潮电晕与打火", 0.0, 0.0, 1.0, unit="0-1", group=g_mag,
+               phys_min=0.0, phys_max=0.8,
+               help="高湿/强电离环境下 CRT 25kV 阳极高压帽沿玻壳表面发生局部电晕暗紫辉光与行同步瞬态打火撕裂。")
+    dsp.define("crt_magnet_quad_corner", "强磁实验室角落选择 (0四分屏/1左上/2右上/3左下/4右下)", 0.0, 0.0, 4.0, unit="角落", group=g_mag,
+               step=1.0, phys_min=0.0, phys_max=4.0,
+               help="0=显示 2×2 四分屏对照；1=左上（强磁贴面黑洞+彩虹环）；2=右上（磁极旋转涡流场）；3=左下（撤磁后铁磁荫罩剩磁色斑）；4=右下（PTC 消磁线圈交变振荡净化后）。")
+    dsp.define("crt_magnet_show_border", "强磁实验室分框样式 (0无分框/1细十字/2标准分框)", 2.0, 0.0, 2.0, unit="分框", group=g_mag,
+               step=1.0, phys_min=0.0, phys_max=2.0)
+    dsp.define("crt_magnet_show_text", "强磁实验室文字叠加 (0不要文字/1仅标签/2完整遥测)", 0.0, 0.0, 2.0, unit="文字", group=g_mag,
+               step=1.0, phys_min=0.0, phys_max=2.0)
+
+    # --- Sony Trinitron KV-1214 (1978–1981 12 寸柱面特丽珑彩电) 专项物理模型 ---
+    g_kv = "Sony Trinitron KV-1214 12寸柱面特丽珑模型"
+    dsp.define("kv1214_enabled", "启用 Sony Trinitron KV-1214 专项光学引擎", 0.0, 0.0, 1.0, unit="bool", group=g_kv,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="12寸柱面特丽珑显像管 4K 屏摄实测对位标定",
+               help="开启 1978–1981 年 Sony Trinitron KV-1214（12 英寸单枪三束柱面特丽珑彩电）全套物理光学："
+                    "NTSC-J 9300K 青蓝荧光白点 + Y2O2S:Eu 红粉暖光晕、垂直连续荫栅 + 单根中心钨丝阻尼线、"
+                    "单向水平柱面玻壳曲率、以及 4K 屏摄弯曲摩尔纹。")
+    dsp.define("kv1214_grille_pitch_px", "KV-1214 垂直荫栅节距 (Aperture Grille Pitch)", 2.35, 1.4, 5.0, unit="px", group=g_kv,
+               phys_min=1.6, phys_max=3.8,
+               source="12 英寸小尺寸特丽珑显像管粗节距垂直条状荧光粉栅格 (HFx/HFy = 1.48)",
+               help="控制垂直连续 R/G/B 荧光条与碳黑矩阵竖缝的物理节距；决定垂直条纹锐度与屏摄摩尔纹的空间基频。")
+    dsp.define("kv1214_grille_contrast", "KV-1214 垂直荫栅与黑矩阵深度", 0.68, 0.0, 1.0, unit="0-1", group=g_kv,
+               phys_min=0.25, phys_max=0.90,
+               help="垂直荫栅条纹与碳黑保护缝的调制深度；与隔行扫描线共同形成 KV-1214 标志性的『竖向强于横向 (HFx/HFy ≈ 1.48)』微结构。")
+    dsp.define("kv1214_moire_amount", "4K 屏摄每根摩尔纹强度 (Curved Moiré Fringes)", 0.62, 0.0, 1.2, unit="0-1", group=g_kv,
+               phys_min=0.0, phys_max=1.0,
+               source="4K 近距屏摄柱面荫栅 × 相机拜耳阵列二维空间差拍干涉",
+               help="复现 4K 数码相机微距拍摄柱面特丽珑屏幕时，单向水平弯曲的垂直荫栅投影与传感器像素网格发生差拍干涉产生的弧形彩虹/明暗摩尔纹。")
+    dsp.define("kv1214_moire_freq", "摩尔纹差拍空间频率", 0.052, 0.015, 0.15, unit="cyc/px", group=g_kv,
+               phys_min=0.025, phys_max=0.10,
+               help="控制屏摄距离微变引起的弧形摩尔纹疏密周期。")
+    dsp.define("kv1214_moire_tilt_deg", "屏摄相机微倾角", 1.8, -12.0, 12.0, unit="deg", group=g_kv,
+               phys_min=-6.0, phys_max=6.0,
+               help="相机传感器水平轴相对特丽珑垂直荫栅的微小旋转角，决定摩尔纹条带的斜向弯曲走向。")
+    dsp.define("kv1214_cylindrical_bow", "柱面显像管水平弧度 (Vertical Flat / Horizontal Cylinder)", 0.34, 0.0, 1.0, unit="0-1", group=g_kv,
+               phys_min=0.10, phys_max=0.65,
+               source="Sony Trinitron 专利垂直平直、水平圆柱面玻壳几何",
+               help="特丽珑显像管在垂直方向笔直无曲率、仅在水平方向呈圆柱弯曲（区别于普通球面 CRT 的双向鱼眼鼓出）。")
+    dsp.define("kv1214_ntscj_9300k", "NTSC-J 9300K 青蓝白点与红粉光晕", 0.78, 0.0, 1.2, unit="0-1", group=g_kv,
+               phys_min=0.30, phys_max=1.0,
+               source="NTSC-J 9300K 色温偏移实测标定：数字源 R/G=0.897, B/G=0.922 → 屏摄 R/G=0.778, B/G=1.106",
+               help="还原日本本土 NTSC-J 9300K 色温基准下冷青蓝高光与冷调暗部基底，同时保留 Y2O2S:Eu 稀土红粉在暖色区域的浓郁发光与长程红橙晕染。")
+    dsp.define("kv1214_single_damper", "12寸单根钨丝阻尼线阴影 (Single Damper Wire)", 0.65, 0.0, 1.0, unit="0-1", group=g_kv,
+               phys_min=0.20, phys_max=0.90,
+               help="12 英寸小型特丽珑显像管（KV-1214）在屏幕中部偏下 (y ≈ 0.52H) 仅使用单根水平钨丝阻尼线（14寸以上才用双线），在高亮背景上可见极细水平暗丝。")
+    dsp.define("kv1214_bezel_frame", "KV-1214 银灰/木纹复古前框与暗室辉光", 0.45, 0.0, 1.0, unit="0-1", group=g_kv,
+               phys_min=0.0, phys_max=0.85,
+               help="还原暗室屏摄下的 Sony KV-1214 柱面屏幕内凹黑框、暗室边缘环境辉光与厚铅玻璃表面微反光。")
+    dsp.define("kv1214_ab_split", "数字源画面 vs KV-1214 显像管同屏对照模式 (0关闭/1左右分屏/2四象限)", 0.0, 0.0, 2.0, unit="模式", group=g_kv,
+               step=1.0, phys_min=0.0, phys_max=2.0,
+               help="0=全屏输出 KV-1214 效果；1=左半屏数字源原片 vs 右半屏 KV-1214 显像管效果实时对照；2=2×2 四象限细节微距与摩尔纹放大对照。")
 
     # --- 字幕机（字符发生器）----------------------------------------------------
     # **字符发生器不是排版引擎。** OSD 芯片有字模 ROM、每字一个固定字格、一个位置寄存器；
@@ -1713,6 +2515,96 @@ def build_schema() -> ParamSchema:
                phys_min=0.0, phys_max=15.0,
                help="0 表示单次播放并保持定格；大于 0 时按该秒数循环演示字幕进出场动画。")
 
+    g = "主控播出自动化 Playout 与双总线 DSK / Clean Feed"
+    osd.define("playout_enabled", "启用主控播出台 (Master Playout)", 0.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="电视台总控/主控播出机房 (MCR Master Control Playout Desk)",
+               help="开启后接入主控双总线播出台：同时维护「主播出母线 PGM（带 DSK 台标/时钟/游走字幕）」、「干净净画面母线 Clean Feed（无台标）」与「预监母线 PVW」，并支持磁带预卷倒计时、故障自动切备用垫片与 As-Run 播出日志。")
+    osd.define("playout_output_bus", "主控输出母线选择", 0.0, 0.0, 3.0, unit="0-3", group=g,
+               step=1.0, phys_min=0.0, phys_max=3.0,
+               source="广播级主控切换台 PGM / Clean Feed / PVW / 导播双总线控制台",
+               help="0=主播出母线 PGM（含 DSK 台标 Bug、实时时间码时钟与底部游走字幕）｜"
+                    "1=干净净画面输出 Clean Feed（经切换与调色但 100% 不含 DSK 台标与字幕，供异地转播与母带归档）｜"
+                    "2=预监母线 PVW（显示下一条待播源、安全框与预卷就绪状态）｜"
+                    "3=主控双总线导播控制台视图（左 PVW + 右 PGM + 底部 Clean Feed 小窗与实时 As-Run 播出运行日志表）。")
+    osd.define("playout_state", "主控播出单状态机 (Playlist State)", 0.0, 0.0, 3.0, unit="0-3", group=g,
+               step=1.0, phys_min=0.0, phys_max=3.0,
+               source="90年代电视台自动化播出表状态机 (Preroll -> On-Air -> Emergency Failover)",
+               help="0=正常节目播出 (ON-AIR Program)｜"
+                    "1=录像带 5秒预卷倒计时锁相 (VTR Preroll Leader Countdown -00:05..-00:01 -> Take)｜"
+                    "2=信号中断/故障 -> 应急切入「PLEASE STAND BY / 请稍候」备用垫片 (Emergency Standby Slate)｜"
+                    "3=播出单自动顺播循环演示 (Auto-Cycle: Preroll -> On-Air -> Next)。")
+    osd.define("playout_dsk_enabled", "下游键控器 (DSK 台标与主控时钟)", 1.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="主控切换台最末级 Downstream Keyer (DSK)",
+               help="开启后在 PGM 母线右上角键入三色台标与实时广播时钟（Clean Feed 母线始终绕过 DSK 保持纯净）。")
+    osd.define("playout_dsk_crawl", "DSK 底部游走新闻/通告字幕条", 1.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="主控字幕机底部横向游走字幕条 (Lower-Third Ticker Crawl)",
+               help="在 PGM 母线底部叠加半透明深蓝底栏与横向滚动的节目预告/应急抢修通告。")
+    osd.define("playout_failover_auto", "上游断流自动应急接管 (Auto-Failover)", 1.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="总控同步检测与黑场告警自动倒换矩阵",
+               help="当检测到上游画面断流（如 HDMI 握手失败或磁带完全失锁黑屏）时，自动切入「PLEASE STAND BY」应急备用垫片并在 As-Run 日志记录告警。")
+
+    g = "事件驱动与条件驱动播出自动化编排引擎"
+    osd.define("auto_v2_enabled", "启用事件与条件驱动播出自动化编排引擎 v2", 0.0, 0.0, 1.0, unit="bool", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               source="广播总控事件驱动播出自动化系统 (Harris ADC / Grass Valley Maestro)",
+               help="开启后激活完整 PlayoutEvent 状态机（SCHEDULED -> PREPARING -> READY -> ON_AIR -> COMPLETED）与 6 类分级异常分支及故障因果反查链。")
+    osd.define("auto_v2_mode", "播出自动化触发与倒换策略", 0.0, 0.0, 3.0, unit="模式", group=g,
+               step=1.0, phys_min=0.0, phys_max=3.0,
+               source="广播播出单定时触发、GPI/信号条件触发与主备冗余自动倒换规范",
+               help="0=跟随开关｜1=时间驱动定时顺播 (Time-Driven：按播出单在切点前自动向录像机发送 5s Preroll 指令并锁相切播)｜"
+                    "2=条件/GPI 信号驱动 (Condition-Driven：实时监测视频黑场、静帧死锁、同步丢失与静音，触发条件即执行跳转)｜"
+                    "3=主备冗余倒换闭环 (Redundant Main/Backup Closed-Loop：主源故障超时自动无缝倒换至备机/垫片路并记录完整因果溯源链)。")
+    osd.define("auto_v2_fault_inject", "注入播出单异常分支 (6类标准广播事故)", 0.0, 0.0, 6.0, unit="故障", group=g,
+               step=1.0, phys_min=0.0, phys_max=6.0,
+               source="广播电视安全播出事故分级与应急预案",
+               help="0=正常顺播无故障｜1=MISSING_ASSET（磁带未上架/素材离线 -> 自动切备用垫片）｜"
+                    "2=NOT_READY（录像机预卷粘带失锁/伺服未锁定 -> 延迟切入或垫片兜底）｜"
+                    "3=SIGNAL_LOSS（在播主路射频/同步突然断流 -> 看门狗超时切垫片）｜"
+                    "4=OVERRIDDEN（导播手动紧急强切 Emergency Take 接管自动化母线）｜"
+                    "5=FALLBACK（主路触发静帧/黑场告警 -> 自动倒换至 BACKUP 备路）｜"
+                    "6=HELD（直播延时/挂起等待导播手动确认释放）。")
+    osd.define("auto_v2_watchdog_sec", "黑场/静帧/失锁看门狗门限", 1.0, 0.2, 5.0, unit="s", group=g,
+               phys_min=0.4, phys_max=3.0,
+               source="总控视频静帧与同步丢失自动告警延时门限",
+               help="主播出母线容忍无同步、黑场或静帧的最长持续秒数；超出该门限后自动化引擎立即触发主备倒换并生成 CausalFaultRecord 根因链。")
+    osd.define("auto_v2_console_view", "播出自动化四分屏编排与故障反查控制台", 0.0, 0.0, 1.0, unit="视图", group=g,
+               step=1.0, phys_min=0.0, phys_max=1.0,
+               help="0=输出主播出母线画面（顶部带状态机与故障溯源简报栏）｜1=切换为 2×2 播出自动化编排控制台（同屏监看：PGM 主输出、PVW/备机预卷、PlayoutEvent 五态状态机表、以及根因→传播→现象三级故障反查树）。")
+
+    g_eco = "媒介技术生态演化与历史情景模拟器"
+    osd.define("eco_enabled", "启用媒介技术生态演化与历史情景模拟器", 0.0, 0.0, 1.0, unit="bool", group=g_eco, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="MediaEcosystemSimulator 七维宏观媒介技术史动力学模型",
+               help="联动追踪 1975–2035 年间『设备存量、介质存量、跨代兼容性、备件与技师维护能力、迁移成本、制度约束与机构惯性』，并将所选年代的生态状态直接投射为当前信号链的物理老化分布。")
+    osd.define("eco_mode", "媒介生态演化与反事实推演模式", 0.0, 0.0, 4.0, unit="0-4", group=g_eco, step=1.0,
+               phys_min=0.0, phys_max=4.0, source="历史年代状态投射与反事实情景对照",
+               help="0=跟随总开关｜1=历史年代媒介生态实况投射 (按 eco_year 所处年代的机具磨损、备件枯竭与磁带老化直接驱动画面)｜"
+                    "2=备件与磁头断崖危机模拟 (模拟最后一批原厂旋转磁鼓/飞抹磁头备件耗尽、老师傅退休引发的存量磁带可访问性断崖)｜"
+                    "3=历史反事实情景对照输出 (对比基准历史 vs 提前十年无损归档/延迟淘汰模拟机具的画质与存活率差异)｜"
+                    "4=2×2 媒介技术生态演化实验室 (同屏对比：1992 黄金期基准 vs 当前年代真实生态状态 vs 反事实情景推演 vs 1975-2035 七维演化曲线与断崖预警图)。")
+    osd.define("eco_year", "所选历史/未来推演年份", 2008.0, 1975.0, 2035.0, unit="年", group=g_eco, step=1.0,
+               phys_min=1980.0, phys_max=2030.0, source="1975–2035 视听媒介技术更替时间轴",
+               help="1985-1995 为模拟磁带黄金期（机具新、备件充足）；2005-2015 为数字转轨期；2020 以后模拟回放机具与备件加速消亡进入档案抢救窗口危机。")
+    osd.define("eco_scenario", "历史反事实推演情景选择", 0.0, 0.0, 3.0, unit="0-3", group=g_eco, step=1.0,
+               phys_min=0.0, phys_max=3.0, source="媒介技术史反事实情景库",
+               help="0=真实历史基准轨迹 (Baseline History)｜1=反事实 A：数字格式与无损档案采集提前 10 年普及 (Early Digital Shift)｜"
+                    "2=反事实 B：原厂磁头备件与特约维修站于 2005 年提前断供 (Premature Spare Collapse)｜"
+                    "3=反事实 C：全球公共视听档案强制冷库保存与备件开源复刻计划 (Global Archival Mandate)。")
+    osd.define("eco_spare_depletion", "磁头备件与技师消亡速率倍率", 1.0, 0.2, 2.0, unit="×", group=g_eco,
+               phys_min=0.4, phys_max=1.6, source="专用旋转磁鼓/主导轴电机停产与维修技师代际断层速率")
+    osd.define("eco_institution_inertia", "机构工作流惯性与迁移阻力", 0.55, 0.0, 1.0, unit="0-1", group=g_eco,
+               phys_min=0.15, phys_max=0.85, source="电视台/档案馆旧格式路径依赖与预算摩擦系数")
+    osd.define("eco_quad_corner", "生态模拟器画面角落选择 (0四分屏/1左上/2右上/3左下/4右下)", 0.0, 0.0, 4.0, unit="角落", group=g_eco,
+               step=1.0, phys_min=0.0, phys_max=4.0, source="2×2 四分屏单角全屏拆选",
+               help="0=显示完整 2×2 四分屏对照；1=左上角（1992 模拟黄金期基准）；2=右上角（所选年份真实生态回放状态）；3=左下角（反事实情景推演状态）；4=右下角（1975-2035 七维生态演化曲线与断崖预警图）。")
+    osd.define("eco_show_border", "生态模拟器分框样式 (0无分框/1细十字线/2标准分框)", 2.0, 0.0, 2.0, unit="分框", group=g_eco,
+               step=1.0, phys_min=0.0, phys_max=2.0, source="四分屏分框线显示控制")
+    osd.define("eco_show_text", "生态模拟器文字叠加 (0不要文字/1仅标签/2完整遥测)", 0.0, 0.0, 2.0, unit="文字", group=g_eco,
+               step=1.0, phys_min=0.0, phys_max=2.0, source="画面文字叠加开关（默认 0 纯净无字画面）")
+
     # ------------------------------------------------------------------ G
     # Audio simulation layer: physical analog/digital-tape audio & A/V fault sync
     aud = s.layer("audio")
@@ -1783,6 +2675,276 @@ def build_schema() -> ParamSchema:
     aud.define("flyback_whine", "CRT 行输出高压包啸叫", 0.15, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.50, source="CRT 行逆程变压器声学辐射",
                help="CRT 显像管开启时，15,734Hz (NTSC) / 15,625Hz (PAL) 行扫描高压包磁芯振动串入伴音的微弱高频啸叫。")
+
+
+    # --- 电影胶片（16mm / 35mm）化学成像与电视胶转磁系统 ---
+    g = "电影胶片化学成像与电视胶转磁 (Film & Telecine)"
+    cam.define("film_enabled", "启用电影胶片与胶转磁系统", 0.0, 0.0, 1.0, unit="bool", group=g, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="Rank Cintel Mk III 飞点胶转磁与 16mm/35mm 卤化银感光模型",
+               help="开启后，成像前端切换为 16mm/35mm 卤化银化学胶片感光、三层彩色耦合染料、醋酸片基老化、机械片门二维抖动与飞点扫描胶转磁系统。")
+    cam.define("film_stock", "电影胶片型号与冲洗工艺", 0.0, 0.0, 10.0, unit="0-10", group=g, step=1.0,
+               phys_min=0.0, phys_max=10.0, source="Kodak Eastman 5247 / Ektachrome 7240 / Fujicolor 8514",
+               help="0=关闭｜1=Eastman Color 35mm 5247 负片+印片｜2=Kodak Ektachrome 16mm 7240 新闻反转片｜"
+                    "3=Fujicolor 16mm 8514 纪实胶片｜4=早期醋酸片基暖红棕褪色档案拷贝。")
+    cam.define("film_gamma", "H&D 特性曲线反差斜率", 1.0, 0.5, 2.0, unit="γ", group=g,
+               phys_min=0.75, phys_max=1.45, source="Hurter–Driffield D(log E) 感光特性曲线",
+               help="控制卤化银感光乳剂在线性曝光区的反差斜率，同时保留胶片趾部与肩部的软饱和滚降。")
+    cam.define("film_halation", "胶片防光晕层红橙背散射", 0.35, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.90, source="片基背面反射穿透底层感红乳剂",
+               help="强光穿透三层乳剂后在片基背面反射回底层感红层，在高光边缘产生标志性的暖红/橙红光晕环（区别于 CCD 垂直拖尾）。")
+    cam.define("film_grain_amount", "卤化银/染料云颗粒强度", 0.28, 0.0, 1.2, unit="0-1", group=g,
+               phys_min=0.05, phys_max=0.75, source="中密度区曝光依赖染料云团簇模型",
+               help="胶片颗粒并非均匀白噪声，而是空间随机团簇，在中密度区（∝√(D(D_max-D))）最强、全黑与高光饱和区自然收敛。")
+    cam.define("film_grain_size", "胶片颗粒团簇尺度", 1.45, 0.6, 4.0, unit="px", group=g,
+               phys_min=0.8, phys_max=2.8, source="35mm 约 1.0-1.4 px / 16mm 约 1.5-2.4 px")
+    cam.define("film_dye_fade", "三层耦合染料非对称褪色", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.85, source="Eastmancolor 青/黄染料水解速率快于品红染料",
+               help="模拟档案电影拷贝中青色与黄色染料先褪去、品红染料残留导致的经典暖红棕/洋红偏色。")
+    cam.define("film_shrinkage", "醋酸片基酸败收缩 (Vinegar Syndrome)", 0.0, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.75, source="醋酸纤维素脱乙酰化收缩与齿孔节距失配",
+               help="老化醋酸片基收缩引起的片门张力翘曲与边缘几何呼吸。")
+    cam.define("film_scratches_dust", "纵向走片划痕与单帧灰尘", 0.15, 0.0, 1.2, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.70, source="压片滑轨持续划痕与片门单帧灰尘/毛发")
+    cam.define("film_gate_weave", "片门机械二维抖动 (Gate Weave)", 0.25, 0.0, 1.5, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.85, source="间歇输片爪定位公差（整幅刚性平移，区别于磁带逐行时基抖动）",
+               help="电影放映机/胶转磁片门定位误差：整幅画面刚性二维平移 (Δx_f, Δy_f)，同一帧内所有扫描行位移完全相同。")
+    cam.define("film_shutter_flicker", "旋转翼板快门闪烁", 0.12, 0.0, 1.0, unit="0-1", group=g,
+               phys_min=0.0, phys_max=0.55, source="双叶/三叶机械旋转快门与弧光灯波动")
+    cam.define("telecine_pulldown", "胶转磁扫描与下拉制式 (Pulldown)", 0.0, 0.0, 3.0, unit="0-3", group=g, step=1.0,
+               phys_min=0.0, phys_max=3.0, source="Rank Cintel 24fps->29.97i (3:2 Pulldown) / 24fps->25i (PAL +4.167%)",
+               help="0=24fps 逐行直扫｜1=NTSC 3:2 Pulldown (AA-BB-BC-CD-DD 五帧周期，在 BC/CD 帧产生跨胶片帧隔行梳状伪影)｜"
+                    "2=PAL 25fps 加速胶转磁 (+4.167% 加速与 +70.67 cents 伴音升调)｜3=2×2 跨媒介历史对照实验室 (胶片→胶转磁→VHS→流媒体)。")
+    cam.define("telecine_quad_corner", "胶转磁对照角落选择 (0四分屏/1左上/2右上/3左下/4右下)", 0.0, 0.0, 4.0, unit="角落", group=g, step=1.0,
+               phys_min=0.0, phys_max=4.0, source="跨媒介四分屏角落拆选",
+               help="在 2×2 跨媒介对照模式（telecine_pulldown=3）下拆成每个角落单独全屏选择：0=2×2四分屏，1=左上角（胶片原片），2=右上角（3:2胶转磁母带），3=左下角（家用VHS磁带录屏），4=右下角（早期流媒体重压）。")
+    cam.define("telecine_show_border", "胶转磁对照分框样式 (0无分框/1细十字线/2标准分框)", 1.0, 0.0, 2.0, unit="分框", group=g, step=1.0,
+               phys_min=0.0, phys_max=2.0, source="分屏分框显示控制",
+               help="0=无分框无缝拼接，1=细十字分框线，2=标准分框。")
+    cam.define("telecine_show_text", "胶转磁对照画面文字 (0不要文字/1仅标签/2标签+状态栏)", 0.0, 0.0, 2.0, unit="文字", group=g, step=1.0,
+               phys_min=0.0, phys_max=2.0, source="纯净画面无文字开关",
+               help="默认 0=不要文字（纯净画面）；1=仅显示四角标签；2=显示四角标签与底部状态栏。")
+
+    # --- 测量、误差预算、参数反演与三级参数审计系统 ---
+    g_inv = "参数反演、误差预算与三级参数审计 (Inversion & FADGI Lab)"
+    ply.define("inv_lab_enabled", "启用参数反演与误差预算台", 0.0, 0.0, 1.0, unit="bool", group=g_inv, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="FADGI 数字化质量指南与多解置信椭圆反演器",
+               help="开启后，实时反推退化画面的等效带宽、行时基抖动、片门抖动与色度误差，并审计 Physical/Device/Artistic 三级参数贡献。")
+    ply.define("inv_lab_mode", "反演与审计台视图模式", 0.0, 0.0, 3.0, unit="0-3", group=g_inv, step=1.0,
+               phys_min=0.0, phys_max=3.0, source="可验证视听物理实验室",
+               help="0=关闭｜1=参数反演与多解竞争假设 HUD｜2=三级参数分离审计 (Physical/Device/Artistic) HUD｜"
+                    "3=2×2 参数反演、残差热力图与 FADGI 星级误差预算实验室。")
+    ply.define("inv_quad_corner", "反演实验室角落选择 (0四分屏/1左上/2右上/3左下/4右下)", 0.0, 0.0, 4.0, unit="角落", group=g_inv, step=1.0,
+               phys_min=0.0, phys_max=4.0, source="反演实验室角落拆选",
+               help="在 2×2 参数反演与误差预算实验室下拆成每个角落单独全屏选择：0=2×2四分屏，1=左上角，2=右上角，3=左下角，4=右下角。")
+    ply.define("inv_show_border", "反演实验室分框样式 (0无分框/1细十字线/2标准分框)", 1.0, 0.0, 2.0, unit="分框", group=g_inv, step=1.0,
+               phys_min=0.0, phys_max=2.0, source="分屏分框显示控制",
+               help="0=无分框无缝拼接，1=细十字分框线，2=标准分框。")
+    ply.define("inv_show_text", "反演实验室画面文字 (0不要文字/1仅标签/2标签+统计栏)", 0.0, 0.0, 2.0, unit="文字", group=g_inv, step=1.0,
+               phys_min=0.0, phys_max=2.0, source="纯净画面无文字开关",
+               help="默认 0=不要文字（纯净画面）；1=仅显示四角标签；2=显示四角标签与底部统计栏。")
+    ply.define("inv_fadgi_target", "FADGI 目标合规星级 (1-4★)", 3.0, 1.0, 4.0, unit="★", group=g_inv, step=1.0,
+               phys_min=1.0, phys_max=4.0, source="FADGI 1★(Access) .. 4★(Archival Master)")
+    ply.define("inv_inject_probe", "注入垂直边缘与多波群反演探针", 0.0, 0.0, 1.0, unit="bool", group=g_inv, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="在线盲反演辅助参考探针")
+    ply.define("inv_confidence", "反演置信区间水平", 0.90, 0.50, 0.99, unit="0-1", group=g_inv,
+               phys_min=0.68, phys_max=0.95, source="参数反演置信椭圆覆盖率")
+
+    g_arch = "档案保存生命周期与媒介考古溯源"
+    ply.define("archival_enabled", "启用档案保存生命周期与媒介考古系统", 0.0, 0.0, 1.0, unit="bool", group=g_arch, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="IASA-TC 04 / FADGI / NFSA 视听档案生命周期模型",
+               help="模拟『原始记录 → 生产传播 → 载体保存与阿伦尼乌斯加速老化/设备消亡风险 → 抢救数字化与再编目』四阶段档案生命周期。")
+    ply.define("archival_mode", "档案生命周期与版本谱系模式", 0.0, 0.0, 4.0, unit="0-4", group=g_arch, step=1.0,
+               phys_min=0.0, phys_max=4.0, source="ArchivalLineageTree 多版本并存谱系树",
+               help="0=跟随总开关｜1=原始载体残件 (Original Carrier Artifact · 含温湿度水解/剩磁衰减与完整原始 VITC/隔行/过扫描特征)｜"
+                    "2=档案保存母版 (Preservation Master · 10-bit 无损全画幅含 VBI/HBI 完整采集，重要属性保留率 98%+)｜"
+                    "3=过度清洗商业修复版 (Over-Cleaned Restoration · 激进 3D-DNR 塑料蜡像感 + 过扫描裁切抹除磁头切换带 + 丢弃隔行与 VITC，演示『保存成功≠信息完整』)｜"
+                    "4=2×2 多版本谱系树对照实验室 (同屏对比：原始载体残件 vs 保存母版 vs 过度清洗修复版 vs 网络流媒体版 + FADGI/NFSA 重要属性损耗表)。")
+    ply.define("archival_storage_years", "库房保存年限", 28.0, 0.0, 60.0, unit="年", group=g_arch,
+               phys_min=1.0, phys_max=50.0, source="IASA-TC 04 磁带/胶片保存周期")
+    ply.define("archival_temp_c", "档案库房平均温度", 23.0, 5.0, 45.0, unit="°C", group=g_arch,
+               phys_min=8.0, phys_max=35.0, source="Arrhenius 化学动力学速率温度项 (ISO 18923)")
+    ply.define("archival_rh_pct", "档案库房平均相对湿度 (RH)", 62.0, 15.0, 95.0, unit="%", group=g_arch,
+               phys_min=25.0, phys_max=85.0, source="聚氨酯黏合剂水解与醋酸综合症湿度催化项")
+    ply.define("archival_obsolescence", "回放机具与备件消亡指数", 0.55, 0.0, 1.0, unit="0-1", group=g_arch,
+               phys_min=0.0, phys_max=0.95, source="UNESCO 磁带危机备件存量与技师校准能力衰减",
+               help="模拟原厂录像机停产、旋转磁头备件枯竭与专用接口消亡导致的访问成本倍增及非标回放失真。")
+    ply.define("archival_dnr_overrestore", "商业修复 3D-DNR 与锐化过度清洗强度", 0.72, 0.0, 1.0, unit="0-1", group=g_arch,
+               phys_min=0.0, phys_max=0.90, source="过度数字化去噪导致的纹理抹平与运动鬼影",
+               help="模拟将原始介质颗粒当作噪声一并抹除的『塑料蜡像感』、硬边光环以及裁切消隐区导致的考古证据链断裂。")
+    ply.define("archival_quad_corner", "档案谱系树分屏角落选择", 0.0, 0.0, 4.0, unit="0-4", group=g_arch, step=1.0,
+               phys_min=0.0, phys_max=4.0, source="四分屏单象限全屏放大检视",
+               help="0=2×2 四分屏同屏对照｜1=左上角全屏 (原始载体残件)｜2=右上角全屏 (档案保存母版)｜"
+                    "3=左下角全屏 (过度清洗修复版)｜4=右下角全屏 (流媒体传播版与重要属性损耗审计表)。")
+    ply.define("archival_show_border", "档案谱系树分框线显示", 2.0, 0.0, 2.0, unit="0-2", group=g_arch, step=1.0,
+               phys_min=0.0, phys_max=2.0, source="四分屏边框模式 (0=无边框, 1=细十字线, 2=档案库金属外框)")
+    ply.define("archival_show_text", "档案谱系树文字叠加显示", 0.0, 0.0, 2.0, unit="0-2", group=g_arch, step=1.0,
+               phys_min=0.0, phys_max=2.0, source="0=隐藏全部文字(纯净画面)｜1=紧凑角标｜2=完整考古元数据与损耗表")
+
+
+    # ------------------------------------------------------------------ A2: 01b 胶片光化学 (胶片/LOMO)
+    flm = s.layer("film")
+    gf_chem = "卤化银感光乳剂与 H&D 特性曲线 (Photochemical Emulsion)"
+    flm.define("enabled", "启用独立胶片光化学与 LOMO 暗房模块", 0.0, 0.0, 1.0, unit="bool", group=gf_chem, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="独立 01b 胶片光化学层 (`atsim/codecs/photochemical_film.py`)",
+               help="开启后，信号链 01b 胶片光化学阶段对画面执行完整的三层减色法卤化银 H&D 特性曲线、层间抑制效应 (DIR)、C-41/E-6 负冲正正冲负交叉冲洗、过期底雾、LOMO 弯月镜暗角、异形桃心散景、海绵老化漏光及飞点胶转磁仿真。")
+    flm.define("stock", "胶片乳剂型号", 0.0, 0.0, 20.0, unit="0-20", group=gf_chem, step=1.0,
+               phys_min=0.0, phys_max=20.0, source="Kodak Vision3 500T / Double-X 5222 / Kodachrome 64 / Ektachrome 100D 感光曲线标定",
+               help="0=关闭｜1=Eastman Color 35mm 5247 (电影负片+印片)｜2=Kodak Ektachrome 16mm 7240 (反转片)｜"
+                    "3=Fujicolor 16mm 8514 (第4感青层纪实片)｜4=早期醋酸片基暖棕褪色拷贝｜"
+                    "5=Agfa Vista / Optima 200 (琥珀暖金高饱和)｜"
+                    "6=Kodak Ektachrome E100VS / Elite Chrome 100 (高反差反转片)｜"
+                    "7=Lomography Color Negative 400 (玫瑰洋红/丁香紫暗部与奶油高光)｜"
+                    "8=Expired Svema / ORWO Vintage Film (高底雾 D_min 粉彩鼠尾草绿)｜"
+                    "9=Polaroid SX-70 / 600 Time-Zero Integral Film (即时显影药浆与 TiO2 奶油高光)｜"
+                    "10=Lomography LomoChrome Purple XR 100-400 (绿→紫二向色耦合平移)｜"
+                    "11=90s Tungsten Acid Olive-Chartreuse (90年代钨丝灯酸橄榄黄绿迫冲胶片)｜"
+                    "12=Prussian Cyan-Navy & Electric Violet Rain (普鲁士深青蓝与电光紫雨景)｜"
+                    "13=Fujifilm Pro 400H Pastel Candy High-Key (富士高调粉彩马卡龙奶油白)｜"
+                    "14=Vintage Brass-Olive & Maroon-Plum Petzval (复古黄铜橄榄与深紫红暗部)｜"
+                    "15=LOMO LC-A Minitar-1 Turquoise-Emerald X-Pro (松石青绿高反差交叉冲洗)｜"
+                    "16=Meyer Trioplan Soap-Bubble Golden-Violet Dream (梅耶肥皂泡散景丁香紫与金白光雾)。")
+    flm.define("gamma", "H&D 特性曲线反差斜率 (γ)", 1.0, 0.5, 2.0, unit="γ", group=gf_chem,
+               phys_min=0.75, phys_max=1.55, source="Hurter–Driffield D(log E) 感光特性曲线",
+               help="控制卤化银感光乳剂在线性曝光区的反差斜率，同时保留趾部 (Toe) 与肩部 (Shoulder) 的软饱和滚降。")
+    flm.define("halation", "防光晕层红橙背散射 (Anti-Halation Bounce)", 0.35, 0.0, 1.5, unit="0-1", group=gf_chem,
+               phys_min=0.0, phys_max=0.95, source="片基背面全反射先穿透底层感红乳剂 (Red Layer)",
+               help="强光穿透三层乳剂后在醋酸/聚酯片基背面反射回底层感红层，在高光边缘产生标志性的暖红/橙红光晕环。")
+    flm.define("grain_amount", "卤化银/染料云颗粒强度", 0.28, 0.0, 1.2, unit="0-1", group=gf_chem,
+               phys_min=0.05, phys_max=0.80, source="中密度区曝光依赖染料云团簇模型 ∝√(D(D_max-D))",
+               help="胶片颗粒在中间调达到峰值，而在全黑趾部与过曝肩部自然收敛。")
+    flm.define("grain_size", "染料云颗粒团簇尺度", 1.45, 0.6, 4.0, unit="px", group=gf_chem,
+               phys_min=0.8, phys_max=2.8, source="35mm 约 1.1-1.4 px / 16mm & 高感 LOMO 约 1.5-2.4 px")
+
+    gf_dark = "LOMO 暗房冲洗工艺、正冲负/负冲正 (Xpro) 与反卷曝光"
+    flm.define("process_mode", "暗房冲洗工艺模式 (标准/E6→C41/C41→E6/迫冲/留银/2×2对照)", 0.0, 0.0, 5.0, unit="0-5", group=gf_dark, step=1.0,
+               phys_min=0.0, phys_max=5.0, source="C-41 / E-6 交叉冲洗化学耦合动力学实测标定",
+               help="0=标准冲洗 (C-41/E-6)｜1=正冲负 E-6 in C-41 Xpro（反转片入负片药水：无橙色掩膜致 γ 陡增 1.38×、暗部祖母绿/青色深谷 + 高光暖金分离）｜"
+                    "2=负冲正 C-41 in E-6 Xpro（彩色负片入反转药水：未抵消橙色掩膜令暗部呈丁香紫/洋红、高光呈奶油暖黄）｜"
+                    "3=迫冲/减冲 Push/Pull｜4=留银冲洗 Bleach Bypass（跳过漂白保留金属银颗粒与高反差去饱和）｜"
+                    "5=2×2 LOMO 光化学暗房四象限对照实验室。")
+    flm.define("xpro_strength", "交叉冲洗 (Xpro) 分色与 S 曲线强度", 0.78, 0.0, 1.5, unit="0-1", group=gf_dark,
+               phys_min=0.0, phys_max=1.20, source="LOMO Xpro RGB 分位数实测标定",
+               help="控制正冲负/负冲正时的三通道独立 γ 失配与暗部/高光互补色分色深度。")
+    flm.define("xpro_tint_mode", "Xpro 冷暖分色极性 (0自动/1青绿金盏花/2紫红玫瑰/3琥珀可可)", 0.0, 0.0, 3.0, unit="0-3", group=gf_dark, step=1.0,
+               phys_min=0.0, phys_max=3.0, source="LOMO 经典三大分色方向",
+               help="0=跟随冲洗工艺自动选择｜1=暗部翡翠青绿 + 高光暖金｜2=暗部丁香紫/玫瑰红 + 高光奶油白｜3=暗部可可暖褐 + 中间调琥珀金。")
+    flm.define("expired_fog", "过期胶片热底雾抬升与感蓝层衰减 (D_min Fog)", 0.0, 0.0, 1.0, unit="0-1", group=gf_dark,
+               phys_min=0.0, phys_max=0.90, source="向日葵实测黑位 p02=0.406 与高感顶层感蓝卤化银宇宙射线热雾化",
+               help="模拟过期胶卷存放期间顶层高感卤化银热雾化导致的基底最小密度 D_min 抬升（死黑变成粉彩鼠尾草绿/奶油灰雾）、最高密度 D_max 下降及颗粒粗化。")
+    flm.define("redscale_flip", "Redscale 胶片片基反卷曝光", 0.0, 0.0, 1.0, unit="0-1", group=gf_dark,
+               phys_min=0.0, phys_max=1.0, source="LOMO Redscale XR 反装片基先穿透感红层模型",
+               help="将彩色胶片反转片基面朝向镜头曝光：光线先经过底层感红乳剂，被中间层吸收后再有少量黄绿光到达感绿层，感蓝层几乎无光，形成炽烈红/橙/金黄影调。")
+    flm.define("push_pull_ev", "迫冲/减冲显影时长偏移 (Push/Pull EV)", 0.0, -2.0, 3.0, unit="EV", group=gf_dark,
+               phys_min=-1.5, phys_max=2.5, source="延长/缩短第一显影时间改变反差 γ 与有效感光度")
+
+    gf_lomo = "LOMO 塑料弯月镜光学、异形散景、海绵漏光与重曝"
+    flm.define("lomo_vignette", "LOMO 弯月镜头 cos^4 θ 机械暗角", 0.0, 0.0, 1.2, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.95, source="LOMO LC-A Minitar-1 32mm / Holga 120N 60mm 单片塑料弯月镜边缘照度跌落",
+               help="建模 LOMO LC-A 与 Holga 120N 的强烈渐晕暗角：四角不仅照度按 cos^4 θ 跌落，且落入胶片趾部产生更浓的色彩偏移。")
+    flm.define("lomo_edge_smear", "弯月单镜片边缘场曲与切向慧差抹开", 0.0, 0.0, 1.2, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.90, source="未校正匹兹伐场曲 (Petzval Field Curvature) 与边缘色散",
+               help="中心保持锐利合焦，而四角随视场半径 r^2 发生各向异性柔化与红蓝倍率色差分离。")
+    flm.define("bokeh_shape", "异形光圈散景光斑模板 (0圆/1桃心/2星芒/3菱形/4旋焦/5肥皂泡亮环/6六边形彩灯)", 0.0, 0.0, 6.0, unit="0-6", group=gf_lomo, step=1.0,
+               phys_min=0.0, phys_max=6.0, source="异形孔径 PSF 卷积：桃心散景 + 肥皂泡球差亮环散景 + 六边形机械光圈散景",
+               help="0=关闭/标准圆光圈｜1=Heart Bokeh 桃心散景光斑｜"
+                    "2=Starburst 四角星芒插片｜3=Diamond 菱形叶片孔径｜4=Petzval Swirl 匹兹伐旋焦散景｜"
+                    "5=Soap-Bubble Ring 肥皂泡亮边圆环散景（三片式 Trioplan 过校正球差亮环）｜"
+                    "6=Hexagonal Fairy-Light 六边形奶油彩灯散景（6片机械光圈暖金光斑）。")
+    flm.define("bokeh_amount", "异形散景光斑与梦幻焦外强度", 0.0, 0.0, 1.2, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.85, source="高光点源与异形光圈孔径 PSF 卷积及焦外光斑簇合成")
+    flm.define("bloom_veil_mode", "LOMO 光学眩光、逆光太阳洪流与高调白雾模式 (0关/1黄金逆光洪流/2奶油白雾柔焦/3烛火双层光冕/4斜向冷暖分色光雾/5四象限实验室)", 0.0, 0.0, 5.0, unit="0-5", group=gf_lomo, step=1.0,
+               phys_min=0.0, phys_max=5.0, source="无镀膜/单层镀膜老镜头逆光耀斑、Mie 散射白雾与防光晕层背散射物理标定",
+               help="0=关闭｜1=黄金时刻逆光太阳耀斑洪流（顶部大面积明黄过曝核向全画幅倾泻琥珀金光晕，暗部保持深棕红）｜"
+                    "2=高调奶油白雾眩光与无镀膜柔焦（无增透膜老镜头全画幅 Mie 散射白雾抬升黑位 p02≈0.39）｜"
+                    "3=点光源双层烛火光冕与乳剂防光晕红环（炽白核心 + 暖金内日冕 + 红橙防光晕背散射外环 + 焦外弥散圆斑）｜"
+                    "4=斜向双色温冷紫-暖金光学光雾（左上奶油柠檬白 + 中央丁香紫阴影谷 + 右侧玫瑰琥珀散景）｜"
+                    "5=2×2 LOMO 光学光晕与散景四象限对照实验室。")
+    flm.define("bloom_veil_amount", "光学光晕、逆光耀斑与镜头白雾强度", 0.0, 0.0, 1.5, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=1.20, source="无镀膜/单层镀膜 LOMO 镜组内反射眩光与高光扩散包络",
+               help="控制所选 `bloom_veil_mode` 光学光晕/逆光洪流/奶油白雾/烛火光冕的总注入强度。")
+    flm.define("soft_focus_mist", "前组柔焦镜 / 凡士林漫射白雾 (Soft-Focus Mist)", 0.0, 0.0, 1.2, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.95, source="大光圈球差柔焦核 + 前镜片微水汽/柔焦网漫反射",
+               help="保留画面底层清晰结构轮廓的同时，将高光与中间调笼罩在一层梦幻奶油柔焦薄雾中。")
+    flm.define("dual_tone_split", "斜向冷紫-暖金光学分色光雾强度", 0.0, 0.0, 1.2, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.95, source="斜向逆光入射角引起的镀膜透射/反射互补色场",
+               help="在画面上叠加随入射角连续变化的左上奶油暖白、中轴丁香紫阴影与右侧暖金玫瑰光学分色场。")
+    flm.define("tilt_shift_dof", "移轴镜头 / 微距浅景深平面散焦 (Tilt-Shift Planar DOF)", 0.0, 0.0, 1.2, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.95, source="沙姆定律 (Scheimpflug Principle) 倾斜焦平面与焦外散景膨胀",
+               help="仅在 `focus_plane_y` 水平/微倾焦平面附近保持极度锐利合焦（如岩石裂缝与烛芯、近景纸船），向远景与前景迅速过渡为奶油级大光斑散焦。")
+    flm.define("focus_plane_y", "移轴/微距合焦平面纵向位置 Y", 0.65, 0.1, 0.9, unit="0-1", group=gf_lomo,
+               phys_min=0.15, phys_max=0.85, source="0.0=画面顶部合焦，0.65=中下部主体合焦，1.0=画面底部合焦")
+    flm.define("swirl_amount", "匹兹伐镜头切向猫眼旋焦强度 (Petzval Swirl Astigmatism)", 0.0, 0.0, 1.2, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.95, source="19世纪 Petzval 匹兹伐人像镜无场曲校正切向像散与机械渐晕猫眼散景",
+               help="画面中心主体（如复古街灯）保持锐利，而外围树叶与背景散景光斑沿切向圆弧方向旋转拉长，形成强烈的漩涡状散景包络。")
+    flm.define("light_leak_amount", "塑料机壳与老化遮光海绵漏光强度", 0.0, 0.0, 1.2, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.90, source="实拍漏光梯度与片基正背面漏光分色物理",
+               help="模拟 Holga / Diana F+ 塑料卡扣缝隙或老化遮光海绵漏光：从乳剂正面漏入呈奶油白/金黄/粉洋红，从片基背面穿透防光晕层漏入呈炽烈橙红。")
+    flm.define("light_leak_pattern", "漏光空间分布形态 (0无/1右上暖阳/2左侧红边/3粉心光轨/4四角漫射)", 0.0, 0.0, 4.0, unit="0-4", group=gf_lomo, step=1.0,
+               phys_min=0.0, phys_max=4.0, source="LOMO 常见 4 类漏光几何位置",
+               help="0=无漏光｜1=右上角金琥珀斜向暖阳漏光｜"
+                    "2=左侧铰链垂直红橙背散射漏光条（35mm 后盖海绵老化）｜"
+                    "3=横贯画面粉红/洋红桃心光斑串｜"
+                    "4=左下与右上双象限梦幻奶油光雾。")
+    flm.define("double_exposure", "未过片二次重曝叠印 (Double Exposure / MX)", 0.0, 0.0, 1.0, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.80, source="卤化银潜影空间对数曝光量叠加 E_tot = E_1 + α·E_2",
+               help="在胶片线性曝光域（进入 H&D 特性曲线之前）叠加第二幅错位旋转底片的曝光潜影，还原 LOMO 机械快门原地重曝。")
+
+    gf_proj = "胶片老化、放映机械与 Rank Cintel 飞点胶转磁"
+    flm.define("dye_fade", "三层耦合染料非对称褪色", 0.0, 0.0, 1.0, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=0.85, source="Eastmancolor 青/黄染料水解速率快于品红染料")
+    flm.define("shrinkage", "醋酸片基酸败收缩 (Vinegar Syndrome)", 0.0, 0.0, 1.0, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=0.75, source="醋酸纤维素脱乙酰化收缩与齿孔节距失配")
+    flm.define("scratches_dust", "纵向走片划痕与单帧灰尘", 0.0, 0.0, 1.2, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=0.70, source="压片滑轨持续划痕与片门单帧灰尘")
+    flm.define("gate_weave", "片门机械二维抖动 (Gate Weave)", 0.0, 0.0, 1.5, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=0.85, source="间歇输片爪定位公差（整幅刚性平移）")
+    flm.define("shutter_flicker", "旋转翼板快门闪烁", 0.0, 0.0, 1.0, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=0.55, source="双叶/三叶机械旋转快门与弧光灯波动")
+    flm.define("telecine_pulldown", "胶转磁扫描与下拉制式 (Pulldown)", 0.0, 0.0, 3.0, unit="0-3", group=gf_proj, step=1.0,
+               phys_min=0.0, phys_max=3.0, source="Rank Cintel 24fps->29.97i (3:2 Pulldown) / 24fps->25i (PAL +4.167%)",
+               help="0=24fps 逐行直扫｜1=NTSC 3:2 Pulldown｜2=PAL 25fps 加速胶转磁｜3=2×2 跨媒介历史对照实验室。")
+    flm.define("quad_corner", "胶片暗房/胶转磁四分屏角落选择", 0.0, 0.0, 4.0, unit="角落", group=gf_proj, step=1.0,
+               phys_min=0.0, phys_max=4.0, source="2×2 四分屏角落拆选",
+               help="0=2×2四分屏对照｜1=左上角全屏｜2=右上角全屏｜3=左下角全屏｜4=右下角全屏。")
+    flm.define("show_border", "胶片暗房四分屏分框样式", 1.0, 0.0, 2.0, unit="分框", group=gf_proj, step=1.0,
+               phys_min=0.0, phys_max=2.0, source="0=无分框, 1=细十字分框线, 2=暗房金属外框")
+    flm.define("show_text", "胶片暗房四分屏画面文字", 0.0, 0.0, 2.0, unit="文字", group=gf_proj, step=1.0,
+               phys_min=0.0, phys_max=2.0, source="默认 0=不要文字（纯净画面）；1=仅显示四角标签；2=显示标签与底部暗房遥测栏")
+
+    # 新增：显影动力学、抗晕光结构、光学印片代际、醋酸综合征动力学、湿门扫描与可逆数字修复参数
+    flm.define("dev_temp_c", "显影药液温度 T", 38.0, 15.0, 50.0, unit="°C", group=gf_dark,
+               phys_min=18.0, phys_max=45.0, source="Kodak ECN-2 (41.1°C) / C-41 & E-6 (38.0°C) / D-96 (20.0°C) 显影动力学",
+               help="控制显影反应速率与各感光层反差演化 D_c = f_c(H_c, t, T, a)。")
+    flm.define("dev_time_norm", "显影时间倍率 t", 1.0, 0.4, 2.0, unit="×", group=gf_dark,
+               phys_min=0.6, phys_max=1.6, source="显影时间对潜影银还原密度与层间扩散的影响")
+    flm.define("bath_activity", "药液活性与补充状态 a", 1.0, 0.4, 1.4, unit="0-1.4", group=gf_dark,
+               phys_min=0.6, phys_max=1.25, source="显影液新鲜度、溴化物累积与 DIR 层间边缘效应强度")
+    flm.define("orange_mask", "负片橙色遮罩校准度", 1.0, 0.0, 1.5, unit="0-1.5", group=gf_chem,
+               phys_min=0.5, phys_max=1.2, source="彩色负片偶合剂橙色遮罩与扫描光源正像转换校准")
+    flm.define("remjet_backing", "Remjet 碳黑抗晕光背层 (-1默认/0去除/1完整)", -1.0, -1.0, 1.0, unit="-1..1", group=gf_lomo,
+               phys_min=-1.0, phys_max=1.0, source="Kodak 电影胶片 Remjet 碳黑背层吸收率（0=去除背层产生强烈高光红晕）")
+    flm.define("aged_backing_dye", "老化片基背层抗晕光染料重显", 0.0, 0.0, 1.0, unit="0-1", group=gf_lomo,
+               phys_min=0.0, phys_max=0.85, source="FilmCare.org 醋酸片基产酸老化后背层脱色抗晕光染料重新显色")
+    flm.define("optical_print_gen", "光学印片复制代际 (0直扫/1一代/2中间片/3发行拷贝)", 0.0, 0.0, 3.0, unit="代", group=gf_proj, step=1.0,
+               phys_min=0.0, phys_max=3.0, source="Optical Printer 负片→翻正片(IP)→翻底片(IN)→发行拷贝(2383) 多代光化学复制链")
+    flm.define("vinegar_syndrome", "醋酸综合征自催化退化强度", 0.0, 0.0, 1.0, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=0.95, source="NARA / CCI 醋酸纤维素脱乙酰自催化产酸、聚合物解聚、收缩与脆化动力学")
+    flm.define("storage_temp_c", "档案保存环境温度", 20.0, -10.0, 50.0, unit="°C", group=gf_proj,
+               phys_min=-5.0, phys_max=40.0, source="ISO 18911 / IPI 胶片库房保存温度")
+    flm.define("storage_rh", "档案保存相对湿度", 45.0, 10.0, 95.0, unit="%RH", group=gf_proj,
+               phys_min=20.0, phys_max=85.0, source="水分催化醋酸片基脱乙酰水解与彩色染料褪色")
+    flm.define("emulsion_damage", "乳剂与黏结层开裂/起皱/银镜", 0.0, 0.0, 1.0, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=0.85, source="明胶乳剂微裂纹、网状起皱 (Reticulation) 与高密度边缘银镜 (Silver Mirroring)")
+    flm.define("shutter_blades", "放映机快门叶片数 (2叶48Hz / 3叶72Hz)", 2.0, 2.0, 3.0, unit="叶", group=gf_proj, step=1.0,
+               phys_min=2.0, phys_max=3.0, source="SMPTE 24fps 电影放映机双叶片(48次/秒光脉冲)与三叶片(72次/秒光脉冲)")
+    flm.define("sprocket_wear", "齿孔与间歇爪机械磨损", 0.0, 0.0, 1.0, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=0.85, source="16mm/35mm 齿孔撕裂磨损引发的纵向片门跳格与走片不稳")
+    flm.define("wet_gate", "湿门扫描划痕抑制 (Wet-Gate)", 0.0, 0.0, 1.0, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=1.0, source="FIAF 数字化指南：折射率匹配液填充片基划痕消除光散射")
+    flm.define("scanner_diffuse", "扫描仪积分球漫射照明度", 0.5, 0.0, 1.0, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=1.0, source="0=准直聚光镜光源凸显表面划痕，1=漫射积分球光源抑制划痕阴影")
+    flm.define("restoration_strength", "可逆数字修复与四层证据分离强度", 0.0, 0.0, 1.0, unit="0-1", group=gf_proj,
+               phys_min=0.0, phys_max=1.0, source="Disney Research / FIAF 红外缺陷检测、褪色恢复、稳像去闪与四层数字证据分离")
 
     return s
 
@@ -1898,14 +3060,14 @@ MEDIA_PROFILES = {
         "tape": {"tape_speed": 2.0}}},
     "vhs_gen_5": {
         "label": "VHS 第 5 代翻录带（色度右移下垂 + 初级轮廓振铃）",
-        "note": "5 次磁带迭代翻录：条纹与肤色开始向右下方溢出边界，垂直边缘出现预加重黑白伴影（对照 录像带的图像耗损.mp4 16.5s 标定）",
+        "note": "5 次磁带迭代翻录：条纹与肤色开始向右下方溢出边界，垂直边缘出现预加重黑白伴影（第 5 代 VCR→VCR 翻录实测标定）",
         "layers": {
             "format": {"luma_bandwidth": 2.6, "chroma_bandwidth": 0.55, "edge_boost": 0.35, "color_noise": 0.28},
             "tape": {"generation_passes": 5.0, "gen_chroma_bleed": 0.85, "gen_ringing": 0.85,
                      "tape_stability": 0.52, "line_jitter": 0.32, "noise_floor": 0.20, "head_switching": 0.80}}},
     "vhs_gen_12": {
         "label": "VHS 第 12 代翻录带（重度振铃黑边 + 色度分层脱节）",
-        "note": "12 次磁带迭代翻录：多级二阶过冲在人物轮廓外拉出粗黑边与白晕，色度大幅下垂右移，黑电平抬升泛绿（对照 42.5s 标定）",
+        "note": "12 次磁带迭代翻录：多级二阶过冲在人物轮廓外拉出粗黑边与白晕，色度大幅下垂右移，黑电平抬升泛绿（第 12 代 VCR→VCR 翻录实测标定）",
         "layers": {
             "format": {"luma_bandwidth": 2.1, "chroma_bandwidth": 0.42, "edge_boost": 0.48, "color_noise": 0.42},
             "tape": {"generation_passes": 12.0, "gen_chroma_bleed": 0.95, "gen_ringing": 0.95,
@@ -2059,6 +3221,35 @@ DISPLAY_PROFILES = {
             "interlace_flicker": 0.25, "reflection": 0.14, "bezel": 0.35,
         }},
     },
+    "sony_trinitron_kv1214": {
+        "label": "Sony Trinitron KV-1214（1978 12寸柱面特丽珑 · 4K屏摄摩尔纹标定）",
+        "note": "12寸柱面特丽珑 4K 屏摄实测标定：单枪三束粗节距垂直荫栅 (HFx/HFy≈1.48)、单根水平钨丝阻尼线、水平单向柱面玻壳、NTSC-J 9300K 青蓝白点 (R/G≈0.78, B/G≈1.11) 与清晰弧形屏摄摩尔纹",
+        "layers": {"display": {
+            "enabled": 1.0, "gamma": 2.28, "contrast": 0.62, "brightness": 0.47, "saturation": 0.56,
+            "scanlines": 0.34, "spot_sigma": 0.38, "scan_pitch": 2.0, "spot_bloom": 0.44,
+            "bloom": 0.28, "glass_halation": 0.34, "phosphor_saturation": 0.36,
+            "mask_type": 0.0, "mask_pitch": 2.35, "mask_depth": 0.42, "phosphor_rgb": 0.78,
+            "geometry_warp": 0.08, "curvature": 0.10, "corner_defocus": 0.18,
+            "convergence": 0.14, "convergence_y": 0.05, "ehv_sag": 0.18, "breathing": 0.12,
+            "phosphor_persistence": 0.22, "overscan": 0.02, "vignette": 0.20,
+            "interlace_flicker": 0.18, "reflection": 0.10, "bezel": 0.28,
+            "kv1214_enabled": 1.0, "kv1214_grille_pitch_px": 2.35, "kv1214_grille_contrast": 0.68,
+            "kv1214_moire_amount": 0.62, "kv1214_moire_freq": 0.052, "kv1214_moire_tilt_deg": 1.8,
+            "kv1214_cylindrical_bow": 0.34, "kv1214_ntscj_9300k": 0.78,
+            "kv1214_single_damper": 0.65, "kv1214_bezel_frame": 0.45, "kv1214_ab_split": 0.0,
+        }},
+    },
+    "crt_strong_magnet_faceplate": {
+        "label": "CRT 遇强磁铁贴面实验（钕铁硼强磁黑洞 + 十字枕形折叠 + 同心彩虹纯度环）",
+        "note": "强永磁体近场磁偏转与铁磁荫罩剩磁物理标定：洛伦兹力 F=-e(v×B) 电子束径向/切向偏转、中心电子束排空黑洞、十字内凹几何折叠与多阶同心色纯度彩虹环",
+        "layers": {"display": {
+            "enabled": 1.0, "gamma": 2.30, "scanlines": 0.32, "mask_type": 1.0, "mask_pitch": 2.8,
+            "crt_magnet_mode": 1.0, "crt_magnet_strength": 0.85,
+            "crt_magnet_x": 0.52, "crt_magnet_y": 0.48, "crt_magnet_z_dist": 0.12,
+            "crt_magnet_angle_deg": 25.0, "crt_magnet_polarity": 1.0,
+            "crt_magnet_remanence": 0.28, "crt_degauss_trigger": 0.0,
+        }},
+    },
     "crt_trinitron": {
         "label": "Sony 特丽珑 PVM 监视器（单枪三束荫栅 Aperture Grille）",
         "note": "柱面特丽珑显像管：连续垂直 RGB 荧光条、双水平钨丝阻尼线阴影、高会聚精度与锐利扫描线",
@@ -2087,6 +3278,42 @@ DISPLAY_PROFILES = {
     },
     "capture_card": {"label": "采集卡直入", "note": "不经显像管，几何与扫描线不参与",
                      "layers": {"display": {"enabled": 0.0}}},
+    "crt_reshoot_fast_shutter": {
+        "label": "CRT 屏摄重拍 · 1/125s 高速快门扫描滚带 (Shutter-Field Beat Roll Bar)",
+        "note": "用 1/125s 快门相机重拍 59.94Hz CRT：单次快门仅捕获约 48% 场扫描高度，呈现边缘带 P22 红粉余辉的明暗滚动扫描横带",
+        "layers": {"display": {
+            "enabled": 1.0, "gamma": 2.30, "scanlines": 0.36, "spot_sigma": 0.40, "scan_pitch": 2.0,
+            "spot_bloom": 0.45, "bloom": 0.32, "glass_halation": 0.30, "mask_type": 1.0, "mask_pitch": 2.8,
+            "mask_depth": 0.36, "phosphor_rgb": 0.65, "curvature": 0.20, "bezel": 0.32,
+            "reshoot_enabled": 1.0, "reshoot_shutter_hz": 125.0, "reshoot_fps_offset": 1.20,
+            "reshoot_rolling_shutter": 0.35, "reshoot_moire": 0.22, "reshoot_ambient_glare": 0.15,
+            "reshoot_wb_shift": 0.25,
+        }},
+    },
+    "crt_reshoot_angled_moire": {
+        "label": "CRT 屏摄重拍 · 斜角微距二维彩色摩尔纹 (2D Subpixel-Mask Moiré)",
+        "note": "相机微倾 2.8° 离轴近拍球面槽孔/特丽珑 CRT：传感器拜耳网格与球面荫罩/扫描线混叠出彩色环形水波摩尔纹",
+        "layers": {"display": {
+            "enabled": 1.0, "gamma": 2.25, "scanlines": 0.38, "spot_sigma": 0.38, "scan_pitch": 2.0,
+            "spot_bloom": 0.38, "bloom": 0.28, "glass_halation": 0.25, "mask_type": 0.0, "mask_pitch": 2.6,
+            "mask_depth": 0.42, "phosphor_rgb": 0.75, "curvature": 0.26, "bezel": 0.38,
+            "reshoot_enabled": 1.0, "reshoot_shutter_hz": 60.0, "reshoot_fps_offset": 0.45,
+            "reshoot_rolling_shutter": 0.25, "reshoot_moire": 0.88, "reshoot_tilt_deg": 2.8,
+            "reshoot_perspective": 0.28, "reshoot_ambient_glare": 0.18, "reshoot_wb_shift": 0.22,
+        }},
+    },
+    "crt_reshoot_living_room_cam": {
+        "label": "CRT 屏摄重拍 · 开灯客厅手持 DV/手机翻拍（环境光漫反 + 9300K 冷青过曝 + 慢滚带）",
+        "note": "开灯房间内手持相机翻拍 9300K 家用球面彩电：未发光荧光粉层漫反射室内光抬升黑位、玻璃映出窗户高光、高光冷青过曝并伴随慢速差拍亮带",
+        "layers": {"display": {
+            "enabled": 1.0, "gamma": 2.35, "scanlines": 0.32, "spot_sigma": 0.42, "scan_pitch": 2.0,
+            "spot_bloom": 0.52, "bloom": 0.42, "glass_halation": 0.38, "mask_type": 1.0, "mask_pitch": 3.0,
+            "mask_depth": 0.35, "phosphor_rgb": 0.60, "curvature": 0.28, "bezel": 0.45,
+            "reshoot_enabled": 1.0, "reshoot_shutter_hz": 50.0, "reshoot_fps_offset": 0.85,
+            "reshoot_rolling_shutter": 0.45, "reshoot_moire": 0.35, "reshoot_tilt_deg": -1.6,
+            "reshoot_perspective": -0.22, "reshoot_ambient_glare": 0.62, "reshoot_wb_shift": 0.52,
+        }},
+    },
     "tc_ub530_obs_mkv": {
         "label": "天创恒达 TC-UB530 采集卡 → 神舟 HASEE K680E-G6D1（OBS Studio 32.0 MKV）",
         "note": "天创恒达 TC-UB530 USB 复合采集卡（PAL 720×576@25fps BT.601 YUV422 ADC）直入神舟 K680E-G6D1 笔记本，由 OBS Studio 32.0 封装为 MKV 数字母带",
@@ -2112,6 +3339,15 @@ CAMERA_PROFILES = {
             "coma": 0.75, "axis_offset": 0.50, "overflow_drain": 0.65,
             "chroma_aberration": 0.12, "longitudinal_ca": 0.08,
             "ccd_smear": 0.0, "halation": 0.0}}},
+    "sony_cybershot_ccd_memorystick": {
+        "label": "SONY Cyber-shot CCD 数码相机（Memory Stick 内存卡直出 · 1024×768 氙气闪光实拍）",
+        "note": "早期索尼 DSC-P/S 系列 1/2.7 英寸 Super HAD CCD 静态拍照模式：机械快门遮光读出（零垂直拖尾光柱）、机顶氙气闪光灯近距直闪中心亮四角压暗（5.84x 衰减）、深暖棕木桌暗部阶调（R/G≈1.31）、铝塑药板冷银反光（B/G≈1.05）与微透镜边缘轻微蓝紫边（实拍传感器与闪光灯场分布标定）",
+        "layers": {"camera": {
+            "sensor_type": 0.0, "sensor_noise": 0.018, "noise_grain": 1.15, "fixed_pattern": 0.01,
+            "dynamic_range": 7.6, "exposure": 0.0, "white_balance_temp": -0.04,
+            "color_cast": 0.06, "highlight_tint": 0.15, "ccd_flash_falloff": 0.85,
+            "sharpness": 1.18, "chroma_aberration": 0.05, "longitudinal_ca": 0.04,
+            "halation": 0.06, "halation_source_colour": 0.65, "ccd_smear": 0.0, "motion_blur": 0.0}}},
     "panasonic_ccd_1986": {
         "label": "1986 松下初代单板 CCD 肩扛摄像机",
         "note": "初代 1/2 英寸补色马赛克（Ye/Cy/Mg/Gr）行间转移 CCD：6.8 档动态范围、天空与水面高光青蓝偏色（Cy+Gr 晚饱和）、暖色中间调保留与高光晕染（对照 1986 松下初代 CCD + NV-180 实拍标定）",
@@ -2123,7 +3359,315 @@ CAMERA_PROFILES = {
             "halation": 0.22, "halation_source_colour": 0.70, "ccd_smear": 0.12}}},
 }
 
+
+FILM_PROFILES = {
+    # ==================== 基准实验一：同一场景、不同胶片与显影动力学 ====================
+    "bench1_vision3_500t_std": {
+        "label": "Kodak Vision3 500T 标准冲洗",
+        "note": "基准实验一：Kodak Vision3 500T 5219 现代彩色电影负片，标准 ECN-2 41.1°C 显影、负片橙色遮罩正像转换与完整 Remjet 碳黑抗晕光背层",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 17.0, "process_mode": 0.0, "push_pull_ev": 0.0,
+            "dev_temp_c": 41.1, "dev_time_norm": 1.0, "bath_activity": 1.0, "orange_mask": 1.0,
+            "gamma": 1.0, "halation": 0.35, "remjet_backing": 0.88, "grain_amount": 0.22, "grain_size": 1.25,
+        }},
+    },
+    "bench1_vision3_500t_push2": {
+        "label": "Kodak Vision3 500T 推冲两档",
+        "note": "基准实验一：Kodak Vision3 500T 欠曝后延长 ECN-2 显影时间推冲 +2 EV，红/绿/蓝三层反差斜率非均匀陡化并产生高光暖黄与暗部青蓝交叉偏色，颗粒显著粗化",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 17.0, "process_mode": 3.0, "push_pull_ev": 2.0,
+            "dev_temp_c": 42.5, "dev_time_norm": 1.45, "bath_activity": 1.12, "orange_mask": 1.0,
+            "gamma": 1.16, "halation": 0.42, "remjet_backing": 0.85, "grain_amount": 0.38, "grain_size": 1.65,
+        }},
+    },
+    "bench1_vision3_500t_pull1": {
+        "label": "Kodak Vision3 500T 拉冲一档",
+        "note": "基准实验一：Kodak Vision3 500T 过曝后缩短 ECN-2 显影时间拉冲 -1 EV，降低底雾 D_min 与直线段反差，扩展高光肩部宽容度并细化染料云颗粒",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 17.0, "process_mode": 0.0, "push_pull_ev": -1.0,
+            "dev_temp_c": 40.0, "dev_time_norm": 0.76, "bath_activity": 0.92, "orange_mask": 1.0,
+            "gamma": 0.88, "halation": 0.28, "remjet_backing": 0.90, "grain_amount": 0.16, "grain_size": 1.15,
+        }},
+    },
+    "bench1_double_x_5222_bw": {
+        "label": "Kodak Double-X 5222 黑白负片",
+        "note": "基准实验一：Kodak Eastman Double-X 5222 经典 35mm 全色黑白电影负片，D-96 20°C 显影还原金属银颗粒团簇、Eberhard 边缘微反差与深沉银盐阶调",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 18.0, "process_mode": 0.0, "push_pull_ev": 0.0,
+            "dev_temp_c": 20.0, "dev_time_norm": 1.0, "bath_activity": 1.05,
+            "gamma": 1.12, "halation": 0.36, "remjet_backing": 0.35, "grain_amount": 0.34, "grain_size": 1.48,
+        }},
+    },
+    "bench1_kodachrome_64": {
+        "label": "Kodachrome 64 反转片",
+        "note": "基准实验一：历史性 Kodachrome 64 (K-14 外偶法工艺) 彩色反转片，高 D_max 光学密度、高锐度低颗粒与浓郁暖红钴蓝直接正像还原",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 19.0, "process_mode": 0.0,
+            "dev_temp_c": 38.0, "dev_time_norm": 1.0, "bath_activity": 1.05,
+            "gamma": 1.18, "halation": 0.24, "remjet_backing": 0.92, "grain_amount": 0.16, "grain_size": 1.05,
+        }},
+    },
+    "bench1_ektachrome_100d": {
+        "label": "Kodak Ektachrome 100D 反转片",
+        "note": "基准实验一：现代 Kodak Ektachrome 100D (E-6 内偶法工艺) 彩色反转片，无负片橙色遮罩直接形成正像，高光洁净、青蓝还原清澈",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 20.0, "process_mode": 0.0,
+            "dev_temp_c": 38.0, "dev_time_norm": 1.0, "bath_activity": 1.0,
+            "gamma": 1.12, "halation": 0.28, "remjet_backing": 0.55, "grain_amount": 0.18, "grain_size": 1.12,
+        }},
+    },
+
+    # ==================== 基准实验二：同一原片、不同复制链 ====================
+    "bench2_ocn_direct_scan": {
+        "label": "原始负片直扫",
+        "note": "基准实验二：原始摄影负片 (OCN) 经漫射积分球光源直接 24p 数字化扫描，无中间片印片损耗，完整保留原始动态范围与最高 MTF 解析力",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 17.0, "process_mode": 0.0, "optical_print_gen": 0.0,
+            "gamma": 1.0, "halation": 0.32, "remjet_backing": 0.88, "grain_amount": 0.20,
+            "scanner_diffuse": 0.80, "telecine_pulldown": 0.0,
+        }},
+    },
+    "bench2_optical_print_gen1": {
+        "label": "一代光学印片",
+        "note": "基准实验二：原始负片经光学印片机 (Optical Printer) 一代印制工作拷贝，引入中继镜头轻微 MTF 衰减、印片配光偏移与首代步进片门定位微晃动",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 17.0, "process_mode": 0.0, "optical_print_gen": 1.0,
+            "gamma": 1.04, "halation": 0.35, "remjet_backing": 0.85, "grain_amount": 0.24,
+            "gate_weave": 0.10, "telecine_pulldown": 0.0,
+        }},
+    },
+    "bench2_optical_print_gen2": {
+        "label": "二代中间片印片",
+        "note": "基准实验二：原始负片 (OCN) → 翻正片 (Interpositive) → 翻底片 (Internegative) 二代光化学复制链，累积两代 H&D 反差压缩与双层颗粒团簇",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 17.0, "process_mode": 0.0, "optical_print_gen": 2.0,
+            "gamma": 1.08, "halation": 0.38, "remjet_backing": 0.82, "grain_amount": 0.28,
+            "gate_weave": 0.18, "telecine_pulldown": 0.0,
+        }},
+    },
+    "bench2_release_print_gen3": {
+        "label": "三代发行拷贝",
+        "note": "基准实验二：OCN → IP → IN → 影院发行正片拷贝 (2383 Release Print) 三代完整院线印片链，搭配 24fps 双叶片快门 (48Hz) 影院放映机械微抖动",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 17.0, "process_mode": 0.0, "optical_print_gen": 3.0,
+            "gamma": 1.12, "halation": 0.42, "remjet_backing": 0.80, "grain_amount": 0.32,
+            "gate_weave": 0.24, "shutter_flicker": 0.12, "shutter_blades": 2.0, "telecine_pulldown": 0.0,
+        }},
+    },
+    "bench2_flying_spot_telecine": {
+        "label": "飞点胶转磁转录",
+        "note": "基准实验二：历史电影拷贝经 Rank Cintel 飞点扫描仪执行 24fps→29.97i NTSC 3:2 Pulldown 胶转磁转录，呈现跨胶片帧隔行梳状交错与电视视放轮廓",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 1.0, "process_mode": 0.0, "optical_print_gen": 1.0,
+            "gamma": 1.06, "halation": 0.38, "grain_amount": 0.26,
+            "gate_weave": 0.22, "shutter_flicker": 0.08, "telecine_pulldown": 1.0,
+        }},
+    },
+
+    # ==================== 基准实验三：同一胶片、不同保存历史与数字化修复 ====================
+    "bench3_cold_vault_archive": {
+        "label": "低温冷库保存",
+        "note": "基准实验三：2°C / 30%RH 恒温恒湿冷库保存历史，醋酸片基游离酸度极低，聚合物完整性 >98%，三层耦合染料与齿孔尺寸几乎无退化",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 17.0, "process_mode": 0.0,
+            "storage_temp_c": 2.0, "storage_rh": 30.0, "vinegar_syndrome": 0.02,
+            "dye_fade": 0.02, "shrinkage": 0.01, "emulsion_damage": 0.0, "scratches_dust": 0.02,
+            "scanner_diffuse": 0.75, "wet_gate": 0.0, "restoration_strength": 0.0,
+        }},
+    },
+    "bench3_ambient_natural_aging": {
+        "label": "常温库房自然老化",
+        "note": "基准实验三：22°C / 55%RH 常温库房保存数十年，青/黄染料中度水解褪色向暖红偏移，片基轻度收缩并伴随走片纵向划痕与齿孔磨损",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 4.0, "process_mode": 0.0,
+            "storage_temp_c": 22.0, "storage_rh": 55.0, "vinegar_syndrome": 0.35,
+            "dye_fade": 0.38, "shrinkage": 0.24, "emulsion_damage": 0.18,
+            "scratches_dust": 0.28, "sprocket_wear": 0.22, "gate_weave": 0.20,
+            "scanner_diffuse": 0.35, "wet_gate": 0.0, "restoration_strength": 0.0,
+        }},
+    },
+    "bench3_humid_vinegar_syndrome": {
+        "label": "湿热库房醋酸综合征",
+        "note": "基准实验三：32°C / 78%RH 湿热环境触发醋酸纤维素自催化脱乙酰降解，游离酸度突破自催化点导致片基剧烈收缩屈曲、乳剂起皱与边缘银镜、背层抗晕光染料重新显色",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 4.0, "process_mode": 0.0,
+            "storage_temp_c": 32.0, "storage_rh": 78.0, "vinegar_syndrome": 0.82,
+            "dye_fade": 0.68, "shrinkage": 0.62, "emulsion_damage": 0.55, "aged_backing_dye": 0.58,
+            "scratches_dust": 0.48, "sprocket_wear": 0.45, "gate_weave": 0.35,
+            "scanner_diffuse": 0.20, "wet_gate": 0.0, "restoration_strength": 0.0,
+        }},
+    },
+    "bench3_wet_gate_restoration": {
+        "label": "湿门扫描与数字修复",
+        "note": "基准实验三：对重度老化胶片启用折射率匹配液湿门扫描 (Wet-Gate) + 漫射积分球光源消除片基划痕散射，并执行 Disney Research / FIAF 可逆数字修复与四层数字证据分离记录",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 4.0, "process_mode": 0.0,
+            "storage_temp_c": 32.0, "storage_rh": 78.0, "vinegar_syndrome": 0.82,
+            "dye_fade": 0.68, "shrinkage": 0.62, "emulsion_damage": 0.55, "aged_backing_dye": 0.58,
+            "scratches_dust": 0.48, "sprocket_wear": 0.45, "gate_weave": 0.35,
+            "scanner_diffuse": 0.92, "wet_gate": 0.95, "restoration_strength": 0.88,
+        }},
+    },
+
+    # ==================== 独立胶片光学与经典暗房预设（纯净命名 · 单屏输出） ====================
+    "optics_remjet_removed_halation": {
+        "label": "去碳层高光红晕",
+        "note": "独立胶片光学模块：去除电影负片背面 Remjet 碳黑抗晕光层 (`remjet_backing=0`)，强光穿透乳剂在片基界面全反射回感红层，在点光源周围形成典型双层红橙晕光环",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 17.0, "process_mode": 0.0,
+            "remjet_backing": 0.0, "halation": 0.88, "bloom_veil_mode": 3.0, "bloom_veil_amount": 0.68,
+            "grain_amount": 0.24, "lomo_vignette": 0.25,
+        }},
+    },
+    "lomo_xpro_e6_in_c41_marigold": {
+        "label": "正冲负翡翠暖金",
+        "note": "Kodak Ektachrome E100VS 反转片投入 C-41 负片药水交叉冲洗：高反差 S 曲线、翡翠青绿阴影与金盏花暖金高光",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 6.0, "process_mode": 1.0, "xpro_strength": 0.92,
+            "xpro_tint_mode": 1.0, "gamma": 1.18, "halation": 0.36, "grain_amount": 0.24,
+            "lomo_vignette": 0.32, "lomo_edge_smear": 0.25,
+        }},
+    },
+    "lomo_xpro_c41_in_e6_heart_bokeh": {
+        "label": "负冲正桃心散景",
+        "note": "Lomography CN 400 负片投入 E-6 药水：丁香紫/洋红暗部与奶油暖白高光，配合桃心异形光圈散景与漏光轨",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 7.0, "process_mode": 2.0, "xpro_strength": 0.85,
+            "xpro_tint_mode": 2.0, "gamma": 1.10, "halation": 0.42, "grain_amount": 0.26,
+            "lomo_vignette": 0.42, "lomo_edge_smear": 0.30, "bokeh_shape": 1.0, "bokeh_amount": 0.65,
+            "light_leak_amount": 0.48, "light_leak_pattern": 3.0,
+        }},
+    },
+    "lomo_agfa_warm_amber_holga": {
+        "label": "琥珀暖调弯月镜",
+        "note": "Agfa Vista 200 高感红乳剂琥珀暖金中间调与深可可暗部，叠加 Holga 单片弯月镜柔焦与暖雾漏光",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 5.0, "process_mode": 0.0, "xpro_strength": 0.45,
+            "xpro_tint_mode": 3.0, "gamma": 1.08, "halation": 0.45, "grain_amount": 0.25,
+            "lomo_vignette": 0.38, "lomo_edge_smear": 0.35, "light_leak_amount": 0.32, "light_leak_pattern": 4.0,
+        }},
+    },
+    "lomo_expired_svema_sunflower": {
+        "label": "过期胶卷高底雾",
+        "note": "存放十余年的过期胶卷：顶层卤化银热雾化将死黑基底抬升至粉彩鼠尾草绿，高光软肩压缩并伴随粗颗粒团簇",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 8.0, "process_mode": 0.0, "expired_fog": 0.78,
+            "gamma": 0.86, "halation": 0.32, "grain_amount": 0.42, "grain_size": 1.85,
+            "lomo_vignette": 0.24, "light_leak_amount": 0.22, "light_leak_pattern": 4.0,
+        }},
+    },
+    "lomo_polaroid_sx70_qlight": {
+        "label": "宝丽来即时显影",
+        "note": "Polaroid SX-70 一体式相纸碱液药浆扩散与 TiO2 反射层奶油高光滚降、复古青棕阴影及右上暖阳漏光",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 9.0, "process_mode": 0.0, "xpro_strength": 0.35,
+            "xpro_tint_mode": 3.0, "gamma": 1.12, "halation": 0.38, "grain_amount": 0.20,
+            "lomo_vignette": 0.68, "lomo_edge_smear": 0.32, "light_leak_amount": 0.55, "light_leak_pattern": 1.0,
+        }},
+    },
+    "lomo_redscale_xr_reverse": {
+        "label": "反装片基红金显影",
+        "note": "将彩色负片片基朝向镜头反卷曝光：光线先穿透底层感红层再经防光晕层滤波到达感绿层，呈现深红-琥珀-金黄阶梯",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 7.0, "process_mode": 0.0, "redscale_flip": 0.90,
+            "gamma": 1.15, "halation": 0.55, "grain_amount": 0.34, "lomo_vignette": 0.45,
+        }},
+    },
+    "eastman_5247_35mm_telecine": {
+        "label": "Eastman 5247 胶转磁",
+        "note": "经典 35mm 电影负片+2383印片特性曲线、防光晕红橙背散射、片门机械二维抖动与 NTSC 3:2 下拉",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 1.0, "process_mode": 0.0, "gamma": 1.05,
+            "halation": 0.38, "grain_amount": 0.25, "gate_weave": 0.25, "telecine_pulldown": 1.0,
+        }},
+    },
+    "lomo_trioplan_soap_bubble_dandelion": {
+        "label": "肥皂泡球差散景",
+        "note": "三片式 Meyer Trioplan 过校正球差形成锐利亮边肥皂泡圆环散景，配合斜向柠檬白-丁香紫-暖金分色光雾",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 16.0, "process_mode": 0.0, "gamma": 1.02,
+            "halation": 0.45, "grain_amount": 0.16, "bokeh_shape": 5.0, "bokeh_amount": 0.88,
+            "bloom_veil_mode": 4.0, "bloom_veil_amount": 0.85, "soft_focus_mist": 0.55,
+            "dual_tone_split": 0.82, "lomo_vignette": 0.22,
+        }},
+    },
+    "lomo_golden_hour_solar_flare_flood": {
+        "label": "黄金逆光阳炎",
+        "note": "顶部正逆光太阳形成纯明黄过曝核心，向全画幅倾泻指数衰减金琥珀色米氏散射阳炎，前景维持深可可暖褐暗部",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 5.0, "process_mode": 0.0, "xpro_strength": 0.55,
+            "xpro_tint_mode": 3.0, "gamma": 1.16, "halation": 0.68, "grain_amount": 0.20,
+            "bloom_veil_mode": 1.0, "bloom_veil_amount": 0.92, "lomo_vignette": 0.48,
+        }},
+    },
+    "lomo_highkey_milky_veiling_glare": {
+        "label": "无镀膜高调柔焦",
+        "note": "强逆光进入无镀膜单镜片引发全画幅米氏散射乳白光雾抬升黑位，配合柔焦水汽与富士 Pro 400H 粉彩乳剂",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 13.0, "process_mode": 0.0, "expired_fog": 0.45,
+            "gamma": 0.84, "halation": 0.48, "grain_amount": 0.14,
+            "bloom_veil_mode": 2.0, "bloom_veil_amount": 0.88, "soft_focus_mist": 0.72,
+        }},
+    },
+    "lomo_tilt_shift_candle_flame_aura": {
+        "label": "移轴双层烛火光冕",
+        "note": "点光源双层烛火日冕与防光晕红环 + 沙姆定律移轴焦平面浅景深 + 冷青板岩暗部",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 2.0, "process_mode": 0.0, "gamma": 1.12,
+            "halation": 0.62, "grain_amount": 0.22, "bloom_veil_mode": 3.0, "bloom_veil_amount": 0.90,
+            "tilt_shift_dof": 0.82, "focus_plane_y": 0.68, "lomo_vignette": 0.45,
+        }},
+    },
+    "lomo_wong_kar_wai_tungsten_olive": {
+        "label": "钨丝灯迫冲绿调",
+        "note": "日光型电影负片在室内荧光灯/钨丝灯下未加色温滤镜直接迫冲：酸橄榄黄绿偏色、墨绿暗部与柔化高光",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 11.0, "process_mode": 3.0, "push_pull_ev": 1.2,
+            "gamma": 1.15, "halation": 0.42, "grain_amount": 0.30, "grain_size": 1.65,
+            "lomo_vignette": 0.36, "lomo_edge_smear": 0.24, "soft_focus_mist": 0.28,
+        }},
+    },
+    "lomo_prussian_rain_paper_boats": {
+        "label": "普鲁士蓝雨滴散景",
+        "note": "冷调普鲁士深蓝阴影与高饱和品红/电光紫分离，配合移轴浅景深与焦外六边形雨滴散景光斑",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 12.0, "process_mode": 1.0, "xpro_strength": 0.65,
+            "gamma": 1.18, "halation": 0.38, "grain_amount": 0.22,
+            "bokeh_shape": 6.0, "bokeh_amount": 0.72, "tilt_shift_dof": 0.75, "focus_plane_y": 0.62,
+            "lomo_vignette": 0.52,
+        }},
+    },
+    "lomo_macaron_fairy_lights_pastel": {
+        "label": "六边形彩灯散景",
+        "note": "富士 Pro 400H 粉彩乳剂叠加 6 片机械光圈形成的大尺寸暖金六边形彩灯散景与柔焦白雾",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 13.0, "process_mode": 0.0, "gamma": 0.92,
+            "halation": 0.46, "grain_amount": 0.15, "bokeh_shape": 6.0, "bokeh_amount": 0.88,
+            "bloom_veil_mode": 4.0, "bloom_veil_amount": 0.55, "soft_focus_mist": 0.38,
+        }},
+    },
+    "lomo_petzval_swirl_street_lantern": {
+        "label": "匹兹伐切向旋焦",
+        "note": "中心保持锐利合焦，四周背景高光光斑沿切向圆弧旋转拉长形成猫眼旋焦，配以复古黄铜橄榄与紫褐暗部",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 14.0, "process_mode": 0.0, "gamma": 1.08,
+            "halation": 0.40, "grain_amount": 0.24, "bokeh_shape": 4.0, "bokeh_amount": 0.75,
+            "swirl_amount": 0.88, "lomo_vignette": 0.46, "lomo_edge_smear": 0.35,
+        }},
+    },
+    "lomo_lca_turquoise_bridge_xpro": {
+        "label": "广角弯月镜正冲负",
+        "note": "LOMO LC-A Minitar-1 32mm 广角弯月镜浓重四角暗角、边缘场曲抹开与松石青绿高反差交叉冲洗",
+        "layers": {"film": {
+            "enabled": 1.0, "stock": 15.0, "process_mode": 1.0, "xpro_strength": 0.88,
+            "xpro_tint_mode": 1.0, "gamma": 1.24, "halation": 0.44, "grain_amount": 0.28,
+            "lomo_vignette": 0.78, "lomo_edge_smear": 0.48,
+        }},
+    },
+}
+
 PROFILE_LIBRARY = {
+    "film": FILM_PROFILES,
     "media": MEDIA_PROFILES,
     "player": PLAYER_PROFILES,
     "display": DISPLAY_PROFILES,
@@ -2140,10 +3684,11 @@ PROFILE_LIBRARY = {
 #   tools/verify.py); its absolute level is a modelling choice, not a measurement.
 # The reference camcorder this project was largely calibrated against.
 SONY_DCR_TRV310E = {"label": "Sony DCR-TRV310E", "layers": {
-    "camera": {"sensor_type": 0.0, "sensor_noise": 0.08, "ccd_gain": 0.65,
+    "camera": {"sensor_type": 0.0, "sensor_noise": 0.09, "ccd_gain": 0.68,
                "sharpness": 0.82, "chroma_aberration": 0.04, "dynamic_range": 7.5,
                "color_cast": 0.45, "white_balance_temp": 0.0,
-               "ccd_smear": 0.25, "halation": 0.25},
+               "ccd_smear": 0.58, "halation": 0.44, "halation_source_colour": 0.65,
+               "light_streak_amount": 0.38, "overflow_drain": 0.24},
     "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0,
                "chroma_vertical_averaging": 0.0, "color_noise": 0.04, "edge_boost": 0.18},
     "codec": {"dv_enabled": 1.0, "dv_quality": 0.90, "dv_base_step": 0.015},
@@ -2180,6 +3725,38 @@ CAMCORDER_PRESETS = {
 }
 
 FACTORY_PRESETS = {
+    "sony_ccd_memorystick_still": {
+        "label": "SONY CCD 数码相机 · 内存卡提取原片直出 (Cyber-shot 1024×768 氙气闪光灯 + 铝塑高光与暗木暖阶)",
+        "note": "专为 SONY Cyber-shot CCD 相机 Memory Stick 内存卡提取的 1024×768 JPG 原片校准：保留拍照机械快门（无录像模式的垂直拖尾涂抹）、机顶氙气闪光灯近距中心聚光与四角 5.84x 衰减、暗部木纹暖红棕阶调（R/G=1.308）、铝塑药板冷银高光（B/G=1.048）与 JPEG 8×8 精细微反差",
+        "layers": {
+            "camera": {
+                "sensor_type": 0.0, "sensor_noise": 0.018, "noise_grain": 1.15, "fixed_pattern": 0.01,
+                "dynamic_range": 7.6, "exposure": 0.0, "white_balance_temp": -0.04,
+                "color_cast": 0.06, "highlight_tint": 0.15, "ccd_flash_falloff": 0.85,
+                "sharpness": 1.18, "chroma_aberration": 0.05, "longitudinal_ca": 0.04,
+                "halation": 0.06, "halation_source_colour": 0.65, "ccd_smear": 0.0, "motion_blur": 0.0,
+            },
+            "format": {
+                "filter_kind": 0.0, "luma_bandwidth": 5.8, "chroma_bandwidth": 1.9,
+                "chroma_vertical_averaging": 0.0, "comb_depth": 0.98,
+                "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.01,
+                "edge_boost": 0.16, "chroma_gain": 1.02,
+            },
+            "codec": {"dv_enabled": 0.0, "codec_kind": 0.0},
+            "tape": {
+                "tape_speed": 0.0, "tape_stability": 1.0, "wear": 0.0,
+                "dropout_rate": 0.0, "noise_floor": 0.0, "line_jitter": 0.0,
+                "walk_amplitude": 0.0, "micro_jitter": 0.0, "vertical_instability": 0.0,
+                "head_switching": 0.0, "tracking_error": 0.0, "crease_rate": 0.0,
+            },
+            "player": {
+                "tbc_enabled": 1.0, "tbc_strength": 1.0, "tbc_residual": 0.0,
+                "transport_jitter": 0.0, "head_wear": 0.0, "frequency_response": 0.0,
+                "luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "comb_depth": 0.98,
+                "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0,
+            },
+            "display": {"enabled": 0.0},
+        }},
     "family_archive_1992": {
         "label": "家庭录像（1992 录像机 → VHS 存档）",
         "note": "摄像机 + 格式 + 介质 + 播放 + 显示 五层齐备",
@@ -2191,8 +3768,8 @@ FACTORY_PRESETS = {
                        "cross_color": 0.50, "cross_luma": 0.35, "color_noise": 0.30,
                        "edge_boost": 0.25, "chroma_gain": 1.0},
             "tape": {"tape_speed": 0.0, "tape_stability": 0.55, "wear": 0.25,
-                     "dropout_rate": 0.35, "noise_floor": 0.18, "head_switching": 0.85,
-                     "head_switch_lines": 16.0, "tracking_error": 0.45},
+                     "dropout_rate": 0.35, "noise_floor": 0.18, "head_switching": 0.65,
+                     "head_switch_lines": 6.0, "tracking_error": 0.22},
             "player": {"transport_jitter": 0.45, "tbc_enabled": 0.0, "head_wear": 0.30,
                        "frequency_response": 0.15},
             "display": {"enabled": 0.0, "gamma": 2.35, "scanlines": 0.35, "bloom": 0.35, "overscan": 0.0,
@@ -2228,7 +3805,7 @@ FACTORY_PRESETS = {
         }},
     "mouldy_archive": {
         "label": "发霉存档带",
-        "note": "潮湿存放：黏合剂吸水、磁粉层脱落。色度先死、亮度塌陷、高频颗粒（对照 SVHS录像带翻录P制烂碟.mp4 发霉脱粉段标定）",
+        "note": "潮湿存放：黏合剂吸水、磁粉层脱落。色度先死、亮度塌陷、高频颗粒（潮湿霉变脱粉磁带实测标定）",
         "layers": {
             "camera": {"ccd_smear": 0.0, "halation": 0.05, "fixed_pattern": 0.0},
             "format": {"chroma_gain": 0.04, "color_noise": 0.01, "cross_color": 0.02},
@@ -2238,8 +3815,8 @@ FACTORY_PRESETS = {
             "display": {"enabled": 0.0},
         }},
     "svhs_disc_rot": {
-        "label": "S-VHS 烂碟转录",
-        "note": "磁迹严重劣化：直流恢复/消隐钳位失常导致亮度基底塌陷而色度过饱和保留（实测 sat 0.92 / mean 0.20），伴随整行色相错乱与跟踪撕裂（对照 SVHS录像带翻录P制烂碟.mp4 标定）",
+        "label": "S-VHS 消隐钳位失常劣化带转录",
+        "note": "磁迹严重劣化：直流恢复/消隐钳位失常导致亮度基底塌陷而色度过饱和保留（实测 sat 0.92 / mean 0.20），伴随整行色相错乱与跟踪撕裂（S-VHS 劣化磁带直流恢复失常实测标定）",
         "layers": {
             "camera": {"ccd_smear": 0.0, "halation": 0.10, "sensor_noise": 0.04},
             "format": {"luma_bandwidth": 4.6, "chroma_gain": 1.65, "color_noise": 0.32},
@@ -2264,7 +3841,7 @@ FACTORY_PRESETS = {
         "label": "Video CD（MPEG-1 352x240）",
         "note": "VCD 编码：352x240 四分之一分辨率重采样、4:2:0 色度、粗量化、运动补偿预测。"
                 "伪影跟着**预测成败**走，不是逐帧独立的噪声——"
-                "这是它区别于 DV 与模拟通路的地方（对照 爱威_深圳音像公司开头.mp4 标定）。",
+                "这是它区别于 DV 与模拟通路的地方（早期 MPEG-1 VCD 实测标定）。",
         "layers": {
             "camera": {"sensor_noise": 0.02, "sharpness": 1.0, "ccd_smear": 0.0,
                        "halation": 0.05, "chroma_aberration": 0.0, "fixed_pattern": 0.0},
@@ -2282,8 +3859,8 @@ FACTORY_PRESETS = {
             "display": {"enabled": 0.0},
         }},
     "vcd_crt_offscreen": {
-        "label": "VCD 碟机 → 家用 CRT 电视屏摄（爱威音像片头实拍）",
-        "note": "MPEG-1 352x240 4:2:0 运动补偿块伪影 + 家用球面 CRT 显像管（管面曲率、轻微梯形失真、高光泛光与扫描线，对照 爱威_深圳音像公司开头.mp4 标定）",
+        "label": "VCD 碟机 → 家用球面 CRT 电视屏摄",
+        "note": "MPEG-1 352x240 4:2:0 运动补偿块伪影 + 家用球面 CRT 显像管（管面曲率、轻微梯形失真、高光泛光与扫描线，早期 MPEG-1 VCD 屏摄实测标定）",
         "layers": {
             "camera": {"sensor_noise": 0.02, "sharpness": 1.0, "ccd_smear": 0.0,
                        "halation": 0.08, "chroma_aberration": 0.02, "fixed_pattern": 0.0},
@@ -2302,8 +3879,8 @@ FACTORY_PRESETS = {
                         "vignette": 0.16, "interlace_flicker": 0.02, "reflection": 0.03},
         }},
     "zibo_1992_rf_weak": {
-        "label": "1992 淄博电视台动画片弱信号实拍（RF 雪花 + 行失锁 + VHS 录放）",
-        "note": "开路电视射频载噪比骤降：中频宽带雪花与 AGC 黑电平抬升将亮度与色度一并淹没（sat 降至 ~0.23，hf 升至 ~0.58），伴随行 AFC 失锁撕裂与 VHS 底部磁头切换带（对照 1992年淄博电视台动画片播放中的信号异常录像.mp4 标定）",
+        "label": "1992 地方电视台弱信号录像（RF 雪花 + 行失锁 + VHS 录放）",
+        "note": "开路电视射频载噪比骤降：中频宽带雪花与 AGC 黑电平抬升将亮度与色度一并淹没（sat 降至 ~0.23，hf 升至 ~0.58），伴随行 AFC 失锁撕裂与 VHS 底部磁头切换带（开路电视弱信号 VHS 录放实测标定）",
         "layers": {
             "camera": {"sensor_noise": 0.02, "ccd_smear": 0.0, "halation": 0.08,
                        "chroma_aberration": 0.02, "fixed_pattern": 0.0, "sharpness": 0.92},
@@ -2326,7 +3903,7 @@ FACTORY_PRESETS = {
         }},
     "panasonic_1986_ccd_nv180": {
         "label": "1986 松下初代 CCD 肩扛摄像机 + NV-180 背包录像机（实拍标定）",
-        "note": "1986 年初代补色马赛克 CCD 肩扛机经多芯脐带线接入松下 NV-180 便携式 VHS 背包机：6.8 档动态范围与天空高光青蓝偏色（R/G≈0.60, B/G≈1.03）、2.8 MHz 亮度孔径预加重白边过冲、550 kHz 欠载色度群延迟右移拖尾（~5 px）、底部 7 行磁头切换水平跳变与右侧 31-49 px HBI 黑边阶跃及底行半行消隐截断（对照 10月16日.mp4 标定）",
+        "note": "1986 年初代补色马赛克 CCD 肩扛机经多芯脐带线接入松下 NV-180 便携式 VHS 背包机：6.8 档动态范围与天空高光青蓝偏色（R/G≈0.60, B/G≈1.03）、2.8 MHz 亮度孔径预加重白边过冲、550 kHz 欠载色度群延迟右移拖尾（~5 px）、底部 7 行磁头切换水平跳变与右侧 31-49 px HBI 黑边阶跃及底行半行消隐截断",
         "layers": {
             "camera": {
                 "sensor_type": 0.0, "sensor_noise": 0.025, "fixed_pattern": 0.02,
@@ -2358,8 +3935,8 @@ FACTORY_PRESETS = {
             "display": {"enabled": 0.0},
         }},
     "beijing_youth_vhs_1990s": {
-        "label": "1990 年代 VHS 出版带片头（北京市青少年音像出版社实拍）",
-        "note": "PAL VHS SP 原版出版带：3.0 MHz 亮度与 629 kHz 欠载色度横向洇色、高光金色光晕、偶发整行错色与底部磁头切换带（对照 北京市青少年音像出版社片头(VHS_1990年后).mp4 标定）",
+        "label": "1990 年代 VHS 原版出版带片头（PAL SP 欠载色度与高光金晕）",
+        "note": "PAL VHS SP 原版出版带：3.0 MHz 亮度与 629 kHz 欠载色度横向洇色、高光金色光晕、偶发整行错色与底部磁头切换带（1990 年代 PAL VHS SP 出版带实测标定）",
         "layers": {
             "camera": {"sensor_noise": 0.03, "ccd_smear": 0.0, "halation": 0.22,
                        "halation_source_colour": 0.85, "chroma_aberration": 0.03,
@@ -2421,12 +3998,13 @@ FACTORY_PRESETS = {
         }},
     "digital8_trv310e": {
         "label": "Sony DCR-TRV310E（Digital8 自动白平衡实拍）",
-        "note": "1/4 英寸 互补色 CFA CCD + 低照度 AGC 三分量噪波（CDS 横向散粒噪 + CFA 差分色斑 + 光学黑行钳位）+ 自然冷灰青 AWB（对照 10月15日.mp4 标定；调低白平衡色温可切至深蓝）",
+        "note": "1/4 英寸 互补色 CFA CCD + 非均匀信号相关噪波（纯黑天光消隐钳位 + 暗部/光晕裙边散粒AGC与8x8块噪波 + 高光核满阱平顶）+ 多瓣扇形高光溢出与上下非对称伴随暗槽垂直拖尾（低照度实拍标定）",
         "layers": {
-            "camera": {"sensor_type": 0.0, "sensor_noise": 0.08, "ccd_gain": 0.65,
+            "camera": {"sensor_type": 0.0, "sensor_noise": 0.09, "ccd_gain": 0.68,
                        "sharpness": 0.82, "chroma_aberration": 0.04, "dynamic_range": 7.5,
                        "color_cast": 0.45, "white_balance_temp": 0.0,
-                       "ccd_smear": 0.25, "halation": 0.25},
+                       "ccd_smear": 0.58, "halation": 0.44, "halation_source_colour": 0.65,
+                       "light_streak_amount": 0.38, "overflow_drain": 0.24},
             "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0,
                        "chroma_vertical_averaging": 0.0, "color_noise": 0.04, "edge_boost": 0.18},
             "codec": {"dv_enabled": 1.0, "dv_quality": 0.90, "dv_base_step": 0.015},
@@ -2437,9 +4015,51 @@ FACTORY_PRESETS = {
                        "luma_bandwidth": 5.0, "chroma_bandwidth": 2.0},
             "display": {"enabled": 0.0},
         }},
+    "digital8_trv310e_night_street": {
+        "label": "Sony DCR-TRV310E（夜间路灯/走廊实拍标定：非均匀噪波 + 多瓣高光溢出 + 伴随暗槽垂直拖尾）",
+        "note": "SONY DCR-TRV310E 夜间实拍标定：纯黑天光（L<0.03）经光学黑钳位与DV死区抑制近乎无噪，中暗部路面/树冠与路灯高光裙边（L∈[0.12,0.85]）呈现强烈横向CDS条纹、4:1:1互补色CFA红绿/蓝黄色斑与8×8宏块颗粒，高光过曝核（L>0.90）满阱平顶；路灯周围呈6瓣不对称扇形星芒裙边与走廊小灯竖菱形水滴光斑，隔行CCD垂直溢出向下呈细锐青白针状亮线并在两侧伴随VOD/HOD抽吸暗槽（深度-0.15~-0.28），向上呈宽软快衰减羽流",
+        "layers": {
+            "camera": {"sensor_type": 0.0, "sensor_noise": 0.10, "ccd_gain": 0.72,
+                       "sharpness": 0.84, "chroma_aberration": 0.05, "dynamic_range": 7.4,
+                       "color_cast": 0.42, "white_balance_temp": -0.05,
+                       "ccd_smear": 0.68, "halation": 0.48, "halation_source_colour": 0.70,
+                       "light_streak_amount": 0.46, "light_streak_length": 0.72,
+                       "overflow_drain": 0.28, "overflow_width": 2.0},
+            "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0,
+                       "chroma_vertical_averaging": 0.0, "color_noise": 0.04, "edge_boost": 0.18},
+            "codec": {"dv_enabled": 1.0, "dv_quality": 0.88, "dv_base_step": 0.016},
+            "tape": {"dropout_rate": 0.0, "noise_floor": 0.02, "line_jitter": 0.02,
+                     "walk_amplitude": 0.02, "micro_jitter": 0.02, "head_switching": 0.0,
+                     "shuttle_mode": 2.0},
+            "player": {"tbc_enabled": 1.0, "head_wear": 0.04, "transport_jitter": 0.04,
+                       "luma_bandwidth": 5.0, "chroma_bandwidth": 2.0},
+            "display": {"enabled": 0.0},
+        }},
+    "hk_vhs_commercial_early": {
+        "label": "PAL VHS 底部磁头切换带精细模型（双极性换向尖峰 + H-AFC 隔行回拉 + APC 黄绿相移）",
+        "note": "早年 PAL 25fps VHS 广播录带实测标定：画面底部约4~6行（切换带）完整保留广告底图与色彩，在奇偶场各自的磁头切换水平坐标 x_sw 处产生双极性黑白FM限幅尖峰短横簇（宽10~32px）与行内水平跳变折口，横向错位在切换接缝行（bot-2）达峰值（均值7.9px、p90=18px）并随 H-AFC 锁相环向底边指数回拉且带奇偶场梳状错位齿，同时 629kHz 欠载色度经 1H 延迟线产生标志性黄绿/橄榄色（dRGB≈(-0.043,-0.005,-0.055)）APC 相位阶跃偏色",
+        "standard": "pal",
+        "layers": {
+            "camera": {"sensor_noise": 0.025, "sharpness": 0.90, "dynamic_range": 8.0,
+                       "halation": 0.18, "halation_source_colour": 0.75, "ccd_smear": 0.0},
+            "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.65,
+                       "chroma_vertical_averaging": 0.82, "separation_kind": 2.0,
+                       "comb_depth": 0.62, "cross_color": 0.28, "cross_luma": 0.18,
+                       "color_noise": 0.16, "edge_boost": 0.24, "chroma_gain": 1.02},
+            "tape": {"tape_speed": 0.0, "tape_stability": 0.72, "wear": 0.16,
+                     "dropout_rate": 0.18, "noise_floor": 0.12, "line_jitter": 0.16,
+                     "walk_amplitude": 0.12, "micro_jitter": 0.08,
+                     "head_switching": 0.82, "head_switch_lines": 3.0,
+                     "tracking_error": 0.36, "head_switch_mid_line": 0.35},
+            "player": {"tbc_enabled": 0.0, "transport_jitter": 0.20, "head_wear": 0.16,
+                       "preemphasis": 0.22, "ringing": 0.14, "ringing_freq": 0.50,
+                       "luma_bandwidth": 3.0, "chroma_bandwidth": 0.65,
+                       "separation_kind": 2.0, "comb_depth": 0.62},
+            "display": {"enabled": 0.0},
+        }},
     "digital8_trv310e_indoor": {
         "label": "Sony DCR-TRV310E（室内 3200K 锁定 · 深蓝实拍）",
-        "note": "锁定室内钨丝灯白平衡 ([F✋] white_balance_temp = -0.50) 下的深钴蓝冷调 + 低照度 AGC 噪波（对照实拍 c_0203.jpg 标定）",
+        "note": "锁定室内钨丝灯白平衡 ([F✋] white_balance_temp = -0.50) 下的深钴蓝冷调 + 低照度 AGC 噪波",
         "layers": {
             "camera": {"sensor_type": 0.0, "sensor_noise": 0.08, "ccd_gain": 0.65,
                        "sharpness": 0.82, "chroma_aberration": 0.04, "dynamic_range": 7.5,
@@ -2533,6 +4153,84 @@ FACTORY_PRESETS = {
             },
             "display": {"enabled": 0.0},
         }},
+    "panasonic_j27_channel_switch_horror": {
+        "label": "松下 NV-J27 换台瞬态与磁带覆录拼接 (PAL-D VHF 换台失锁 + VBI 滚屏 + 1H DOC)",
+        "note": "针对老式电视高频头换台瞬态与磁带覆录接缝物理建模的整套预设：松下 NV-J27 (PAL-D, +6.5MHz 伴音) 高频头变容二极管换台扫频、"
+                "SAW 奈奎斯特斜坡正交浮雕与包络负片反相、中频 AGC 满增益雪花爆发与直流恢复闪白黑屏、50Hz 场同步失锁垂直滚屏"
+                "（暴露 25 行 VBI 场消隐锤头黑带与 VITC 白点）、行 AFC 顶部旗帜弯折、PAL 汉诺威双行盲窗错色条，以及磁带覆录"
+                "CTL 控制轨跳变、1H 延迟线 DOC 失落补偿彗星尾与底部磁头切换带",
+        "standard": "pal",
+        "layers": {
+            "camera": {
+                "sensor_noise": 0.05, "noise_grain": 1.4, "fixed_pattern": 0.03,
+                "chroma_aberration": 0.08, "motion_blur": 0.20, "sharpness": 0.88,
+                "exposure": -0.08, "white_balance_temp": -0.08, "ccd_smear": 0.22,
+                "halation": 0.32, "halation_source_colour": 0.75, "dynamic_range": 7.4,
+                "shadow_depth": 0.28, "dsp_contrast": 0.22,
+            },
+            "format": {
+                "filter_kind": 1.0, "filter_sections": 3.0,
+                "luma_bandwidth": 2.85, "chroma_bandwidth": 0.58,
+                "chroma_vertical_averaging": 0.85, "separation_kind": 2.0,
+                "comb_depth": 0.65, "cross_color": 0.42, "cross_luma": 0.28,
+                "edge_boost": 0.34, "color_noise": 0.26, "chroma_gain": 1.08,
+                "chroma_lag": 0.22,
+            },
+            "connector": {
+                "av_present": 1.0, "av_moisture": 0.08, "av_corrosion": 0.05,
+                "av_ground_loop": 0.14, "mains_hz": 50.0,
+                "rf_present": 0.0,
+            },
+            "rf": {
+                "enabled": 1.0, "tv_standard": 0.0, "channel_mhz": 8.0, "carrier_offset_mhz": 1.25,
+                "propagation_mode": 0.0, "distance_km": 38.0,
+                "signal_dbm": -62.0, "noise_figure_db": 8.5,
+                "tuning_offset_khz": 28.0, "if_saw_ringing": 0.38,
+                "sync_loss_threshold_db": 29.0, "sync_loss_amount": 0.95,
+                "color_killer_threshold_db": 20.5,
+                "adjacent_channel": 0.22, "broadcast_noise": 0.16,
+                "channel_switch_rate": 0.55, "channel_switch_dur_s": 0.48,
+                "lo_sweep_mhz": 0.82, "vsync_roll": 0.85, "vbi_bar_vis": 0.88,
+                "flagging": 0.72, "hanover_bars": 0.68,
+            },
+            "tape": {
+                "tape_speed": 0.0, "sp_lp_mix": 0.25, "tape_stability": 0.48,
+                "line_jitter": 0.34, "walk_amplitude": 0.26, "micro_jitter": 0.18,
+                "vertical_instability": 0.12, "row_timebase": 0.16,
+                "head_switching": 0.88, "head_switch_lines": 12.0, "head_switch_mid_line": 0.35,
+                "tracking_error": 0.48, "tracking_noise_rows": 36.0,
+                "tracking_noise_wave": 1.8, "tracking_noise_snow": 0.28,
+                "dropout_rate": 0.85, "dropout_len": 3.2, "dropout_color": 0.42,
+                "doc_hold": 0.78, "edit_glitch_rate": 0.35, "edit_glitch_severity": 0.75,
+                "wear": 0.34, "crease_rate": 0.22, "noise_floor": 0.22,
+                "row_chroma_error": 0.14, "row_chroma_phase": 34.0,
+            },
+            "player": {
+                "tbc_enabled": 0.0, "transport_jitter": 0.36, "head_wear": 0.24,
+                "preemphasis": 0.32, "ringing": 0.26, "ringing_freq": 0.50,
+                "luma_bandwidth": 2.9, "chroma_bandwidth": 0.60,
+                "separation_kind": 2.0, "comb_depth": 0.65,
+                "cross_color": 0.38, "cross_luma": 0.26, "color_noise": 0.22,
+            },
+            "display": {
+                "enabled": 1.0, "gamma": 2.38, "contrast": 0.58, "brightness": 0.48,
+                "saturation": 0.52, "scanlines": 0.36, "spot_sigma": 0.40,
+                "spot_bloom": 0.52, "bloom": 0.38, "glass_halation": 0.36,
+                "phosphor_saturation": 0.38, "mask_type": 1.0, "mask_pitch": 3.0,
+                "mask_depth": 0.38, "phosphor_rgb": 0.58, "geometry_warp": 0.16,
+                "curvature": 0.24, "corner_defocus": 0.32, "convergence": 0.24,
+                "ehv_sag": 0.35, "breathing": 0.28, "vignette": 0.28,
+                "interlace_flicker": 0.26, "bezel": 0.32,
+            },
+            "audio": {
+                "enabled": 1.0, "mode": 6.0, "wow_flutter": 0.42,
+                "stiction_pitch": 0.68, "dropout_sensitivity": 0.65,
+                "azimuth_loss": 0.28, "hiss_floor": 0.32,
+                "head_switch_buzz": 0.38, "ground_hum": 0.24, "rf_buzz": 0.58,
+                "linear_bandwidth": 5400.0, "saturation": 0.36,
+                "speaker_sim": 0.45, "flyback_whine": 0.22,
+            },
+        }},
     "mibox_vhf6_panasonic_j27_pal_d": {
         "label": "小米盒子 720p60 → HDMI-AV → PAL-D VHF 6频道(171.25MHz) → 松下 NV-J27 → AV采集卡（16:9→4:3 二次压扁）",
         "note": "小米盒子（720P 60Hz 强制 16:9 输出）→ HDMI-AV 转换盒 → PAL-D 射频调制（VHF 6 频道：168–176 MHz，图像载波 171.25 MHz，伴音载波 177.75 MHz，6.5 MHz 伴音间隔）经闭路电视同轴线进入松下 NV-J27 录像机高频头，4:3 原图被 16:9→4:3 二次横向压缩为 ×0.75（9:16 瘦长比例 + 两侧 12.5% 消隐黑边），再由录像机 AV 端子输出至电脑采集卡",
@@ -2580,7 +4278,7 @@ FACTORY_PRESETS = {
         }},
     "hdmi_av_rf_hdmi_damp": {
         "label": "HDMI→AV→RF→HDMI 回路（RF 接口受潮实拍）",
-        "note": "HDMI 数字源 → AV 复合转换盒 → RF 射频调制（频道 86）→ 受潮同轴 RF 接口（介电常数骤升 + 氧化整流）→ 高频头解调 → HDMI 采集：双稳态行同步延迟（右侧 HBI 黑边内缩与撕裂）、色同步门偏移反相（蓝屏翻转为炽烈红橙与横向失锁彩带）、斜向 6.4×10.2px 驻波差拍网格纹及行钳位充放电横条（对照实拍 RF转录.mp4 标定）",
+        "note": "HDMI 数字源 → AV 复合转换盒 → RF 射频调制（频道 86）→ 受潮同轴 RF 接口（介电常数骤升 + 氧化整流）→ 高频头解调 → HDMI 采集：双稳态行同步延迟（右侧 HBI 黑边内缩与撕裂）、色同步门偏移反相（蓝屏翻转为炽烈红橙与横向失锁彩带）、斜向 6.4×10.2px 驻波差拍网格纹及行钳位充放电横条",
         "layers": {
             "camera": {"sensor_noise": 0.0, "noise_grain": 0.0, "sharpness": 1.0,
                        "chroma_aberration": 0.0, "ccd_smear": 0.0, "halation": 0.0},
@@ -2605,7 +4303,7 @@ FACTORY_PRESETS = {
         }},
     "sony_cctv_composite": {
         "label": "Sony 工业枪机 CCD（BNC 转 AV 复合视频采集卡直采）",
-        "note": "Sony Color Video Camera 工业枪机（外绑 12V 锂电 + DC 自动光圈 C 口镜头）经 BNC-RCA 复合视频线直入 USB 采集卡：赛德尔彗差三瓣扇形、自动光圈叶片衍射暗缺口、CCD 溢出漏极（VOD/HOD）前缘黑弧、上缘暖橙色散与右下钴蓝彗尾（对照实拍 477B4B7BED73D24392E50BA6BE1C3B65.jpg 标定）",
+        "note": "Sony Color Video Camera 工业枪机（外绑 12V 锂电 + DC 自动光圈 C 口镜头）经 BNC-RCA 复合视频线直入 USB 采集卡：赛德尔彗差三瓣扇形、自动光圈叶片衍射暗缺口、CCD 溢出漏极（VOD/HOD）前缘黑弧、上缘暖橙色散与右下钴蓝彗尾",
         "layers": {
             "camera": {"sensor_type": 0.0, "sensor_noise": 0.012, "ccd_gain": 0.05,
                        "sharpness": 1.16, "dynamic_range": 7.8,
@@ -2654,7 +4352,14 @@ FACTORY_PRESETS = {
         }},
     "minidv_clean": {
         "label": "MiniDV 干净",
-        "layers": {"codec": {"dv_enabled": 1.0, "dv_quality": 1.0}, "display": {"enabled": 0.0}}},
+        "layers": {
+            "camera": {"sharpness": 0.98, "chroma_aberration": 0.0, "sensor_noise": 0.02, "ccd_smear": 0.0, "halation": 0.05},
+            "format": {"luma_bandwidth": 5.2, "chroma_bandwidth": 1.8, "chroma_vertical_averaging": 0.0, "color_noise": 0.02},
+            "codec": {"dv_enabled": 1.0, "dv_quality": 1.0},
+            "tape": {"dropout_rate": 0.0, "noise_floor": 0.01, "line_jitter": 0.01, "walk_amplitude": 0.01, "head_switching": 0.0},
+            "player": {"tbc_enabled": 1.0, "transport_jitter": 0.02, "head_wear": 0.02, "luma_bandwidth": 5.2, "chroma_bandwidth": 1.8},
+            "display": {"enabled": 0.0},
+        }},
     "minidv_shuttle": {
         "label": "MiniDV / Digital8 快进/倒带搜索",
         "note": "解码器用缓冲区旧帧补齐——成片、带锯齿边缘的 16x16 宏块残留",
@@ -2676,7 +4381,7 @@ FACTORY_PRESETS = {
             "display": {"enabled": 0.0},
         }},
     "capital_mv_cue_4bars": {
-        "label": "1992 罗大佑《首都》MV · 全屏 5x 快进跨轨扫描线（4条双峰噪波条 · 19.5s 实测标定）",
+        "label": "VHS 全屏 5x 快进跨轨搜索扫描线（4条双峰方位角噪波条）",
         "note": "螺旋扫描磁鼓 5x 倍速搜索（Cue/Review）跨越 |5-1|=4 条磁迹：垂直等距 (281 px) 向下滚动 (68 px/帧) 的 4 条灰白限幅器噪波条 (L=0.565) + 尾部 H-Sync 电压黑槽切口 (L=0.25) 与副峰回弹 + 629 kHz 欠载色度消隐",
         "layers": {
             "camera": {"sensor_noise": 0.03, "sharpness": 0.90, "dynamic_range": 8.0},
@@ -2697,7 +4402,7 @@ FACTORY_PRESETS = {
             "display": {"enabled": 0.0},
         }},
     "capital_mv_pip_9bars": {
-        "label": "1992 罗大佑《首都》MV · 分屏子窗 9x 搜索扫描线（8条主副噪波条 · 6.0s 实测标定）",
+        "label": "VHS 分屏子窗 9x 倍速搜索扫描线（8条主副跨轨噪波条）",
         "note": "DVE 切换台上半幅子窗（Y ∈ [0, 0.562H]）输入 9x 倍速搜索画面：主条周期 129.3 px、含方位角副条共 8 条水平噪波带以 21 px/帧匀速下滚，峰值 L=0.750，行同步错位右移 +48 px，下半幅红衣队列保持正常锁相播放",
         "layers": {
             "camera": {"sensor_noise": 0.03, "sharpness": 0.92, "dynamic_range": 8.0},
@@ -3164,7 +4869,7 @@ FACTORY_PRESETS["hk_vcd_bauhinia_1999"] = {
 
 
 FACTORY_PRESETS["vhs_gen_1_master"] = {
-    "label": "VHS 迭代翻录实验 · 第 1 代母带（清晰基准 · 对照 2.5s 实拍）",
+    "label": "VHS 迭代翻录实验 · 第 1 代母带（清晰基准）",
     "note": "首代 VHS 录制直采（关闭 CRT 显示）：保留 3.0 MHz 柔和亮度、轻微 629 kHz 色度水平柔和度与底部单层磁头切换带",
     "standard": "ntsc",
     "layers": {
@@ -3182,7 +4887,7 @@ FACTORY_PRESETS["vhs_gen_1_master"] = {
     },
 }
 FACTORY_PRESETS["vhs_gen_8_dub"] = {
-    "label": "VHS 迭代翻录实验 · 第 8 代翻录（色度下垂洇色 + 边缘振铃显现 · 对照 28.5s 实拍）",
+    "label": "VHS 迭代翻录实验 · 第 8 代翻录（色度下垂洇色 + 边缘振铃显现）",
     "note": "经过 8 代 VCR→VCR 反复翻录：红蓝条纹衫与面部色块向右下跨界漂移约 10 px，人物头发与衣领右侧浮现明显黑白预加重振铃伴影，黑位抬升、高光偏黄绿",
     "standard": "ntsc",
     "layers": {
@@ -3200,7 +4905,7 @@ FACTORY_PRESETS["vhs_gen_8_dub"] = {
     },
 }
 FACTORY_PRESETS["vhs_gen_18_heavy"] = {
-    "label": "VHS 迭代翻录实验 · 第 18 代重度损耗（多重斑马振铃 + 色彩坍塌 · 对照 54.5s 实拍）",
+    "label": "VHS 迭代翻录实验 · 第 18 代重度损耗（多重斑马振铃 + 色彩坍塌）",
     "note": "经过 18 代反复翻录：多级 FM 孔径过冲形成强烈的多重黑白斑马纹轮廓光环，色度严重脱节下垂且粉紫/黄绿偏色，右侧 HBI 钳位白噪带加宽，行同步剧烈蛇形摆动",
     "standard": "ntsc",
     "layers": {
@@ -3218,7 +4923,7 @@ FACTORY_PRESETS["vhs_gen_18_heavy"] = {
     },
 }
 FACTORY_PRESETS["vhs_gen_20_sync_collapse"] = {
-    "label": "VHS 迭代翻录实验 · 第 20 代同步崩溃与消色（黑白斜纹失锁 · 对照 60.5s–66.5s 实拍）",
+    "label": "VHS 迭代翻录实验 · 第 20 代同步崩溃与消色（黑白斜纹失锁）",
     "note": "第 20 代极限翻录：行同步脉冲圆化跌破 AFC 锁相门限，自动消色器（Color Killer）切断色度变为黑白，全屏爆发高反差 FM 差拍斜纹与水平行撕裂，仅隐约可见人物剪影",
     "standard": "ntsc",
     "layers": {
@@ -3236,21 +4941,1011 @@ FACTORY_PRESETS["vhs_gen_20_sync_collapse"] = {
     },
 }
 
+
+FACTORY_PRESETS["smpte_pluge_calibration_bench"] = {
+    "label": "SMPTE RP-219 彩条与 PLUGE 广播级闭环校准台 (TSG-170A → VHS → TBC → 示波器)",
+    "note": "机内测试信号发生器输出标准 SMPTE 75% 彩条、反向蓝条、-I/100%白/+Q 与 PLUGE (-4/0/+4 IRE) 黑位脉冲，经 VHS 磁带录放与数字 TBC 后送入波形/矢量示波器，自动闭环测量黑位截断、微分增益 (DG) 与微分相位 (DP)",
+    "standard": "ntsc",
+    "layers": {
+        "format": {
+            "test_gen_enabled": 1.0, "test_pattern_mode": 1.0, "test_tone_mode": 1.0,
+            "test_amplitude_ire": 100.0, "luma_bandwidth": 3.2, "chroma_bandwidth": 0.75,
+            "chroma_gain": 1.0, "burst_phase_error": 3.0,
+        },
+        "tape": {
+            "tape_speed": 0.0, "tape_stability": 0.68, "line_jitter": 0.25,
+            "walk_amplitude": 0.20, "wear": 0.15, "dropout_rate": 0.15,
+            "noise_floor": 0.12, "head_switching": 0.65, "head_switch_lines": 10.0,
+        },
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.90, "tbc_residual": 0.08,
+            "transport_jitter": 0.15, "head_wear": 0.12,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["fcc_multiburst_vhs_freq_sweep"] = {
+    "label": "FCC 0.5–5.0 MHz 多波群频响测试与 TBC 抑抖校准台 (Multiburst)",
+    "note": "注入 0.5 / 1.0 / 2.0 / 3.0 / 4.2 / 5.0 MHz 标准正弦多波群图卡，直接测量滤波器、同轴电缆与磁带通道在各频点的 dB 衰减及 -3 dB 实测带宽截止点",
+    "standard": "ntsc",
+    "layers": {
+        "format": {
+            "test_gen_enabled": 1.0, "test_pattern_mode": 3.0, "test_tone_mode": 3.0,
+            "test_amplitude_ire": 100.0, "luma_bandwidth": 3.0, "chroma_bandwidth": 0.75,
+            "edge_boost": 0.15,
+        },
+        "tape": {
+            "tape_speed": 0.0, "tape_stability": 0.72, "line_jitter": 0.22,
+            "wear": 0.18, "dropout_rate": 0.0, "noise_floor": 0.08, "head_switching": 0.0,
+        },
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.92, "tbc_residual": 0.06,
+            "head_wear": 0.15, "luma_bandwidth": 3.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["broadcast_multiview_quad_wall"] = {
+    "label": "演播室 2×2 四分屏 CRT 监视墙（CAM / VTR-RAW / TBC-OUT / PGM 同屏监看）",
+    "note": "还原 90 年代导播室四分屏监视墙：4 台 CRT 分别监看摄像机源、磁带原始重放 (TBC Off 含底部切头撕裂)、TBC 锁相输出与主播出 PGM，且每台监视器具有独立 CRT 色温/欠扫描/荧光粉老化性格与硬件 Tally/UMD 标牌",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.05, "sharpness": 0.88, "halation": 0.25},
+        "format": {"luma_bandwidth": 3.1, "chroma_bandwidth": 0.72, "cross_color": 0.35},
+        "tape": {
+            "tape_speed": 0.0, "tape_stability": 0.52, "line_jitter": 0.38,
+            "walk_amplitude": 0.28, "wear": 0.24, "dropout_rate": 0.35,
+            "noise_floor": 0.16, "head_switching": 0.85, "head_switch_lines": 14.0,
+            "tracking_error": 0.42,
+        },
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.92, "tbc_residual": 0.06,
+            "transport_jitter": 0.20, "head_wear": 0.18,
+        },
+        "display": {
+            "enabled": 1.0, "mv_enabled": 1.0, "mv_layout": 0.0,
+            "mv_unit_variance": 0.65, "mv_fault_channel": 0.0,
+            "mv_fault_mode": 0.0, "mv_tally_umd": 0.0,
+        },
+    },
+}
+FACTORY_PRESETS["mcr_six_bridge_fault_wall"] = {
+    "label": "总控机房 3×2 六画面监视桥（含通道失锁雪花/蓝屏/自由滚屏与 单色同步监看管）",
+    "note": "还原总控机房 (MCR) 6 窗口监视桥：包含 D65 特丽珑主监、JVC 欠扫描机房监看、池上老化绿偏管、单色黑白同步检查管与 9300K 家用接收机，并在第 2 通道演示硬件失锁告警状态",
+    "standard": "pal",
+    "layers": {
+        "format": {"luma_bandwidth": 3.2, "chroma_bandwidth": 0.75},
+        "tape": {"tape_stability": 0.58, "line_jitter": 0.32, "head_switching": 0.80, "head_switch_lines": 12.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.90},
+        "display": {
+            "enabled": 1.0, "mv_enabled": 1.0, "mv_layout": 1.0,
+            "mv_unit_variance": 0.75, "mv_fault_channel": 2.0,
+            "mv_fault_mode": 5.0, "mv_tally_umd": 0.0,
+        },
+    },
+}
+
+
+FACTORY_PRESETS["studio_ccu_multi_cam_match"] = {
+    "label": "演播室集中式 CCU 多机位色彩配平与 Blackburst 主同步工作台",
+    "note": "模拟演播室机房视频工程师通过 CCU 遥调 2 号偏暖采访机 (Ikegami HL-55) 的光圈、总黑电平、R/B 白平衡与黑平衡基座，并通过 35 米脐带电缆连接主同步发生器 (BB Genlock)",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {
+            "ccu_enabled": 1.0, "ccu_cam_id": 1.0, "ccu_iris_ev": 0.15,
+            "ccu_master_pedestal_ire": 2.5, "ccu_r_gain": 0.92, "ccu_b_gain": 1.12,
+            "ccu_r_flare": -0.015, "ccu_b_flare": 0.012,
+            "ccu_knee_point": 0.80, "ccu_knee_slope": 0.30,
+            "genlock_mode": 0.0, "genlock_cable_len_m": 35.0,
+            "genlock_sc_phase_deg": 0.0, "genlock_h_phase_px": 0.0,
+        },
+        "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 1.1},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.95},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["genlock_cable_phase_and_unlock"] = {
+    "label": "演播室 45m 脐带线缆未补偿相移与外同步掉锁故障对照台",
+    "note": "模拟 45 米同轴脐带线未做 SC-Phase / H-Phase 补偿时引起的 ~293° 副载波色相偏转与水平消隐错位；可将 genlock_mode 切至 2 观察内晶振自由漂移滚屏",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {
+            "ccu_enabled": 1.0, "ccu_cam_id": 0.0,
+            "genlock_mode": 1.0, "genlock_cable_len_m": 45.0,
+            "genlock_sc_phase_deg": 0.0, "genlock_h_phase_px": 0.0,
+        },
+        "format": {"test_gen_enabled": 1.0, "test_pattern_mode": 1.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["mcr_master_playout_on_air"] = {
+    "label": "电视台总控主播出台 (PGM + DSK 台标/时钟/游走字幕 + Clean Feed 净输出)",
+    "note": "还原电视台主控播出链路：支持一键切换监看「主播出母线 PGM（含 DSK 台标与游走字幕）」、「干净净画面 Clean Feed（无台标）」与「主控双总线导播控制台视图 (bus=3)」",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.03, "sharpness": 0.95},
+        "format": {"luma_bandwidth": 3.6, "chroma_bandwidth": 0.90},
+        "tape": {"tape_stability": 0.78, "line_jitter": 0.14, "head_switching": 0.45, "head_switch_lines": 8.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.92},
+        "display": {"enabled": 0.0},
+        "overlay": {
+            "playout_enabled": 1.0, "playout_output_bus": 3.0,
+            "playout_state": 0.0, "playout_dsk_enabled": 1.0,
+            "playout_dsk_crawl": 1.0, "playout_failover_auto": 1.0,
+        },
+    },
+}
+FACTORY_PRESETS["mcr_emergency_failover_desk"] = {
+    "label": "主控播出故障应急接管与「PLEASE STAND BY / 请稍候」垫片切换台",
+    "note": "模拟磁带断流或手动应急切入备用彩条垫片，同时保持下游键控器 (DSK) 台标、广播时钟与抢修游走通告正常在播，并实时生成广播级 As-Run 事件日志",
+    "standard": "pal",
+    "layers": {
+        "display": {"enabled": 0.0},
+        "overlay": {
+            "playout_enabled": 1.0, "playout_output_bus": 0.0,
+            "playout_state": 2.0, "playout_dsk_enabled": 1.0,
+            "playout_dsk_crawl": 1.0, "playout_failover_auto": 1.0,
+        },
+    },
+}
+
 CAMCORDER_PRESETS["sony_trv310e"] = CAMCORDER_PRESETS["sony_dcr_trv310e"]
 FACTORY_PRESETS["pro_transfer"] = FACTORY_PRESETS["pro_transfer_svhs"]
 FACTORY_PRESETS["rental_tape_horror"] = FACTORY_PRESETS["rental_tape_worn"]
+
+
+# ==================== 三大可重复基准实验与独立胶片光学预设（纯净命名 · 全屏单画面输出） ====================
+for _fp_key in (
+    "bench1_vision3_500t_std",
+    "bench1_vision3_500t_push2",
+    "bench1_vision3_500t_pull1",
+    "bench1_double_x_5222_bw",
+    "bench1_kodachrome_64",
+    "bench1_ektachrome_100d",
+    "bench2_ocn_direct_scan",
+    "bench2_optical_print_gen1",
+    "bench2_optical_print_gen2",
+    "bench2_release_print_gen3",
+    "bench2_flying_spot_telecine",
+    "bench3_cold_vault_archive",
+    "bench3_ambient_natural_aging",
+    "bench3_humid_vinegar_syndrome",
+    "bench3_wet_gate_restoration",
+    "optics_remjet_removed_halation",
+):
+    FACTORY_PRESETS[_fp_key] = {
+        "label": FILM_PROFILES[_fp_key]["label"],
+        "note": FILM_PROFILES[_fp_key]["note"],
+        "standard": "ntsc" if _fp_key == "bench2_flying_spot_telecine" else "pal",
+        "layers": {
+            "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+            "film": dict(FILM_PROFILES[_fp_key]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+        },
+    }
+
+FACTORY_PRESETS["lomo_xpro_cyan_gold_marigold"] = {
+    "label": "正冲负翡翠暖金",
+    "note": FILM_PROFILES["lomo_xpro_e6_in_c41_marigold"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_xpro_e6_in_c41_marigold"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_xpro_violet_heart_bokeh"] = {
+    "label": "负冲正桃心散景",
+    "note": FILM_PROFILES["lomo_xpro_c41_in_e6_heart_bokeh"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_xpro_c41_in_e6_heart_bokeh"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_expired_svema_sunflower_fog"] = {
+    "label": "过期胶卷高底雾",
+    "note": FILM_PROFILES["lomo_expired_svema_sunflower"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 0.95, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_expired_svema_sunflower"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_polaroid_sx70_light_leak"] = {
+    "label": "宝丽来即时显影",
+    "note": FILM_PROFILES["lomo_polaroid_sx70_qlight"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 0.96, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_polaroid_sx70_qlight"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_trioplan_soap_bubble_dandelion"] = {
+    "label": "肥皂泡球差散景",
+    "note": FILM_PROFILES["lomo_trioplan_soap_bubble_dandelion"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_trioplan_soap_bubble_dandelion"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_golden_hour_solar_flare_flood"] = {
+    "label": "黄金逆光阳炎",
+    "note": FILM_PROFILES["lomo_golden_hour_solar_flare_flood"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_golden_hour_solar_flare_flood"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_highkey_milky_veiling_glare"] = {
+    "label": "无镀膜高调柔焦",
+    "note": FILM_PROFILES["lomo_highkey_milky_veiling_glare"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 0.96, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_highkey_milky_veiling_glare"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_tilt_shift_candle_flame_aura"] = {
+    "label": "移轴双层烛火光冕",
+    "note": FILM_PROFILES["lomo_tilt_shift_candle_flame_aura"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.02, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_tilt_shift_candle_flame_aura"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_wong_kar_wai_tungsten_olive"] = {
+    "label": "钨丝灯迫冲绿调",
+    "note": FILM_PROFILES["lomo_wong_kar_wai_tungsten_olive"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 0.96, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_wong_kar_wai_tungsten_olive"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_prussian_rain_paper_boats"] = {
+    "label": "普鲁士蓝雨滴散景",
+    "note": FILM_PROFILES["lomo_prussian_rain_paper_boats"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.02, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_prussian_rain_paper_boats"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_macaron_fairy_lights_pastel"] = {
+    "label": "六边形彩灯散景",
+    "note": FILM_PROFILES["lomo_macaron_fairy_lights_pastel"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 0.98, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_macaron_fairy_lights_pastel"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_petzval_swirl_street_lantern"] = {
+    "label": "匹兹伐切向旋焦",
+    "note": FILM_PROFILES["lomo_petzval_swirl_street_lantern"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_petzval_swirl_street_lantern"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_lca_turquoise_bridge_xpro"] = {
+    "label": "广角弯月镜正冲负",
+    "note": FILM_PROFILES["lomo_lca_turquoise_bridge_xpro"]["note"],
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_lca_turquoise_bridge_xpro"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_optical_halation_bokeh_2x2_lab"] = {
+    "label": "胶片光学散景与光晕",
+    "note": "独立胶片光学模块单屏全画幅展示：Trioplan 肥皂泡亮环散景 + 斜向紫金双色温光雾 + 抗晕光背散射",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_trioplan_soap_bubble_dandelion"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["lomo_photochemical_darkroom_2x2_lab"] = {
+    "label": "胶片暗房交叉冲洗",
+    "note": "独立胶片光化学暗房单屏全画幅展示：E-6 反转片投入 C-41 药水交叉冲洗 + 弯月镜暗角",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        "film": dict(FILM_PROFILES["lomo_xpro_e6_in_c41_marigold"]["layers"]["film"]),
+        "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
 
 # resolve_preset is defined above; expose it from the package's public names
 __all__ = [n for n in dir() if not n.startswith("_")]
 
 
 # Attach per-unit tolerances (UNIT_SPREADS) to SCHEMA parameter specs
+FACTORY_PRESETS["sync_pulse_cross_monitor"] = {
+    "label": "同步与时钟系统 · 广播级监视器脉冲十字检视 (Pulse Cross HBI/VBI 波形)",
+    "note": "开启广播级监视器 Pulse Cross 模式：将水平消隐 (HBI：前肩、-40 IRE 行同步顶、色同步脉冲串) 与垂直消隐 (VBI：均衡脉冲、场同步开槽、VITC 时间码) 移至画面中央十字，直观观测行 AFC 弯钩与同步脉冲形态",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.02, "sharpness": 0.95, "dynamic_range": 8.5, "halation": 0.08, "ccd_smear": 0.0},
+        "format": {"luma_bandwidth": 3.2, "chroma_bandwidth": 0.75, "comb_depth": 0.60, "color_noise": 0.12},
+        "tape": {"tape_stability": 0.68, "line_jitter": 0.22, "head_switching": 0.70, "head_switch_lines": 6.0, "tracking_error": 0.25},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.22, "sync_clip": 0.22, "h_hold": 0.12,
+                   "clock_drift_ppm": 35.0, "clock_jitter": 0.12, "pulse_cross": 1.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["sync_pal_ntsc_mismatch_roll"] = {
+    "label": "同步与时钟系统 · PAL 50Hz 磁带误入 NTSC 59.94Hz 录像机（跨制式滚屏 + VBI 同步带 + 差拍消色）",
+    "note": "模拟将 50Hz PAL 录制的磁带放入 59.94Hz NTSC 机器重放：9.94Hz 场差拍纵向滚屏（上下场交界处显现完整的 VBI 均衡/开槽脉冲与 VITC 时间码带）、15625 vs 15734Hz 行频斜切，以及 4.43MHz 副载波失锁消色与斜向彩虹差拍",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.03, "sharpness": 0.92, "dynamic_range": 8.0, "halation": 0.10, "ccd_smear": 0.0},
+        "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.68, "comb_depth": 0.50, "color_noise": 0.18},
+        "tape": {"tape_stability": 0.58, "line_jitter": 0.28, "head_switching": 0.75, "head_switch_lines": 6.0, "tracking_error": 0.30},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.30, "std_mismatch": 1.0, "sync_clip": 0.30,
+                   "h_hold": 0.16, "v_hold": 0.28, "clock_drift_ppm": 95.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["power_dying_battery_camcorder"] = {
+    "label": "电源与电气系统 · 老化电池欠压与高负载动态塌陷（红外灯/变焦/走带伺服共母线耦合）",
+    "note": "模拟电池电量濒临耗尽 (SoC=0.16) 且内阻升高 (battery_sag=0.72)：开启红外灯/变焦与走带伺服抽取引发母线电压 V_bus 动态塌陷，导致曝光变暗与底噪激增、主导轴伺服掉速（行撕裂+伴音音高下坠）、同步分离门限偏移引发画面顶部弯钩与场抖动",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.06, "sharpness": 0.86, "dynamic_range": 7.5, "wt_zoom": 0.45,
+                   "zoom_dynamic_mode": 3.0, "zoom_speed": 0.50, "halation": 0.20},
+        "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.70, "color_noise": 0.22},
+        "connector": {"battery_level": 0.16, "battery_sag": 0.72, "load_coupling": 1.15,
+                      "psu_ripple": 0.18, "startup_surge": 0.45, "emi_crosstalk": 0.38},
+        "tape": {"tape_stability": 0.52, "line_jitter": 0.32, "stiction_rate": 0.85, "stiction_amount": 0.55,
+                 "head_switching": 0.75, "head_switch_lines": 6.0, "tracking_error": 0.32},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.35, "sync_clip": 0.25, "h_hold": 0.14},
+        "display": {"enabled": 1.0, "scanlines": 0.30, "bloom": 0.28, "breathing": 0.35},
+    },
+}
+FACTORY_PRESETS["power_dried_capacitor_psu_hum"] = {
+    "label": "电源与电气系统 · 线性电源滤波电容干涸（100Hz 全波纹波蛇形扭曲 + 冷机上电浪涌 + 电机 EMI）",
+    "note": "模拟老式录像机/监视器电源滤波电解电容干涸 (ESR 剧增)：100Hz 全波整流充放电锯齿波与 50Hz 半波分量同时调制画面黑电平与行 AFC 锁相环，在垂直边缘形成标志性的 S 形交流声扭曲 (Hum Snake) 与滚动哼声带，伴随电机换向火花纹与伴音 100Hz 蜂鸣",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.04, "sharpness": 0.90, "dynamic_range": 8.0},
+        "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.68, "color_noise": 0.20},
+        "connector": {"av_present": 1.0, "av_ground_loop": 0.28, "mains_hz": 50.0,
+                      "psu_ripple": 0.65, "battery_level": 0.85, "battery_sag": 0.25,
+                      "load_coupling": 0.85, "startup_surge": 0.60, "emi_crosstalk": 0.45},
+        "tape": {"tape_stability": 0.60, "line_jitter": 0.25, "head_switching": 0.70, "head_switch_lines": 6.0},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.28, "sync_clip": 0.18, "h_hold": 0.08},
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["crt_reshoot_shutter_roll_125"] = {
+    "label": "虚拟相机屏摄系统 · 1/125s 高速快门重拍 CRT（扫描亮带下滚 + P22 余辉拖尾）",
+    "note": "把 VHS 信号送入虚拟球面 CRT 后，再用 1/125s 快门的虚拟 CMOS 相机重拍：单次快门仅积分约半场扫描周期，形成前缘炽亮、后缘带 P22 红粉慢余辉的明暗滚动扫描横带",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.04, "sharpness": 0.90, "dynamic_range": 8.0, "halation": 0.15},
+        "format": {"luma_bandwidth": 3.1, "chroma_bandwidth": 0.72, "comb_depth": 0.55, "color_noise": 0.18},
+        "tape": {"tape_stability": 0.65, "line_jitter": 0.22, "head_switching": 0.75, "head_switch_lines": 8.0, "tracking_error": 0.25},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.25},
+        "display": dict(DISPLAY_PROFILES["crt_reshoot_fast_shutter"]["layers"]["display"]),
+    },
+}
+FACTORY_PRESETS["crt_reshoot_rainbow_moire_offaxis"] = {
+    "label": "虚拟相机屏摄系统 · 离轴斜拍特丽珑/槽孔 CRT（二维彩色水波摩尔纹 + 透视外框）",
+    "note": "模拟相机带 2.8° 滚转倾角与离轴透视近距离拍摄球面 CRT：相机拜耳像素阵列与球面 RGB 荧光粉荫罩/扫描线发生空间混叠，浮现出真实的彩色环形水波摩尔纹与远端浅景深",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.03, "sharpness": 0.94, "dynamic_range": 8.5, "halation": 0.12},
+        "format": {"luma_bandwidth": 3.4, "chroma_bandwidth": 0.78, "comb_depth": 0.60, "color_noise": 0.14},
+        "tape": {"tape_stability": 0.72, "line_jitter": 0.18, "head_switching": 0.65, "head_switch_lines": 6.0},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.20},
+        "display": dict(DISPLAY_PROFILES["crt_reshoot_angled_moire"]["layers"]["display"]),
+    },
+}
+FACTORY_PRESETS["crt_reshoot_living_room_offscreen"] = {
+    "label": "虚拟相机屏摄系统 · 开灯客厅手持翻拍 9300K 彩电（环境光漫反冲淡 + 冷青过曝 + 双扫亮带）",
+    "note": "模拟在开灯房间内用 1/50s 快门相机手持翻拍 59.94Hz 9300K 家用彩电：约 20% 区域被电子束二次扫过形成滚动亮带，未发光荧光粉层漫反射室内光冲淡黑位，伴随曲面玻璃窗户倒影与 9300K 冷青过曝",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.05, "sharpness": 0.88, "dynamic_range": 7.8, "shake_intensity": 0.35},
+        "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.70, "comb_depth": 0.50, "color_noise": 0.22},
+        "tape": {"tape_stability": 0.60, "line_jitter": 0.25, "head_switching": 0.80, "head_switch_lines": 10.0, "tracking_error": 0.30},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.30},
+        "display": dict(DISPLAY_PROFILES["crt_reshoot_living_room_cam"]["layers"]["display"]),
+    },
+}
+
+
+MEDIA_PROFILES["vhs_bot_eot_tension"] = {
+    "label": "VHS 带尾高危区 (EOT 供带盘近卷芯 · 高角速度张力脉动 + 边缘卷边)",
+    "note": "模拟磁带播放至接近带尾 (reel_progress=0.94)：供带盘半径缩至 ~15mm、转速飙升 3 倍，背张力偏低导致画面顶部向左斜拉、底部导带柱边缘褶皱失落与行频抖晃加剧",
+    "layers": {
+        "tape": {
+            "reel_progress": 0.94, "tension_ripple": 0.78,
+            "tape_stability": 0.45, "line_jitter": 0.38,
+            "head_switching": 0.85, "head_switch_lines": 10.0, "tracking_error": 0.38,
+        },
+    },
+}
+
+PLAYER_PROFILES["deck_aged_belt_roller"] = {
+    "label": "皮带老化 + 压带轮硬化偏心的旧录像机",
+    "note": "方形氯丁橡胶皮带松弛打滑 + 压带轮长期压迫偏心 (~1.45Hz S形行摆动与伴音低频抖晃) + 主导轴伺服 3.2Hz 欠阻尼猎振",
+    "layers": {
+        "tape": {
+            "belt_slip": 0.68, "roller_eccentricity": 0.72,
+            "servo_hunt": 0.52, "tension_ripple": 0.45,
+        },
+        "player": {
+            "tbc_enabled": 0.0, "transport_jitter": 0.48, "head_wear": 0.28,
+        },
+    },
+}
+
+FACTORY_PRESETS["transport_pause_still_bar"] = {
+    "label": "机械传动与伺服 · 静态暂停定格 (Pause/Still 跨轨方位角双峰噪波横带 + 场微颤)",
+    "note": "复现家用 VHS 录像机按下 Pause 键后的定格画面：主导轴停转（v_tape=0），旋转磁鼓以 5°56' 静止倾角斜跨在两条反方位角磁迹之间，在画面中下部产生一条带 H-AFC 钩状剪切与色度消隐的固定双峰雪花横条，伴随单场重复微颤与伴音静音",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.04, "sharpness": 0.90, "dynamic_range": 8.0},
+        "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.70, "comb_depth": 0.55, "color_noise": 0.18},
+        "tape": {
+            "transport_state": 1.0, "pause_noise_pos": 0.62, "reel_progress": 0.35,
+            "tension_ripple": 0.28, "tape_stability": 0.62, "line_jitter": 0.24,
+            "head_switching": 0.80, "head_switch_lines": 8.0, "tracking_error": 0.30,
+        },
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.25, "head_wear": 0.20},
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["transport_rec_pause_rainbow_cut"] = {
+    "label": "机械传动与伺服 · 无飞抹磁头暂停起录切口 (Record-Pause 彩虹叠印切口 + CTL 失步跳帧)",
+    "note": "复现无飞抹磁头 (Flying Erase Head) 的消费级摄像机/录像机暂停后再录制的分镜接缝：全宽固定抹音磁头与旋转视频磁鼓相距数厘米，起录点处新旧螺旋磁迹斜向重叠产生 180° 色度副载波彩虹干涉条与旧画面残影，同时 25/30Hz CTL 控制脉冲相位断裂引发纵向跳帧与伺服猎振",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.04, "sharpness": 0.90, "dynamic_range": 8.0},
+        "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.68, "comb_depth": 0.50, "color_noise": 0.22},
+        "tape": {
+            "transport_state": 3.0, "servo_lock_tau": 0.55, "reel_progress": 0.20,
+            "tension_ripple": 0.45, "servo_hunt": 0.42, "tape_stability": 0.55,
+            "line_jitter": 0.30, "head_switching": 0.85, "head_switch_lines": 10.0,
+        },
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.32, "head_wear": 0.22},
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["switcher_nongenlock_hot_cut"] = {
+    "label": "模拟切换台 · 非同步信号源硬切瞬态（无锁相场跳动 + VBI 消隐带 + H-AFC 撕裂）",
+    "note": "两路未经过帧同步器 (Non-Genlocked) 的复合视频源在切换台硬切瞬间，下游录像机/电视机失去连续同步基准，爆发场中切口、H-AFC 弯钩撕裂、V-Hold 场跳动滚屏（露出 VBI 消隐带）与色同步副载波相位突变",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.95, "sensor_noise": 0.03},
+        "format": {"luma_bandwidth": 3.2, "chroma_bandwidth": 0.72, "comb_depth": 0.55},
+        "connector": {
+            "switcher_mode": 1.0, "switcher_b_source": 0.0, "switcher_tbar": 0.42,
+            "switcher_hot_cut_rate": 1.50, "switcher_genlock_err": 0.85,
+            "switcher_subcarrier_spill": 0.55, "switcher_pedestal_add": 0.25,
+        },
+        "tape": {"tape_stability": 0.65, "line_jitter": 0.22, "head_switching": 0.75, "head_switch_lines": 10.0},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.28},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["switcher_tbar_wipe_seg"] = {
+    "label": "模拟特技切换台 · 斜坡发生器菱形划像与比较器彩边",
+    "note": "使用模拟行/场锯齿波发生器生成菱形光圈划像 (Diamond Iris Wipe) 并支持完全自定义叠层（可导入自定义叠层图/视频，或在「02c 接口/RF」层自由调节叠层样式、文字、位置、缩放与色彩），伴随比较器行触发抖动与 3.58MHz 切换瞬态彩色镶边",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.96, "sensor_noise": 0.02},
+        "format": {"luma_bandwidth": 3.4, "chroma_bandwidth": 0.75, "comb_depth": 0.60},
+        "connector": {
+            "switcher_mode": 3.0, "switcher_b_source": 0.0, "switcher_tbar": 0.52,
+            "switcher_wipe_pattern": 3.0, "switcher_key_gain": 0.72,
+            "switcher_key_jitter": 0.48, "switcher_subcarrier_spill": 0.68,
+            "switcher_overlay_style": 4.0, "switcher_overlay_text": "",
+            "switcher_overlay_x": 0.50, "switcher_overlay_y": 0.50,
+            "switcher_overlay_scale": 1.00, "switcher_overlay_opacity": 0.95,
+        },
+        "tape": {"tape_stability": 0.78, "line_jitter": 0.14, "head_switching": 0.55, "head_switch_lines": 8.0},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.16},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["switcher_analog_chroma_luma_key"] = {
+    "label": "模拟演播室色键/亮键自定义叠层合成",
+    "note": "模拟 80/90 年代复合视频色键/亮键器 (Chroma/Luma Keyer) 并支持完全自定义前景叠层（可通过顶部「🖼 导入叠层」上传任意图片/视频，或在「02c 接口/RF」层自定义画中画小窗、字幕条、文字、XY坐标、缩放与颜色），展现 700ns 色度群延迟错位黑边与 3.58MHz 副载波拉链锯齿",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.96, "sensor_noise": 0.02},
+        "format": {"luma_bandwidth": 3.4, "chroma_bandwidth": 0.72, "comb_depth": 0.55},
+        "connector": {
+            "switcher_mode": 5.0, "switcher_b_source": 2.0, "switcher_tbar": 1.0,
+            "switcher_key_clip": 0.46, "switcher_key_gain": 0.78,
+            "switcher_key_jitter": 0.42, "switcher_subcarrier_spill": 0.75,
+            "switcher_pedestal_add": 0.28,
+            "switcher_overlay_style": 3.0, "switcher_overlay_text": "STUDIO B · LIVE",
+            "switcher_overlay_x": 0.66, "switcher_overlay_y": 0.36,
+            "switcher_overlay_scale": 0.95, "switcher_overlay_opacity": 0.94,
+            "switcher_overlay_r": 0.32, "switcher_overlay_g": 0.86, "switcher_overlay_b": 0.96,
+        },
+        "tape": {"tape_stability": 0.80, "line_jitter": 0.12, "head_switching": 0.45, "head_switch_lines": 8.0},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.14},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["transport_worn_belt_roller_eot"] = {
+    "label": "机械传动与伺服 · 带尾高张力 + 老化皮带打滑与压带轮偏心 (EOT + Belt Slip + Roller Wow)",
+    "note": "综合演示三大机械传动故障：磁带行至带尾 (reel_progress=0.92) 供带盘高速旋转引发顶部斜拉与底部卷边失落 + 方形橡胶皮带间歇打滑掉速 + 硬化压带轮 1.45Hz 偏心 S 形摆动与主导轴伺服 3.25Hz 猎振（音画同步变调抖晃）",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.05, "sharpness": 0.88, "dynamic_range": 7.8},
+        "format": {"luma_bandwidth": 2.9, "chroma_bandwidth": 0.65, "comb_depth": 0.55, "color_noise": 0.24},
+        "tape": {
+            "transport_state": 0.0, "reel_progress": 0.92, "tension_ripple": 0.82,
+            "belt_slip": 0.72, "roller_eccentricity": 0.75, "servo_hunt": 0.58,
+            "tape_stability": 0.42, "line_jitter": 0.36, "head_switching": 0.88,
+            "head_switch_lines": 10.0, "tracking_error": 0.42,
+        },
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.42, "head_wear": 0.28},
+        "display": {"enabled": 0.0},
+        "audio": {"enabled": 1.0, "mode": 1.0, "wow_flutter": 0.55},
+    },
+}
+
+FACTORY_PRESETS["broadcast_unterminated_highz"] = {
+    "label": "广播级配线与负载 · 未端接高阻开路环通 (High-Z Open · +6dB 翻倍过曝削波 + 正向反射重影)",
+    "note": "模拟监视器或录像机环通口 (Loop-Through) 忘记拨下 75Ω 端接开关（R_L≈10kΩ 高阻开路）：负载端失去 75Ω 分压，信号电压翻倍至 ~2.0 Vpp (+5.95 dB)，导致中高亮区域直接撞击 100 IRE 满度硬削波死白、色同步与色度过冲，且电缆末端全反射 (Γ=+0.98) 在硬边缘右侧形成正向重影",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.96, "sensor_noise": 0.02},
+        "format": {"luma_bandwidth": 3.6, "chroma_bandwidth": 0.80, "comb_depth": 0.65},
+        "connector": {
+            "da_enabled": 1.0, "da_termination_mode": 1.0, "da_load_count": 1.0,
+            "da_cable_len_m": 28.0, "da_gain_db": 0.0, "da_eq_boost": 0.0,
+            "patch_crosstalk": 0.08, "patch_contact_aging": 0.05, "patch_format_mismatch": 0.0,
+        },
+        "tape": {"tape_stability": 0.85, "line_jitter": 0.10, "head_switching": 0.35, "head_switch_lines": 6.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.85, "transport_jitter": 0.10},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["broadcast_passive_tsplit_double_term"] = {
+    "label": "广播级配线与负载 · 违规三通无源并接/三端接 (Passive T-Split 25Ω · -6dB 发暗 + 同步顶腰斩失锁 + 负向重影)",
+    "note": "模拟不用有源分配放大器，直接用 BNC 三通头将一路复合信号硬分给 N=3 台均开启 75Ω 端接的设备（等效负载跌至 R_L=25Ω）：分压使画面幅度腰斩至 0.50x (-6.02 dB)、暗淡发灰，同时 -40 IRE 行同步顶被压扁至 -20 IRE 引发下游同步分离器饥饿抖动与顶部弯钩，且负反射系数 (Γ=-0.50) 在亮边缘右侧刻出暗黑负向重影",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.94, "sensor_noise": 0.02},
+        "format": {"luma_bandwidth": 3.4, "chroma_bandwidth": 0.75, "comb_depth": 0.60},
+        "connector": {
+            "da_enabled": 1.0, "da_termination_mode": 2.0, "da_load_count": 3.0,
+            "da_cable_len_m": 32.0, "da_gain_db": 0.0, "da_eq_boost": 0.0,
+            "patch_crosstalk": 0.12, "patch_contact_aging": 0.10, "patch_format_mismatch": 0.0,
+        },
+        "tape": {"tape_stability": 0.75, "line_jitter": 0.16, "head_switching": 0.55, "head_switch_lines": 8.0},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.22},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["broadcast_patchbay_active_da"] = {
+    "label": "广播级配线与负载 · 有源分配放大器 1进4出隔离驱动 + 电缆均衡补偿 + 矩阵串扰 (Active DA + Patchbay)",
+    "note": "使用广播级 1×4 有源分配放大器 (Active DA, Mode 3) 隔离驱动 4 路 75Ω 终端（电平精准保持 1.0 Vpp / 0 dB、零阻抗反射），开启长同轴电缆高频均衡补偿 (da_eq_boost=0.55)，并叠加高密度跳线配线架相邻通道的微分电容串扰",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.98, "sensor_noise": 0.02},
+        "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 0.95, "comb_depth": 0.75},
+        "connector": {
+            "da_enabled": 1.0, "da_termination_mode": 3.0, "da_load_count": 4.0,
+            "da_cable_len_m": 45.0, "da_gain_db": 0.2, "da_eq_boost": 0.55,
+            "patch_crosstalk": 0.28, "patch_contact_aging": 0.08, "patch_format_mismatch": 0.0,
+        },
+        "tape": {"tape_stability": 0.88, "line_jitter": 0.08, "head_switching": 0.30, "head_switch_lines": 6.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.90, "transport_jitter": 0.08},
+        "display": {"enabled": 0.0},
+    },
+}
+
+
+FACTORY_PRESETS["transfer_replication_comparison_lab"] = {
+    "label": "四路复制链对照实验室 (母带 vs 无TBC多代复制 vs 带TBC多代复制 vs 4:1:1→4:2:0数字转码)",
+    "note": "将同一段源素材同时送入四条复制/转录链路进行 2×2 实验室同屏对照：左上 Gen-0 母带基准、右上无 TBC 三代磁带复制（严重水平行抖动累积）、左下带全帧 TBC 三代磁带复制（几何稳定但带宽/色度/底噪不可逆退化）、右下 4:2:2→DV25(4:1:1)→VCD(4:2:0) 跨代数字转码（零时基抖动但呈现 1/8 色度抽样台阶与 8×8 DCT 块伪影），底部实时显示 PSNR/带宽/抖动与 TransferEvent 溯源链",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.98, "sensor_noise": 0.02},
+        "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 0.95, "comb_depth": 0.72},
+        "tape": {"tape_stability": 0.85, "line_jitter": 0.08, "head_switching": 0.35, "head_switch_lines": 6.0},
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.90,
+            "transfer_station_mode": 4.0, "transfer_generations": 3.0,
+            "transfer_tbc_mode": 2.0, "transfer_codec_target": 3.0,
+            "transfer_adc_crop": 0.45, "transfer_av_drift_ms": 35.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["transfer_analog_ingest_station"] = {
+    "label": "模拟磁带数字化采集工作站 (VHS/Video8 → 行TBC → BT.601 8-bit 采集卡 + 音画时钟漂移记录)",
+    "note": "模拟磁带经播放机与行 TBC 进入视频采集卡数字化：采集卡不凭空修复母带原有磁粉失落与底部磁头切换带，同时引入 BT.601 16..235 量化范围钳位、左右消隐裁切振铃边与独立声卡晶振的音画同步漂移 (TransferEvent)",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sharpness": 0.92, "sensor_noise": 0.03},
+        "format": {"luma_bandwidth": 3.1, "chroma_bandwidth": 0.65, "comb_depth": 0.65},
+        "tape": {"tape_stability": 0.65, "line_jitter": 0.24, "dropout_rate": 0.45, "head_switching": 0.82, "head_switch_lines": 8.0},
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.85,
+            "transfer_station_mode": 1.0, "transfer_generations": 1.0,
+            "transfer_tbc_mode": 1.0, "transfer_adc_crop": 0.60, "transfer_av_drift_ms": 42.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["linear_editor_assemble_vs_insert"] = {
+    "label": "Sony BVE-9100 磁带双机线性编辑台 (5s 预卷伺服 + CTL 入点滑移 + 组合编辑闪黑与尾端断轨)",
+    "note": "模拟源录像机 (Player VTR) 与录制机 (Recorder VTR) 双机预卷线性剪辑：包含压带轮啮合造成的 ±2 帧入出点机械滑移、Assemble Edit 切入点的全宽抹音头闪黑与 H-AFC 弯钩、切出点新旧 CTL 控制轨断裂雪花撕裂，以及顶部 BVE-9100 工程状态栏",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.94, "sensor_noise": 0.02},
+        "format": {"luma_bandwidth": 3.4, "chroma_bandwidth": 0.72, "comb_depth": 0.65},
+        "tape": {
+            "tape_stability": 0.75, "line_jitter": 0.14, "head_switching": 0.65, "head_switch_lines": 8.0,
+            "edit_mode": 1.0, "edit_point_slip_frames": 2.0,
+            "edit_flying_erase": 1.0, "edit_preroll_sec": 5.0, "edit_console_osd": 1.0,
+        },
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.85},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["early_2000s_nle_preview_vs_export"] = {
+    "label": "2000年代初 DV 非线性编辑工作站 (多轨时间线 · 实时预览缓存掉帧代理 vs 最终导出二次重编码)",
+    "note": "模拟 Windows 2000 / Premiere 6.0 / Canopus DV Storm 早期非线编系统：时间线寻址零帧偏移，但在实时预览 (edit_mode=3) 下多轨叠化转场与字幕触发半分辨率代理降级与缓冲区欠载掉帧重复；切换至 edit_mode=4（最终渲染导出）即可消除掉帧并观察转场段的二次 DV25 DCT 重编码伪影",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.98, "sensor_noise": 0.02},
+        "format": {"luma_bandwidth": 4.8, "chroma_bandwidth": 1.5},
+        "codec": {"dv_enabled": 1.0, "dv_quality": 0.95},
+        "tape": {
+            "tape_stability": 0.95, "line_jitter": 0.02, "head_switching": 0.0,
+            "edit_mode": 3.0, "edit_point_slip_frames": 0.0,
+            "edit_nle_complexity": 0.75, "edit_console_osd": 1.0,
+        },
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.95},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["playout_automation_v2_failover"] = {
+    "label": "事件与条件驱动播出自动化编排控制台 (PlayoutEvent 状态机 · 6类异常分支 · 根因反查链)",
+    "note": "展示总控播出自动化编排引擎 v2 的 2×2 控制台视图，包含 SCHEDULED→PREPARING→READY→ON_AIR→COMPLETED 状态机、VTR 预卷伺服与看门狗联动、主备冗余无缝倒换以及「物理根因→节点传播→画面现象」三级反查树",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sharpness": 0.98, "sensor_noise": 0.01},
+        "format": {"luma_bandwidth": 4.5, "chroma_bandwidth": 1.2},
+        "overlay": {
+            "auto_v2_enabled": 1.0, "auto_v2_mode": 3.0,
+            "auto_v2_fault_inject": 3.0, "auto_v2_watchdog_sec": 1.0,
+            "auto_v2_console_view": 1.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["satellite_cband_vs_dvbs_cliff_lab"] = {
+    "label": "卫星接收机 (Satellite IRD) 模拟 C 波段 FM 打火噪点 vs 数字 DVB-S 悬崖效应对照实验室",
+    "note": "在同一套卫星抛物面天线与雨衰/LNB 链路上，同屏对比模拟 C 波段 FM 卫星电视（低于门限时渐进出现鱼骨黑白打火噪点 Sparkles）与数字 DVB-S QPSK+Viterbi+RS（高于 6.5dB 完全无雪花，跌入 4.4–6.5dB 悬崖区瞬间爆发 MPEG-2 宏块崩坏与静帧冻结）",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sharpness": 0.98, "sensor_noise": 0.01, "ccd_smear": 0.0, "halation": 0.05},
+        "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 1.5, "chroma_vertical_averaging": 0.0, "comb_depth": 0.92, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "rf": {
+            "sat_ird_mode": 3.0, "sat_cn_db": 9.8,
+            "sat_rain_fade_db": 4.2, "sat_dish_mispoint_deg": 0.25,
+            "sat_lnb_drift_khz": 45.0, "sat_ird_osd": 0.0,
+            "sat_quad_corner": 0.0, "sat_show_border": 2.0,
+        },
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "vertical_instability": 0.0, "head_switching": 0.0, "dropout_rate": 0.0, "wear": 0.0, "crease_rate": 0.0, "noise_floor": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "tbc_residual": 0.0, "transport_jitter": 0.0, "head_wear": 0.0, "frequency_response": 0.0, "comb_depth": 0.92, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+FACTORY_PRESETS["tv_transmitter_end_to_end_broadcast_lab"] = {
+    "label": "电视台大功率发射机激励链与端到端开路广播测试台 (VSB+HPA 微分增益/相位 vs 地面接收)",
+    "note": "构建「主控播出输出 → 发射机激励器/高功放/双工器/铁塔馈线 → 开路传播信道 → 模拟/数字接收机」端到端四象限对照测试台，实时量化高功放 AM-AM 微分增益 (DG%)、AM-PM 微分相位 (DP°)、滤波器群延迟 (ns)、920kHz 伴音互调与信道多径各自的独立失真贡献",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sharpness": 0.98, "sensor_noise": 0.01, "ccd_smear": 0.0, "halation": 0.05},
+        "format": {"luma_bandwidth": 5.0, "chroma_bandwidth": 1.5, "chroma_vertical_averaging": 0.0, "comb_depth": 0.92, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "rf": {
+            "tx_chain_mode": 3.0, "tx_pa_drive": 0.65,
+            "tx_pa_am_pm_deg": 14.0, "tx_filter_gd_ns": 95.0,
+            "tx_feeder_vswr": 1.35, "tx_sound_intermod": 0.38,
+            "signal_dbm": -62.0, "multipath_level": 0.16,
+            "tx_quad_corner": 0.0, "tx_show_border": 2.0, "tx_show_text": 0.0,
+        },
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "vertical_instability": 0.0, "head_switching": 0.0, "dropout_rate": 0.0, "wear": 0.0, "crease_rate": 0.0, "noise_floor": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "tbc_residual": 0.0, "transport_jitter": 0.0, "head_wear": 0.0, "frequency_response": 0.0, "comb_depth": 0.92, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+
 UNIT_SPREADS.update({
     "wow_flutter": (0.22, "capstan belt eccentricity and flywheel bearing wear vary per deck"),
     "azimuth_loss": (0.28, "audio head azimuth screw alignment tolerance"),
     "hiss_floor": (0.15, "replay head preamplifier noise figure tolerance"),
     "head_switch_buzz": (0.12, "audio head shield and switching transient tolerance"),
+    "clock_drift_ppm": (0.25, "quartz crystal cut and load-capacitor ageing tolerance"),
+    "psu_ripple": (0.30, "electrolytic filter capacitor ESR and capacitance ageing"),
+    "h_hold": (0.18, "horizontal RC oscillator timing capacitor trim"),
+    "v_hold": (0.18, "vertical hold potentiometer and RC timing drift"),
+    "switcher_key_jitter": (0.18, "analog comparator reference ripple and ramp capacitor tolerance vary per switcher"),
+    "switcher_subcarrier_spill": (0.16, "subcarrier trap notch tuning and delay-line matching vary per unit"),
+    "switcher_pedestal_add": (0.14, "back-porch clamp diode offset varies per mixer bus"),
+    "da_gain_db": (0.12, "distribution amplifier feedback resistor tolerance varies per channel"),
+    "patch_crosstalk": (0.20, "jackfield normalled spring capacitance varies per bay"),
+    "transfer_av_drift_ms": (0.22, "audio and video capture crystal oscillator tolerance varies per workstation"),
+    "edit_preroll_sec": (0.12, "capstan and drum servo preroll lockup settling time varies per deck pair"),
+    "sat_lnb_drift_khz": (0.25, "DRO local oscillator dielectric resonator temperature drift per LNB unit"),
+    "tx_pa_am_pm_deg": (0.15, "high-power amplifier tube/LDMOS bias and phase compensation trim"),
+    "tx_feeder_vswr": (0.08, "antenna feeder flange and dehydrator impedance tolerance"),
 })
+FACTORY_PRESETS["archival_lineage_4way_lab"] = {
+    "label": "2×2 档案保存生命周期与多版本并存谱系树实验室 (Original / Preservation / Over-Cleaned / Web Stream)",
+    "note": "同屏对比同一作品的『1.原始载体残件 (温湿度阿伦尼乌斯加速老化) → 2.档案保存母版 (全画幅无损含VBI/VITC，重要属性保留率98%+) → 3.过度清洗商业修复版 (3D-DNR塑料感与裁切导致考古证据链断裂) → 4.流媒体传播版与重要属性损耗表』",
+    "standard": "ntsc",
+    "layers": {
+        "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.68, "edge_boost": 0.25},
+        "tape": {"tape_stability": 0.65, "line_jitter": 0.25, "head_switching": 0.78, "head_switch_lines": 10.0, "dropout_rate": 0.30, "noise_floor": 0.16},
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.85,
+            "archival_enabled": 1.0, "archival_mode": 4.0,
+            "archival_storage_years": 30.0, "archival_temp_c": 25.0, "archival_rh_pct": 66.0,
+            "archival_obsolescence": 0.58, "archival_dnr_overrestore": 0.78,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["archival_overrestored_vs_preservation"] = {
+    "label": "『保存成功 ≠ 信息完整』过度清洗商业修复版检视 (3D-DNR 塑料蜡像感 + 消隐裁切 + 场序破坏)",
+    "note": "演示激进数字去噪、假锐化光环、色彩重映射与过扫描裁切如何抹除原始 VITC 时间码、底部磁头切换带与隔行运动结构，导致媒介考古证据链断裂",
+    "standard": "ntsc",
+    "layers": {
+        "format": {"luma_bandwidth": 3.1, "chroma_bandwidth": 0.70},
+        "tape": {"line_jitter": 0.20, "head_switching": 0.80, "head_switch_lines": 10.0, "noise_floor": 0.15},
+        "player": {
+            "tbc_enabled": 1.0,
+            "archival_enabled": 1.0, "archival_mode": 3.0,
+            "archival_storage_years": 25.0, "archival_temp_c": 22.0, "archival_rh_pct": 58.0,
+            "archival_dnr_overrestore": 0.85, "archival_show_text": 2.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["spatial_env_4way_coupling_lab"] = {
+    "label": "2×2 二维空间物理环境场与多维耦合实验室 (温湿度露点场 / 电磁干扰场 / 声学光学场 / 局域坐标遥测)",
+    "note": "构建连续二维机房空间场 EnvironmentField(x, y, t)：摄像机、录像机与 CRT 按各自空间坐标 (x, y) 独立感知局域温湿度结露、变压器近场电磁干扰、窗户混合色温与房间混响 RT60",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sharpness": 0.95, "sensor_noise": 0.04},
+        "format": {"luma_bandwidth": 3.4, "chroma_bandwidth": 0.80},
+        "connector": {
+            "env_field_enabled": 1.0, "env_field_mode": 5.0,
+            "env_room_temp_c": 25.0, "env_room_rh_pct": 76.0, "env_device_init_temp_c": 5.0,
+            "env_emi_source_power": 0.75, "env_shielding_eff": 0.35,
+            "env_light_mix": 0.55, "env_acoustic_rt60": 0.65,
+            "env_cam_x": 0.20, "env_cam_y": 0.28,
+            "env_vtr_x": 0.78, "env_vtr_y": 0.74,
+            "env_crt_x": 0.82, "env_crt_y": 0.25,
+        },
+        "tape": {"line_jitter": 0.12, "noise_floor": 0.08},
+        "player": {"tbc_enabled": 1.0},
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["spatial_cold_camcorder_dew_condensation"] = {
+    "label": "冷机抱入潮湿暖房瞬态结露与变压器近场电磁干扰实况 (Dew Condensation & Near-Field EMI)",
+    "note": "模拟 4°C 冰冷摄像机与录像机刚抱入 26°C / 82% RH 潮湿房间并靠近大功率电源柜：镜片瞬间结露起雾、磁鼓水膜粘带撕裂与工频电磁驻波滚道（随时间升温自然消退）",
+    "standard": "ntsc",
+    "layers": {
+        "connector": {
+            "env_field_enabled": 1.0, "env_field_mode": 4.0,
+            "env_room_temp_c": 26.0, "env_room_rh_pct": 82.0, "env_device_init_temp_c": 4.0,
+            "env_emi_source_power": 0.80, "env_shielding_eff": 0.30,
+            "env_light_mix": 0.45, "env_acoustic_rt60": 0.72,
+            "env_cam_x": 0.75, "env_cam_y": 0.80,
+            "env_vtr_x": 0.82, "env_vtr_y": 0.78,
+            "env_crt_x": 0.30, "env_crt_y": 0.25,
+            "env_show_text": 2.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+UNIT_SPREADS.update({
+    "archival_obsolescence": (0.18, "remaining head life and alignment skill vary across archival transfer houses"),
+    "env_shielding_eff": (0.15, "chassis gasket contact and braid ground impedance vary per unit"),
+    "env_device_init_temp_c": (0.12, "thermal mass and enclosure ventilation vary per unit"),
+})
+
+FACTORY_PRESETS["network_streaming_era_lab"] = {
+    "label": "2×2 网络视听传播、平台多代转码与流媒体协议对照实验室 (RealVideo / Web2.0 / HLS ABR)",
+    "note": "同屏对比：采集源/TBC母本 vs 1999 拨号 RealVideo G2 强涂抹抽帧 vs 2007 Web 2.0 平台多代转码与双水印 vs 现代 HLS/DASH ABR 分辨率阶跃与 UDP 丢包切片撕裂",
+    "standard": "ntsc",
+    "layers": {
+        "format": {"luma_bandwidth": 3.2, "chroma_bandwidth": 0.72},
+        "codec": {
+            "stream_enabled": 1.0, "stream_mode": 5.0,
+            "stream_bitrate_kbps": 320.0, "stream_bw_fluctuation": 0.55,
+            "stream_packet_loss": 0.10, "stream_gop_len": 12.0,
+            "stream_platform_generations": 3.0,
+            "stream_quad_corner": 0.0, "stream_show_border": 2.0, "stream_show_text": 0.0,
+        },
+        "tape": {"line_jitter": 0.15, "head_switching": 0.55, "head_switch_lines": 8.0, "dropout_rate": 0.12},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.85},
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["perception_and_operator_closed_loop_lab"] = {
+    "label": "2×2 人类视觉感知 (CSF) 模型与机房操作者行为闭环实验室",
+    "note": "同屏对比：未干预物理故障画面 vs 观众视网膜 Mannos-Sakrison CSF 空间滤波感知画面 vs 机房值班员 PID 手动跟踪/CCU 配平闭环画面 vs JND 感知显著度与操作轨迹面板",
+    "standard": "ntsc",
+    "layers": {
+        "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.65},
+        "tape": {"line_jitter": 0.35, "tracking_error": 0.58, "head_switching": 0.85, "noise_floor": 0.22},
+        "player": {"tbc_enabled": 0.0, "transport_jitter": 0.35},
+        "display": {
+            "enabled": 1.0, "scanlines": 0.38, "mask_pitch": 2.8, "mask_depth": 0.35,
+            "percept_enabled": 1.0, "percept_mode": 4.0,
+            "percept_viewing_dist_h": 4.0, "percept_display_nits": 120.0, "percept_ambient_lux": 45.0,
+            "operator_skill": 0.78, "operator_stress": 0.38,
+            "percept_quad_corner": 0.0, "percept_show_border": 2.0, "percept_show_text": 0.0,
+        },
+    },
+}
+
+FACTORY_PRESETS["media_ecosystem_historical_simulator_lab"] = {
+    "label": "2×2 媒介技术生态演化、备件断崖与历史反事实情景模拟器 (1975–2035)",
+    "note": "同屏对比：1992 模拟黄金期基准 vs 所选历史年份真实生态回放状态 vs 反事实情景推演状态 vs 1975–2035 七维生态演化曲线与可访问性断崖预警图",
+    "standard": "pal",
+    "layers": {
+        "format": {"luma_bandwidth": 3.0, "chroma_bandwidth": 0.65},
+        "tape": {"line_jitter": 0.22, "head_switching": 0.75, "dropout_rate": 0.20, "noise_floor": 0.15},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.85},
+        "display": {"enabled": 0.0},
+        "overlay": {
+            "eco_enabled": 1.0, "eco_mode": 4.0,
+            "eco_year": 2018.0, "eco_scenario": 1.0,
+            "eco_spare_depletion": 1.15, "eco_institution_inertia": 0.55,
+            "eco_quad_corner": 0.0, "eco_show_border": 2.0, "eco_show_text": 0.0,
+        },
+    },
+}
+
+UNIT_SPREADS.update({
+    "stream_bw_fluctuation": (0.18, "CDN edge node and last-mile access throughput variance"),
+    "stream_packet_loss": (0.22, "router queue drop and wireless burst loss variance"),
+    "percept_display_nits": (0.12, "CRT phosphor luminance and backlight unit tolerance"),
+    "operator_skill": (0.15, "individual broadcast engineer reaction time and tracking finesse"),
+    "eco_spare_depletion": (0.14, "regional VTR head stock and technician retirement variance"),
+    "eco_institution_inertia": (0.16, "organizational budget friction and legacy workflow inertia"),
+})
+FACTORY_PRESETS["sony_trinitron_kv1214_showa"] = {
+    "label": "Sony Trinitron KV-1214 1978 12寸柱面特丽珑彩电 (4K 屏摄摩尔纹 + NTSC-J 9300K)",
+    "note": "12寸柱面特丽珑 4K 屏摄实测标定：NTSC-J RF/复合输入 (3.8 MHz 亮度 + 1.0 MHz 色度 + 高对比荧光边缘过冲) → Sony KV-1214 12寸单枪三束垂直荫栅、单根钨丝阻尼线、水平单向柱面曲率、9300K 青蓝白点与清晰弯曲摩尔纹",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.02, "halation": 0.08, "ccd_smear": 0.0},
+        "format": {
+            "filter_kind": 1.0, "filter_sections": 2.0,
+            "luma_bandwidth": 4.2, "chroma_bandwidth": 1.15,
+            "chroma_vertical_averaging": 0.35, "separation_kind": 2.0, "comb_depth": 0.68,
+            "cross_color": 0.22, "cross_luma": 0.16, "edge_boost": 0.28,
+            "color_noise": 0.06, "chroma_gain": 1.06,
+        },
+        "tape": {
+            "tape_stability": 0.96, "line_jitter": 0.03, "walk_amplitude": 0.02,
+            "micro_jitter": 0.02, "vertical_instability": 0.0,
+            "head_switching": 0.0, "dropout_rate": 0.0, "wear": 0.0, "noise_floor": 0.01,
+        },
+        "player": {
+            "tbc_enabled": 1.0, "tbc_strength": 0.95, "transport_jitter": 0.03,
+            "head_wear": 0.04, "preemphasis": 0.22, "ringing": 0.16,
+            "luma_bandwidth": 4.2, "chroma_bandwidth": 1.15,
+        },
+        **DISPLAY_PROFILES["sony_trinitron_kv1214"]["layers"],
+    },
+}
+
+FACTORY_PRESETS["crt_strong_magnet_physics_lab"] = {
+    "label": "CRT 遇强磁铁、铁磁荫罩剩磁与 PTC 消磁线圈 2×2 物理实验室",
+    "note": "强永磁体近场磁偏转与铁磁荫罩剩磁物理标定：同屏对比 1.强钕铁硼磁铁贴面（中心电子束排空黑洞+十字枕形折叠+同心彩虹环）、2.强磁极旋转涡流扭曲、3.撤走磁铁后的铁磁荫罩永久剩磁色斑、4.启动内置 PTC 热敏电阻消磁线圈（Degaussing Coil）衰减交变磁场消除剩磁",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        "format": {"luma_bandwidth": 4.8, "chroma_bandwidth": 1.4, "cross_color": 0.08, "cross_luma": 0.05, "color_noise": 0.02},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "head_switching": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+        "display": {
+            "enabled": 1.0, "gamma": 2.25, "scanlines": 0.28, "spot_sigma": 0.38, "scan_pitch": 2.0,
+            "mask_type": 1.0, "mask_pitch": 2.6, "mask_depth": 0.35, "phosphor_rgb": 0.65,
+            "crt_magnet_mode": 5.0, "crt_magnet_strength": 0.85,
+            "crt_magnet_x": 0.52, "crt_magnet_y": 0.48, "crt_magnet_z_dist": 0.12,
+            "crt_magnet_angle_deg": 25.0, "crt_magnet_polarity": 1.0,
+            "crt_magnet_remanence": 0.65, "crt_degauss_trigger": 0.75,
+            "crt_magnet_quad_corner": 0.0, "crt_magnet_show_border": 2.0, "crt_magnet_show_text": 0.0,
+        },
+    },
+}
+
 for _lay in SCHEMA.layer_names():
     for _key, _spec in SCHEMA.layer(_lay).specs.items():
         if _key in UNIT_SPREADS:
@@ -3258,3 +5953,71 @@ for _lay in SCHEMA.layer_names():
             _spec.unit_spread = float(_sp)
             _spec.unit_note = str(_note)
 
+
+
+UNIT_SPREADS.update({
+    "film_gate_weave": (0.18, "projector intermittent claw wear and registration pin tolerance"),
+    "film_shutter_flicker": (0.14, "rotary shutter governor and lamp ballast ripple"),
+    "film_grain_amount": (0.10, "emulsion batch and developer temperature variance"),
+})
+
+FACTORY_PRESETS["film_16mm_telecine_ntsc_32"] = {
+    "label": "16mm 新闻反转片 → Rank Cintel 飞点胶转磁 (NTSC 3:2 Pulldown → 电视播出)",
+    "note": "Kodak Ektachrome 16mm 卤化银特性曲线、红橙防光晕背散射、中密度曝光依赖颗粒、片门二维机械抖动与 24fps→29.97i 3:2 Pulldown 隔行交错梳状伪影",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {
+            "film_enabled": 1.0, "film_stock": 2.0, "film_gamma": 1.12,
+            "film_halation": 0.42, "film_grain_amount": 0.34, "film_grain_size": 1.65,
+            "film_dye_fade": 0.12, "film_shrinkage": 0.08, "film_scratches_dust": 0.22,
+            "film_gate_weave": 0.32, "film_shutter_flicker": 0.15, "telecine_pulldown": 1.0,
+            "sensor_noise": 0.01, "sharpness": 1.02,
+        },
+        "format": {"luma_bandwidth": 4.2, "chroma_bandwidth": 1.1, "edge_boost": 0.20, "color_noise": 0.06},
+        "tape": {"tape_stability": 0.92, "line_jitter": 0.05, "dropout_rate": 0.05, "head_switching": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 0.92},
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["film_to_tv_to_home_vhs_lineage"] = {
+    "label": "2×2 跨媒介历史对照实验室（16mm胶片 → 电视胶转磁 → 家用VHS录屏 → 流媒体重压）",
+    "note": "同屏对比同一画面的四代跨媒介历史传播痕迹：16mm化学颗粒与片门抖动 → 3:2 Pulldown胶转磁 → 家用VHS欠载色度与切头带叠加 → 流媒体8×8块量化",
+    "standard": "ntsc",
+    "layers": {
+        "camera": {
+            "film_enabled": 1.0, "film_stock": 1.0, "film_gamma": 1.08,
+            "film_halation": 0.38, "film_grain_amount": 0.30, "film_grain_size": 1.45,
+            "film_dye_fade": 0.25, "film_scratches_dust": 0.18,
+            "film_gate_weave": 0.28, "film_shutter_flicker": 0.12, "telecine_pulldown": 3.0,
+            "telecine_quad_corner": 0.0, "telecine_show_border": 2.0, "telecine_show_text": 0.0,
+            "sensor_noise": 0.0, "ccd_smear": 0.0, "halation": 0.0,
+        },
+        "format": {"luma_bandwidth": 5.5, "chroma_bandwidth": 1.8, "chroma_vertical_averaging": 0.0, "comb_depth": 0.95, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0, "edge_boost": 0.0},
+        "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "vertical_instability": 0.0, "head_switching": 0.0, "dropout_rate": 0.0, "wear": 0.0, "crease_rate": 0.0, "noise_floor": 0.0},
+        "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "tbc_residual": 0.0, "transport_jitter": 0.0, "head_wear": 0.0, "frequency_response": 0.0, "comb_depth": 0.95, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["inversion_fadgi_calibration_lab"] = {
+    "label": "2×2 参数反演、多解竞争假设与三级参数审计实验室 (FADGI 误差预算台)",
+    "note": "实时反推退化画面的 -3dB 带宽、行时基抖动与色度相位置信区间，对滤波器/磁头磨损/光学散焦给出竞争性概率排序，并分离统计 Physical / Device / Artistic 三级参数贡献与 FADGI 合规星级",
+    "standard": "ntsc",
+    "layers": {
+        "format": {"luma_bandwidth": 2.8, "chroma_bandwidth": 0.68, "filter_kind": 1.0, "edge_boost": 0.28},
+        "tape": {"tape_stability": 0.62, "line_jitter": 0.32, "noise_floor": 0.14, "dropout_rate": 0.20},
+        "player": {
+            "tbc_enabled": 0.0, "head_wear": 0.28,
+            "inv_lab_enabled": 1.0, "inv_lab_mode": 3.0, "inv_fadgi_target": 3.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+for _lay in SCHEMA.layer_names():
+    for _key, _spec in SCHEMA.layer(_lay).specs.items():
+        if _key in UNIT_SPREADS:
+            _sp, _note = UNIT_SPREADS[_key]
+            _spec.unit_spread = float(_sp)
+            _spec.unit_note = str(_note)

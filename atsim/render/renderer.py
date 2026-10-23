@@ -8,23 +8,10 @@ frames, with the structure that makes interactive adjustment possible.
         ^         ^       ^        ^         ^
         |         |       |        |         |
       cached per stage, keyed by the hash of (seed + all upstream layers)
-
-Consequences that matter for the UI:
-
-* Moving a *display* slider re-renders only the display stage -- the expensive
-  composite/tape work is reused, so a CRT tweak is cheap even at full
-  resolution.
-* Moving a *tape* slider invalidates tape/player/display and reuses the camera
-  and format output.
-* The first dirty stage and frame are reported back to the client, so the
-  preview can show which part of the timeline is being recomputed.
-
-The chain carries temporal state (transport drift, motion blur, head noise), so
-frames are always produced by *pumping forward* from the last cached frame.  A
-backward seek therefore re-pumps the prefix, which keeps the result identical
-to a linear render -- reproducibility beats cleverness here.
 """
 from __future__ import annotations
+
+import threading
 
 import copy
 import hashlib
@@ -39,6 +26,7 @@ from ..core.pipeline import Chain, FrameBuffer, RenderContext, Stage
 from ..core.profiles import SCHEMA
 from ..core.standards import get_standard
 from ..stages.camera import CameraStage
+from ..stages.film import FilmStage
 from ..stages.codec import CodecStage
 from ..stages.connector import ConnectorStage
 from ..stages.display import DisplayStage
@@ -47,10 +35,11 @@ from ..stages.overlay import OverlayStage
 from ..stages.player import PlayerStage
 from ..stages.tape import TapeStage
 
-STAGE_ORDER = ("camera", "format", "codec", "connector", "tape", "player",
+STAGE_ORDER = ("camera", "film", "format", "codec", "connector", "tape", "player",
                "display", "overlay")
 STAGE_LABELS = {
     "camera": "01 成像",
+    "film": "01b 胶片",
     "format": "02 编码",
     "codec": "02b DV",
     "connector": "02c 接口/RF",
@@ -62,6 +51,7 @@ STAGE_LABELS = {
 # which parameter layers feed which stage
 STAGE_LAYERS = {
     "camera": ("camera",),
+    "film": ("film", "camera"),
     "format": ("format",),
     "codec": ("codec",),
     # the connectors and RF link sit between the source and the recorder, so a
@@ -106,7 +96,8 @@ class Renderer:
                  params: dict[str, dict[str, float]] | None = None,
                  seed: int = 20240101, std_key: str = "ntsc",
                  preview: bool = False, scale: float = 1.0,
-                 max_pump: int = 1200, total_frames: int | None = None):
+                 max_pump: int = 1200, total_frames: int | None = None,
+                 streaming: bool = False, max_cache_frames: int = 8):
         self.source = source
         self.width = int(width)
         self.height = int(height)
@@ -116,8 +107,8 @@ class Renderer:
         self.preview = bool(preview)
         self.scale = float(scale)
         self.max_pump = int(max_pump)
-        # how many frames the clip actually has; used to bound the tape plan.
-        # An unbounded value here is what previously caused a 19 GB allocation.
+        self.streaming = bool(streaming)
+        self.max_cache_frames = int(max(1, max_cache_frames))
         self.total_frames = int(total_frames or getattr(source, "frame_count", 0) or 0)
         self.schema = SCHEMA
         self.params = self.schema.resolve_all(params or {})
@@ -129,9 +120,6 @@ class Renderer:
         self.dirty_frame = 0
         self._cache: dict[str, dict[int, np.ndarray]] = {s: {} for s in STAGE_ORDER}
         self._cache_buf: dict[str, dict[int, tuple]] = {s: {} for s in STAGE_ORDER}
-        # per-frame parameters: keyframe tracks and the machine's condition.  These
-        # belong to the renderer, not to the chain -- the chain is rebuilt whenever the
-        # parameters change, and anything initialised there is cleared with it.
         self._keyframes = None
         self._environment = None
         self._range_cache = None
@@ -140,6 +128,7 @@ class Renderer:
         self._pumps = 0
         self.last_render_ms = 0.0
         self.stage_ms: dict[str, float] = {}
+        self._render_lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # hashing / invalidation
@@ -155,24 +144,6 @@ class Renderer:
         return h
 
     def invalidate(self, params: dict[str, dict[str, float]] | None = None) -> DirtyInfo:
-        """
-        Adopt new parameters and drop the caches that depend on them.
-
-        The stage objects have to be **rebuilt**, not merely re-hashed.  Every stage
-        copies its layer out of the render context in `__init__`
-        (`self.cfg = {layer: dict(ctx.layer(layer)) ...}`), so a stage keeps
-        whatever the parameters were when it was constructed.  Updating
-        `self.params` alone therefore left the old values live inside the stages:
-        a parameter change would invalidate correctly and re-render the buffers,
-        but render them with the *previous* setting, and every subsequent change
-        produced the same frame as the first one after construction.
-
-        That is a silent failure of the worst kind -- the dirty bookkeeping says the
-        work was done, so nothing looks wrong -- and it invalidated a number of
-        earlier measurements that were attributed to the mechanisms under test.
-        Rebuilding the chain costs one object construction per stage, which is
-        negligible beside the render it is about to do.
-        """
         if params is not None:
             self.params = self.schema.resolve_all(params)
             self._build_chain()
@@ -187,7 +158,6 @@ class Renderer:
             return DirtyInfo(None, 0, self._cached_count())
 
         idx = STAGE_ORDER.index(first)
-        # drop the dirty stage and everything downstream
         for stage_name in STAGE_ORDER[idx:]:
             self._cache[stage_name] = {}
             self._cache_buf[stage_name] = {}
@@ -218,13 +188,8 @@ class Renderer:
             source=self.source,
         )
         chain = Chain(ctx)
-        chain.add(CameraStage(ctx)).add(FormatStage(ctx)).add(CodecStage(ctx))
-        # Connectors sit between the source and the recorder, so damage here is
-        # recorded onto the tape rather than applied on playback.
+        chain.add(CameraStage(ctx)).add(FilmStage(ctx)).add(FormatStage(ctx)).add(CodecStage(ctx))
         chain.add(ConnectorStage(ctx))
-        # The character generator's position is a property of the apparatus, not of the caller: a camera
-        # burns its OSD over the formed picture, a titler records onto the tape.  One instance is created,
-        # in the slot `overlay.at` selects, and it does nothing when the parameter disagrees with its slot.
         _osd_at = int(round(float(self.params.get("overlay", {}).get("at", 0.0)) or 0.0))
         if _osd_at == 1:
             chain.add(OverlayStage(ctx, slot=OverlayStage.SLOT_PRE_TAPE))
@@ -269,23 +234,6 @@ class Renderer:
     # frame rendering
     # ------------------------------------------------------------------
     def _fit_source(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Force the incoming frame to the size this renderer actually renders.
-
-        The chain's stages build their spatial noise fields from the context
-        dimensions, but a source can hand back something else.  When it did, the two
-        were added together and failed:
-
-            ValueError: operands could not be broadcast together with shapes (480,640) (178,236)
-
-        which names two shapes and explains nothing.  Sources that honour the scale
-        never hit this; a synthetic source has no scale to honour, so the size is
-        enforced here instead of being an unstated precondition.
-
-        Nearest-neighbour is used on purpose: it is the same convention as the rest
-        of the preview path, and it cannot invent detail that a metric computed from
-        the frame would then attribute to a mechanism.
-        """
         h, w = frame.shape[:2]
         if (w, h) == (int(self.width), int(self.height)):
             return frame
@@ -302,26 +250,32 @@ class Renderer:
     def set_time_varying(self, keyframes=None, environment=None) -> None:
         """
         Parameters that change during the clip: keyframe tracks, and the machine's condition.
-
-        Kept separate from `self.params`, which is the static set the dirty bookkeeping hashes. The
-        per-frame values are computed in `_apply_frame_params` and pushed to the stages; `self.params`
-        keeps the base set, so the hash comparison still means what it says.
         """
+        if isinstance(keyframes, list):
+            if keyframes:
+                from ..core.keyframes import KeyframeSet, Track
+                keyframes = KeyframeSet(tracks=[
+                    t if isinstance(t, Track) else Track.from_dict(t)
+                    for t in keyframes
+                ])
+            else:
+                keyframes = None
+        if isinstance(environment, dict):
+            if environment:
+                from ..core.environment import Environment
+                environment = Environment(
+                    warmth=float(environment.get("warmth", 1.0)),
+                    age=float(environment.get("age", 0.0)),
+                    humidity=float(environment.get("humidity", 0.0)),
+                    cold_sensitivity=float(environment.get("cold_sensitivity", 1.0)),
+                    age_sensitivity=float(environment.get("age_sensitivity", 1.0)),
+                )
+            else:
+                environment = None
         self._keyframes = keyframes
         self._environment = environment
 
     def _apply_frame_params(self, index: int) -> None:
-        """
-        Push this frame's parameters to the stages.
-
-        Order matters and mirrors the physics: the project's own values, then this unit's deviations,
-        then the environment the machine is in, then any keyframe driving a parameter directly. A
-        keyframe is last because it is an explicit instruction from the user, and a user who has said
-        "the head is at 0.6 now" should not have it moved afterwards by the temperature.
-
-        Stages are told rather than assumed: `refresh_params` re-copies the layers and calls the
-        stage's own re-read hook, because a stage holds the copy it made when it was built.
-        """
         if self._keyframes is None and self._environment is None:
             return
         params = {layer: dict(vals) for layer, vals in self.params.items()}
@@ -330,7 +284,7 @@ class Renderer:
             from ..core.environment import apply_environment
             params, _rec = apply_environment(params, self._environment, self._ranges(),
                                              self._layer_of)
-        if self._keyframes is not None:
+        if self._keyframes is not None and hasattr(self._keyframes, "apply"):
             params, _rec = self._keyframes.apply(params, t, self._ranges())
         ctx = self.chain.ctx
         ctx.params = params
@@ -362,7 +316,6 @@ class Renderer:
 
         self._apply_frame_params(index)
 
-        # find the deepest cached upstream frame we can restart from
         start = 0
         buf: FrameBuffer | None = None
         for i in range(len(STAGE_ORDER) - 1, 0, -1):
@@ -388,9 +341,6 @@ class Renderer:
                 src_frame = self.source.frame(index)
             src_frame = self._fit_source(src_frame)
             cam: CameraStage = self.stage["camera"]  # type: ignore[assignment]
-            # The camera's shutter integrates the *previous* field, so it needs
-            # the previous source frame.  The source keeps a small LRU, so this
-            # normally costs nothing: the pump already touched index-1.
             if self._prev_src is None and index > 0:
                 try:
                     self._prev_src = self.source.frame(index - 1)
@@ -403,16 +353,6 @@ class Renderer:
                               index / max(1e-6, self.fps), self.std,
                               {"field": index % 2})
 
-        # Replay forward from the deepest usable cached frame.  Stages before
-        # `dirty_from` are guaranteed cached, so they are never re-run (and
-        # never re-captured); stages from `dirty_from` on are re-run and their
-        # output stored again.
-        #
-        # Captures are collected first and committed only after the whole chain
-        # succeeds.  Writing them as we go would mean a mid-chain failure
-        # (a shape bug, say) leaves a frame marked "rendered" in an upstream
-        # cache, and the next attempt would then skip the remaining stages and
-        # silently return a half-processed frame.
         t0 = time.perf_counter()
         capture_from = STAGE_ORDER.index(self.dirty_from)
         pending: list[tuple[str, np.ndarray, np.ndarray | None, dict]] = []
@@ -422,15 +362,31 @@ class Renderer:
             buf = st.apply(buf)  # type: ignore[arg-type]
             dt = (time.perf_counter() - t) * 1000.0
             self.stage_ms[st.name] = self.stage_ms.get(st.name, 0.0) * 0.7 + dt * 0.3
-            if pos >= capture_from and pos < len(STAGE_ORDER) - 1:
+            if not self.streaming and pos >= capture_from and pos < len(STAGE_ORDER) - 1:
+                slim_meta = {
+                    k: v for k, v in buf.meta.items()
+                    if k not in ("dropout_mask", "crease_mask", "line_phase")
+                }
                 pending.append((st.name, buf.rgb,
                                 buf.composite.copy() if buf.composite is not None else None,
-                                copy.deepcopy(buf.meta)))
+                                copy.deepcopy(slim_meta)))
         self.last_render_ms = (time.perf_counter() - t0) * 1000.0
-        for name, rgb, comp_c, meta_c in pending:
-            self._cache[name][index] = rgb
-            self._cache_buf[name][index] = (comp_c, meta_c)
-        self._cache["display"][index] = buf.rgb  # type: ignore[union-attr]
+        if not self.streaming:
+            limit_f = self.max_cache_frames
+            for name, rgb, comp_c, meta_c in pending:
+                c_rgb = self._cache[name]
+                c_buf = self._cache_buf[name]
+                c_rgb[index] = rgb
+                c_buf[index] = (comp_c, meta_c)
+                while len(c_rgb) > limit_f:
+                    old_k = next(iter(c_rgb))
+                    c_rgb.pop(old_k, None)
+                    c_buf.pop(old_k, None)
+            c_disp = self._cache["display"]
+            c_disp[index] = buf.rgb  # type: ignore[union-attr]
+            while len(c_disp) > limit_f:
+                old_k = next(iter(c_disp))
+                c_disp.pop(old_k, None)
         if src_frame is not None:
             self._prev_src = np.asarray(src_frame, dtype=np.float32)
         return buf.rgb  # type: ignore[union-attr]
@@ -450,8 +406,30 @@ class Renderer:
             return
 
         top = max(wanted)
+        start_idx = 0
+        if self.preview and len(wanted) == 1 and not self.streaming and self._keyframes is None:
+            cam_p = self.params.get("camera") or {}
+            fmt_p = self.params.get("format") or {}
+            tpe_p = self.params.get("tape") or {}
+            dsp_p = self.params.get("display") or {}
+            needs_multi = (
+                float(cam_p.get("ae_enabled", 0.0)) > 0.5
+                or float(cam_p.get("awb_enabled", 0.0)) > 0.5
+                or float(cam_p.get("af_enabled", 0.0)) > 0.5
+                or float(cam_p.get("nv_mode", 0.0)) > 0.5
+                or float(fmt_p.get("chroma_lag", 0.0)) > 1e-4
+                or float(tpe_p.get("shuttle_speed", 0.0)) > 1e-4
+            )
+            if not needs_multi:
+                has_persist = (
+                    float(dsp_p.get("enabled", 1.0)) > 0.5
+                    and float(dsp_p.get("phosphor_persistence", 0.0)) > 1e-4
+                )
+                start_idx = max(0, top - (1 if has_persist else 0))
+            else:
+                start_idx = max(0, top - 6)
         pumped = 0
-        for index in range(0, top + 1):
+        for index in range(start_idx, top + 1):
             if should_stop is not None and should_stop():
                 return
             if index in self._cache["display"]:
@@ -467,9 +445,6 @@ class Renderer:
             try:
                 rgb = self._render_index(index, src)
             except Exception:
-                # A partially written cache would make the next attempt see
-                # "already rendered" and silently skip the remaining stages, so
-                # drop every stage's entry for this frame before propagating.
                 for stage_name in STAGE_ORDER:
                     self._cache[stage_name].pop(index, None)
                 raise
@@ -479,8 +454,9 @@ class Renderer:
                 yield index, rgb
 
     def render_frame(self, index: int) -> np.ndarray:
-        for _, rgb in self.render_frames([index]):
-            return rgb
+        with self._render_lock:
+            for _, rgb in self.render_frames([index]):
+                return rgb
         raise RuntimeError(f"could not render frame {index}")
 
     # ------------------------------------------------------------------

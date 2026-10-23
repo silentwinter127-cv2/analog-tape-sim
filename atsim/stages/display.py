@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..codecs.crt import (apply_corner_astigmatism, apply_curved_bezel_and_glass,
-                          apply_deflection, apply_ehv_line_sag,
-                          apply_faceplate_halation, apply_phosphor_saturation,
-                          apply_scanline_beam, build_phosphor_mask,
+from ..codecs.multiview_wall import MultiviewWallSpec, render_multiview_wall
+from ..codecs.crt import (CRTMagneticEnvSpec, TrinitronKV1214Spec,
+                          apply_corner_astigmatism, apply_crt_magnetic_and_special_env,
+                          apply_curved_bezel_and_glass, apply_deflection,
+                          apply_ehv_line_sag, apply_faceplate_halation,
+                          apply_phosphor_saturation, apply_scanline_beam,
+                          apply_trinitron_kv1214_optics, build_phosphor_mask,
                           moisture_effects)
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 from ..core.signal import SignalFrame, highpass, lowpass
@@ -66,7 +69,8 @@ class DisplayStage(Stage):
         self.crt_moisture = float(d.get("crt_moisture", 0.0))
         self.crt_corrosion = float(d.get("crt_corrosion", 0.0))
         self.crt_age = float(d.get("crt_age", 0.3))
-        raw_d = (self.ctx.params or {}).get("display")
+        _p_all = self.ctx.params or {}
+        raw_d = _p_all["display"] if "display" in _p_all else None
         if isinstance(raw_d, dict) and "enabled" not in raw_d and len(raw_d) > 0:
             self.enabled = True
         else:
@@ -98,6 +102,11 @@ class DisplayStage(Stage):
         self.ehv_sag = float(d.get("ehv_sag", 0.15))
         self.phosphor_persistence = float(d.get("phosphor_persistence", 0.18))
         self.bezel = float(d.get("bezel", 0.0))
+        self.mv_spec = MultiviewWallSpec.from_params(d)
+        from ..codecs.perception_and_operator import PerceptionOperatorSpec
+        self.percept_spec = PerceptionOperatorSpec.from_params(d)
+        self.magnet_spec = CRTMagneticEnvSpec.from_params(d)
+        self.kv1214_spec = TrinitronKV1214Spec.from_params(d)
         # High-voltage breathing
         self.breathing = float(d.get("breathing", 0.0))
         self.gamma = float(d.get("gamma", 2.35))
@@ -108,6 +117,16 @@ class DisplayStage(Stage):
         self.overscan = float(d.get("overscan", 0.06))
         self.vignette = float(d.get("vignette", 0.25))
         self.reflection = float(d.get("reflection", 0.10))
+        # Candidate A: Virtual Camera Reshooting CRT Off-Screen System parameters
+        self.reshoot_enabled = float(d.get("reshoot_enabled", 0.0)) > 0.5
+        self.reshoot_shutter_hz = float(d.get("reshoot_shutter_hz", 60.0))
+        self.reshoot_fps_offset = float(d.get("reshoot_fps_offset", 0.60))
+        self.reshoot_rolling_shutter = float(d.get("reshoot_rolling_shutter", 0.35))
+        self.reshoot_moire = float(d.get("reshoot_moire", 0.0))
+        self.reshoot_tilt_deg = float(d.get("reshoot_tilt_deg", 0.0))
+        self.reshoot_perspective = float(d.get("reshoot_perspective", 0.0))
+        self.reshoot_ambient_glare = float(d.get("reshoot_ambient_glare", 0.0))
+        self.reshoot_wb_shift = float(d.get("reshoot_wb_shift", 0.0))
         self._prepare_static()
 
     def on_params_changed(self) -> None:
@@ -304,13 +323,34 @@ class DisplayStage(Stage):
 
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
         sig: SignalFrame | None = buf.meta.get("signal")
-        if not self.enabled:
+        sub_active = (
+            self.mv_spec.is_active()
+            or self.magnet_spec.is_active()
+            or self.kv1214_spec.is_active()
+        )
+        if not self.enabled and not sub_active:
             if sig is None:
                 return buf
             out = FrameBuffer(sig.to_rgb(), buf.composite, buf.index, buf.time,
                               buf.std, dict(buf.meta))
             out.meta["signal"] = sig
             return out
+        if not self.enabled and sub_active and not self.mv_spec.is_active():
+            rgb_in = np.clip(buf.rgb if sig is None else sig.to_rgb(), 0.0, 1.0).astype(np.float32)
+            meta_sub = dict(buf.meta)
+            if self.kv1214_spec.is_active():
+                ref_p4 = meta_sub["tap_camera_rgb"] if "tap_camera_rgb" in meta_sub else None
+                rgb_in, kv_info = apply_trinitron_kv1214_optics(
+                    rgb_in, self.kv1214_spec, frame_index=int(buf.index), reference_p4_rgb=ref_p4,
+                )
+                meta_sub["trinitron_kv1214"] = kv_info
+            if self.magnet_spec.is_active():
+                rgb_in, mag_info = apply_crt_magnetic_and_special_env(
+                    rgb_in, self.magnet_spec, frame_index=int(buf.index), fps=float(self.ctx.fps), seed=int(self.ctx.seed) + 91,
+                )
+                meta_sub["crt_magnet_env"] = mag_info
+            meta_sub["signal"] = SignalFrame.from_rgb(rgb_in, buf.std)
+            return FrameBuffer(rgb_in, buf.composite, buf.index, buf.time, buf.std, meta_sub)
 
         rgb = buf.rgb if sig is None else sig.to_rgb()
 
@@ -395,13 +435,176 @@ class DisplayStage(Stage):
         if self.reflection > 1e-3 or self.bezel > 1e-4:
             rgb = apply_curved_bezel_and_glass(rgb, self.bezel, self.reflection, self.curvature)
 
-        # 7. CRT interface moisture: the last junction in the chain
+        # 7. CRT interface moisture & Shared Power Bus deflection sag
+        pstate = buf.meta["power_bus"] if "power_bus" in buf.meta else None
+        if pstate is not None and pstate.active and pstate.crt_scale_sag > 1e-4:
+            rgb, sag_geo = apply_deflection(rgb, pstate.crt_scale_sag, int(buf.index), self.ctx.seed + 71)
+            meta = dict(buf.meta)
+            meta["crt_power_sag"] = sag_geo
+            buf = FrameBuffer(rgb, buf.composite, buf.index, buf.time, buf.std, meta)
+
         if self.crt_moisture > 1e-4 or self.crt_corrosion > 1e-4:
             rgb, crt_info = self._apply_crt_moisture(rgb, buf.index)
             meta = dict(buf.meta)
             meta["crt"] = crt_info
             buf = FrameBuffer(rgb, buf.composite, buf.index, buf.time, buf.std, meta)
+
+        # 8. Candidate A: Virtual Camera Reshooting CRT Off-Screen System
+        from ..codecs.crt_reshoot import CRTReshootSpec, apply_crt_reshoot
+        rs_spec = CRTReshootSpec(
+            enabled=self.reshoot_enabled,
+            shutter_hz=self.reshoot_shutter_hz,
+            fps_offset=self.reshoot_fps_offset,
+            rolling_shutter=self.reshoot_rolling_shutter,
+            moire=self.reshoot_moire,
+            tilt_deg=self.reshoot_tilt_deg,
+            perspective=self.reshoot_perspective,
+            ambient_glare=self.reshoot_ambient_glare,
+            wb_shift=self.reshoot_wb_shift,
+        )
+        reshoot_info = None
+        if rs_spec.is_active():
+            rgb, reshoot_info = apply_crt_reshoot(
+                rgb, rs_spec, buf.std, int(buf.index), self.ctx.fps,
+                mask_pitch=self.mask_pitch if self.mask_pitch > 0.1 else 2.8,
+                scan_pitch=self.scan_pitch,
+                curvature=self.curvature,
+            )
+
         rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32)
-        out = FrameBuffer(rgb, buf.composite, buf.index, buf.time, buf.std, dict(buf.meta))
-        out.meta["signal"] = sig
+        meta_out = dict(buf.meta)
+        if reshoot_info is not None:
+            meta_out["crt_reshoot"] = reshoot_info
+        if self.kv1214_spec.is_active():
+            ref_p4 = meta_out["tap_camera_rgb"] if "tap_camera_rgb" in meta_out else None
+            rgb, kv_info = apply_trinitron_kv1214_optics(
+                rgb, self.kv1214_spec, frame_index=int(buf.index), reference_p4_rgb=ref_p4,
+            )
+            meta_out["trinitron_kv1214"] = kv_info
+        if self.magnet_spec.is_active():
+            rgb, mag_info = apply_crt_magnetic_and_special_env(
+                rgb, self.magnet_spec, frame_index=int(buf.index), fps=float(self.ctx.fps), seed=int(self.ctx.seed) + 91,
+            )
+            meta_out["crt_magnet_env"] = mag_info
+        if self.mv_spec.is_active():
+            cam_tap = meta_out["tap_camera_rgb"] if "tap_camera_rgb" in meta_out else rgb
+            fmt_tap = meta_out["tap_format_rgb"] if "tap_format_rgb" in meta_out else cam_tap
+            vtr_tap = meta_out["tap_tape_rgb"] if "tap_tape_rgb" in meta_out else fmt_tap
+            tbc_tap = meta_out["tap_player_rgb"] if "tap_player_rgb" in meta_out else vtr_tap
+            no_sig = (meta_out["format"] == "no_signal") if "format" in meta_out else False
+            if int(self.mv_spec.layout_mode) == 1:
+                feeds = [
+                    {"label": "CH1 SRC/TEST", "rgb": cam_tap, "tally": "PVW", "faulted": False},
+                    {"label": "CH2 ENC/FMT", "rgb": fmt_tap, "tally": "AUX", "faulted": False},
+                    {"label": "CH3 PATCH/DA", "rgb": fmt_tap, "tally": "AUX", "faulted": no_sig},
+                    {"label": "CH4 VTR-RAW", "rgb": vtr_tap, "tally": "AUX", "faulted": no_sig},
+                    {"label": "CH5 TBC-PROC", "rgb": tbc_tap, "tally": "PVW", "faulted": no_sig},
+                    {"label": "CH6 PGM-AIR", "rgb": rgb, "tally": "PGM", "faulted": no_sig},
+                ]
+            else:
+                feeds = [
+                    {"label": "CH1 CAM/SRC", "rgb": cam_tap, "tally": "PVW", "faulted": False},
+                    {"label": "CH2 VTR-RAW", "rgb": vtr_tap, "tally": "AUX", "faulted": no_sig},
+                    {"label": "CH3 TBC-OUT", "rgb": tbc_tap, "tally": "PVW", "faulted": no_sig},
+                    {"label": "CH4 PGM-AIR", "rgb": rgb, "tally": "PGM", "faulted": no_sig},
+                ]
+            rgb, mv_info = render_multiview_wall(
+                feeds, self.mv_spec, width=rgb.shape[1], height=rgb.shape[0],
+                frame_index=int(buf.index), seed=int(self.ctx.seed) + 83,
+            )
+            meta_out["multiview_wall"] = mv_info
+        if self.percept_spec.is_active():
+            from ..codecs.perception_and_operator import apply_perception_and_operator
+            ref_tap = meta_out["tap_camera_rgb"] if "tap_camera_rgb" in meta_out else None
+            rgb, p_info = apply_perception_and_operator(
+                rgb, self.percept_spec, frame_index=int(buf.index), fps=float(self.ctx.fps), reference_rgb=ref_tap,
+            )
+            meta_out["perception_and_operator"] = p_info
+        out = FrameBuffer(rgb, buf.composite, buf.index, buf.time, buf.std, meta_out)
+        out.meta["signal"] = SignalFrame.from_rgb(rgb, buf.std) if (reshoot_info is not None or self.mv_spec.is_active() or self.percept_spec.is_active() or self.kv1214_spec.is_active() or self.magnet_spec.is_active()) else sig
+        return out
+
+
+class CRTReshootStage(Stage):
+    """Standalone Virtual Camera Reshooting CRT Off-Screen node stage (`offscreen_camera`)."""
+    name = "offscreen_camera"
+    layers = ("display",)
+
+    def __init__(self, ctx: RenderContext):
+        super().__init__(ctx)
+        self._read_params()
+
+    def _read_params(self) -> None:
+        d = self.cfg_of("display")
+        self.mask_pitch = float(d.get("mask_pitch", 2.8))
+        self.scan_pitch = float(d.get("scan_pitch", 2.0))
+        self.curvature = float(d.get("curvature", 0.22))
+        self.reshoot_shutter_hz = float(d.get("reshoot_shutter_hz", 100.0))
+        self.reshoot_fps_offset = float(d.get("reshoot_fps_offset", 0.85))
+        self.reshoot_rolling_shutter = float(d.get("reshoot_rolling_shutter", 0.35))
+        self.reshoot_moire = float(d.get("reshoot_moire", 0.45))
+        self.reshoot_tilt_deg = float(d.get("reshoot_tilt_deg", 1.8))
+        self.reshoot_perspective = float(d.get("reshoot_perspective", 0.18))
+        self.reshoot_ambient_glare = float(d.get("reshoot_ambient_glare", 0.25))
+        self.reshoot_wb_shift = float(d.get("reshoot_wb_shift", 0.22))
+
+    def on_params_changed(self) -> None:
+        self._read_params()
+
+    def apply(self, buf: FrameBuffer) -> FrameBuffer:
+        from ..codecs.crt_reshoot import CRTReshootSpec, apply_crt_reshoot
+        sig = buf.meta["signal"] if "signal" in buf.meta else None
+        rgb_in = np.clip(buf.rgb if buf.rgb is not None else sig.to_rgb(), 0.0, 1.0).astype(np.float32)
+        rs_spec = CRTReshootSpec(
+            enabled=True,
+            shutter_hz=self.reshoot_shutter_hz,
+            fps_offset=self.reshoot_fps_offset,
+            rolling_shutter=self.reshoot_rolling_shutter,
+            moire=self.reshoot_moire,
+            tilt_deg=self.reshoot_tilt_deg,
+            perspective=self.reshoot_perspective,
+            ambient_glare=self.reshoot_ambient_glare,
+            wb_shift=self.reshoot_wb_shift,
+        )
+        rgb_out, info = apply_crt_reshoot(
+            rgb_in, rs_spec, buf.std, int(buf.index), self.ctx.fps,
+            mask_pitch=self.mask_pitch if self.mask_pitch > 0.1 else 2.8,
+            scan_pitch=self.scan_pitch,
+            curvature=self.curvature,
+        )
+        out = FrameBuffer(rgb_out, buf.composite, buf.index, buf.time, buf.std, dict(buf.meta))
+        out.meta["crt_reshoot"] = info
+        out.meta["signal"] = SignalFrame.from_rgb(rgb_out, buf.std)
+        return out
+
+
+
+class CRTMagnetEnvStage(Stage):
+    """Standalone CRT Strong Magnetic Field, Shadow-Mask Remanence & PTC Degaussing Coil node stage (`crt_magnet_env`)."""
+    name = "crt_magnet_env"
+    layers = ("display",)
+
+    def __init__(self, ctx: RenderContext):
+        super().__init__(ctx)
+        self._read_params()
+
+    def _read_params(self) -> None:
+        d = self.cfg_of("display")
+        self.spec = CRTMagneticEnvSpec.from_params(d)
+        if not self.spec.is_active():
+            self.spec.mode = 5
+            self.spec.strength = 0.85
+
+    def on_params_changed(self) -> None:
+        self._read_params()
+
+    def apply(self, buf: FrameBuffer) -> FrameBuffer:
+        sig = buf.meta.get("signal")
+        rgb_in = np.clip(buf.rgb if buf.rgb is not None else sig.to_rgb(), 0.0, 1.0).astype(np.float32)
+        rgb_out, info = apply_crt_magnetic_and_special_env(
+            rgb_in, self.spec, frame_index=int(buf.index), fps=float(self.ctx.fps), seed=int(self.ctx.seed) + 91,
+        )
+        out = FrameBuffer(rgb_out, buf.composite, buf.index, buf.time, buf.std, dict(buf.meta))
+        out.meta["crt_magnet_env"] = info
+        out.meta["signal"] = SignalFrame.from_rgb(rgb_out, buf.std)
         return out

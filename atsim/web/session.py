@@ -13,7 +13,6 @@ live Renderer and its caches, so the preview can reuse upstream stages.
 from __future__ import annotations
 
 from ..core.profiles import CAMCORDER_PRESETS, FACTORY_PRESETS, LAYER_LABELS, PROFILE_LIBRARY, SCHEMA
-from ..core.profiles import CAMCORDER_PRESETS
 
 import json
 import shutil
@@ -24,7 +23,6 @@ from pathlib import Path
 from typing import Any
 
 from ..core.params import merge_values
-from ..core.profiles import FACTORY_PRESETS, PROFILE_LIBRARY, SCHEMA
 from ..io.ffmpeg import VideoInfo, probe
 from ..io.source import ClipSource, StillSource, SyntheticSource
 from ..render.renderer import Renderer
@@ -52,6 +50,7 @@ def _scaled_synthetic(width: int, height: int, frames: int, fps: float,
 # against this, so it has to be fixed rather than inherited from the screen.
 _PRESET_BASELINE_LAYERS = {
     "camera": {"noise_grain": 0.0, "sensor_type": 0.0},
+    "film": {"enabled": 0.0, "stock": 0.0},
     "format": {"filter_kind": 1.0, "chroma_gain": 1.0,
                "chroma_vertical_averaging": 0.9},
     "codec": {"dv_enabled": 0.0, "dv_quality": 1.0, "dv_base_step": 0.0125},
@@ -67,34 +66,21 @@ _PRESET_BASELINE_LAYERS = {
 def _preset_baseline() -> dict:
     """
     Schema defaults, plus the preset-specific baseline above.
-
-    Two sources, because both are needed: the schema defaults guarantee every
-    parameter exists and is in range, and the explicit layer values pin the handful
-    of settings the presets assume without restating them.
     """
     base: dict = {name: {} for name in SCHEMA.layer_names()}
     for name in SCHEMA.layer_names():
         layer = SCHEMA.layer(name)
         for key in layer.keys():
             _spec = layer.specs[key]
-            # keep the default's own type: coercing to float was a no-op for numeric parameters and
-            # raises on a text one, which took down every preset application rather than just the
-            # preset that mentions the overlay
             _d = _spec.default
             base[name][key] = _d if getattr(_spec, "kind", "number") == "text" else float(_d)
     return merge_values(base, _PRESET_BASELINE_LAYERS)
 
 
-def _resolve_night_vision(params: dict) -> dict:
+def _resolve_night_vision(params: dict, raw_params: dict | None = None) -> dict:
     """
-    Apply the night-vision mode's own settings to a resolved parameter set, in place of nothing.
-
-    **Why it lives here.**  The renderer and the API both call `resolved_params`, so resolving the mode here means the
-    picture and the panel cannot disagree -- which they did: the camera stage applied the mode's values and the
-    parameters the page read still held the schema defaults.
-
-    **And it is a no-op when no mode is selected**, so nothing about any existing preset changes: with `nv_mode` at 0 the
-    module returns the spec unchanged and the dictionary is returned as it was.
+    Apply the night-vision mode's own defaults to a resolved parameter set, WITHOUT
+    overwriting any parameter that the user or active preset explicitly set in `raw_params`.
     """
     cam = params.get("camera")
     if not cam:
@@ -105,24 +91,24 @@ def _resolve_night_vision(params: dict) -> dict:
         return params
     if int(round(mode)) == 0:
         return params
-    from ..codecs.nightvision import MODE_PRESETS, mode_of
-    from ..codecs.nightvision import NightVisionSpec
+    from ..codecs.nightvision import MODE_PRESETS, mode_of, NightVisionSpec
     spec = NightVisionSpec.from_params(cam)
     preset = MODE_PRESETS.get(mode_of(spec))
     if not preset:
         return params
-    # **The preset's keys are `NightVisionSpec` field names; the parameter set's are `nv_`-prefixed.**  Writing them
-    # unprefixed added three keys nothing reads and left the real three at their defaults -- measured, the resolver's
-    # output differed from its input by exactly `accumulate`, `green_mix` and `illuminator` appearing as new keys.  The
-    # guard that was meant to catch a bad name compared `f"nv_{k}"` against a set while using the bare `k` on the left,
-    # so it passed everything through; it now compares like with like.
+
+    raw_cam = (raw_params or {}).get("camera") or {}
     updates = {}
     unknown = []
     for k, v in preset.items():
-        if f"nv_{k}" in cam:
-            updates[f"nv_{k}"] = v
+        nv_k = f"nv_{k}"
+        if nv_k in cam:
+            # Only apply mode default if the user has not explicitly set this key
+            if nv_k not in raw_cam:
+                updates[nv_k] = v
         elif k in cam:
-            updates[k] = v
+            if k not in raw_cam:
+                updates[k] = v
         else:
             unknown.append(k)
     if unknown:
@@ -131,29 +117,10 @@ def _resolve_night_vision(params: dict) -> dict:
                       % ", ".join(f"nv_{k}" for k in unknown), stacklevel=2)
     out = dict(params)
     out["camera"] = dict(cam, **updates)
-    if mode in (1.0, 2.0) or int(round(mode)) in (1, 2):
-        cod = dict(out.get("codec") or {})
-        if float(cod.get("dv_enabled", 0.0)) < 0.5:
-            cod["dv_enabled"] = 1.0
-            out["codec"] = cod
-            fmt = dict(out.get("format") or {})
-            fmt.update({"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0, "chroma_vertical_averaging": 0.0, "color_noise": 0.02})
-            out["format"] = fmt
-            tpe = dict(out.get("tape") or {})
-            tpe.update({"dropout_rate": 0.0, "noise_floor": 0.02, "line_jitter": 0.02, "walk_amplitude": 0.02, "micro_jitter": 0.02, "head_switching": 0.0})
-            out["tape"] = tpe
-            ply = dict(out.get("player") or {})
-            ply.update({"luma_bandwidth": 5.0, "chroma_bandwidth": 2.0, "tbc_enabled": 1.0, "head_wear": 0.05, "transport_jitter": 0.05})
-            out["player"] = ply
-        dsp = dict(out.get("display") or {})
-        if float(dsp.get("enabled", 1.0)) > 0.5 and abs(float(dsp.get("gamma", 2.35)) - 2.35) < 1e-3:
-            dsp["enabled"] = 0.0
-            out["display"] = dsp
     return out
 
 
 @dataclass
-
 class Project:
     id: str = ""
     name: str = "未命名工程"
@@ -164,15 +131,7 @@ class Project:
     fps: float = 30000.0 / 1001.0
     params: dict = field(default_factory=dict)
     preset: str | None = None
-    # Which physical machine each device is.  An empty string means the nominal model, so a
-    # project saved before this dimension existed still loads and renders identically.  The
-    # identities are part of the project because a unit that is not saved is a unit that changes
-    # when the project is reloaded, which would break reproducibility.
     unit_identities: dict = field(default_factory=dict)
-    # The machine's condition -- warmth, ageing, damp -- and the keyframe tracks that drive it and
-    # anything else.  Both vary per frame, so unlike `params` they cannot be folded into
-    # `resolved_params()`; the renderer is given them instead.  A project saved before these existed
-    # loads with none of them, which is what keeps it rendering identically.
     environment: dict = field(default_factory=dict)
     keyframes: list = field(default_factory=list)
     created: float = field(default_factory=time.time)
@@ -190,20 +149,9 @@ class Project:
     def resolved_params(self) -> dict:
         """
         The parameters this project renders with, including this unit's deviations.
-
-        Device individual variation is applied here rather than in the renderer so that every caller
-        goes through it and none can forget.  With no identities set nothing changes, which is what
-        keeps every preset and capture from before this dimension rendering identically.
-
-        **The night-vision mode's own settings are resolved here for the same reason.**  They were applied inside the
-        camera stage first, so the renderer used them and nothing that *read* the parameters could see them -- measured
-        in the browser, mode 3 selected with the engine's state reporting `nv_green_mix = 1` while the renderer used 0,
-        i.e. two sources of truth for one picture and a slider editing a parameter the mode owned.  **This function is
-        the one place both the renderer and the API pass through**, which is exactly what its own docstring says about
-        device variation.
         """
         params = SCHEMA.resolve_all(self.params or {})
-        params = _resolve_night_vision(params)
+        params = _resolve_night_vision(params, raw_params=self.params)
         unit = self._unit()
         if unit is None:
             return params
@@ -226,6 +174,9 @@ class Project:
             cold_sensitivity=float(d.get("cold_sensitivity", 1.0)),
             age_sensitivity=float(d.get("age_sensitivity", 1.0)))
 
+    # Compatibility alias used by server._run_render
+    environment_state = environment_from
+
     def keyframe_set(self):
         """This project's timeline, as a `KeyframeSet`, or None if there are no tracks."""
         from ..core.keyframes import KeyframeSet, Track
@@ -234,14 +185,10 @@ class Project:
             return None
         return KeyframeSet(tracks=[Track.from_dict(t) for t in tracks])
 
-    def unit_report(self) -> list[dict]:
-        """
-        Which parameters this machine deviates in, and by how much.
+    # Compatibility alias used by server._run_render
+    keyframe_tracks = keyframe_set
 
-        Returned rather than logged, because the point of an individual machine is that its
-        deviations can be named -- and because a realism claim about a specific unit is only
-        checkable if the unit's numbers can be read out.
-        """
+    def unit_report(self) -> list[dict]:
         unit = self._unit()
         if unit is None:
             return []
@@ -249,19 +196,10 @@ class Project:
         bind_ranges(SCHEMA)
         spreads = spreads_from_schema(SCHEMA)
         base = SCHEMA.resolve_all(self.params or {})
-        # The report is computed by the same `apply_unit` call that `resolved_params` makes, from the
-        # same merged unit, so the table cannot disagree with what was rendered.  An earlier version
-        # built its own `DeviceUnit(identity="probe")` here -- a hardcoded string -- and reported the
-        # same machine for every serial number while the render used the real one.
         _p, record = apply_unit(base, unit, spreads.get)
         return record
 
     def _unit(self):
-        """
-        This project's machine, with one identity per device class merged into one deviation set.
-
-        Shared by `resolved_params` and `unit_report` so that what is reported is what is rendered.
-        """
         ids = self.unit_identities or {}
         if not ids:
             return None
@@ -345,18 +283,10 @@ class SessionStore:
         src = self._sources.get(key)
         if src is not None:
             return src
-        # The scale from the cache key must actually reach the source.  It was
-        # accepted but never passed, so every "preview at 0.5" was silently
-        # rendering full resolution: the badge said 360x240 while the renderer
-        # was working at 720x576.  That also broke the A/B view, because the
-        # simulated frame and the original ended up with different aspect ratios
-        # and `object-fit: contain` then scaled them differently.
         scale = float(key[1]) if len(key) > 1 else 1.0
         if project.source:
             path = self.clip_path(project.source)
             if path.exists():
-                # A still and a clip are the same thing downstream, so the choice
-                # is made here once rather than in every caller.
                 from ..io.imagecodec import is_image_path
                 if is_image_path(path):
                     src = StillSource(path, scale=scale, fps=project.fps)
@@ -365,27 +295,16 @@ class SessionStore:
             else:
                 src = _scaled_synthetic(720, 480, 150, project.fps, scale)
         else:
-            # no clip yet: the built-in demo scene, so the tool is always usable
             src = _scaled_synthetic(720, 480, 150, project.fps, scale, variant="chart")
         self._sources[key] = src
         return src
 
     def renderer_for(self, project: Project, preview: bool = True,
                      scale: float = 0.5) -> tuple[Renderer, Any]:
-        """
-        Get (or build) the Renderer for a project.
-
-        Preview and final renders use *different* renderers on purpose: the
-        preview works on a downscaled proxy while the final render uses full
-        resolution, and sharing one cache between them would silently mix the two.
-        """
         key = (project.id, bool(preview), round(float(scale), 3))
         src = self.source_for((project.id, round(float(scale), 3)), project)
         r = self._renderers.get(key)
         params = project.resolved_params()
-        # size the renderer from the frames the source actually delivers: a
-        # scaled ClipSource already returns smaller frames, and scaling twice
-        # would put the stage buffers at a different shape than the frames.
         w = int(getattr(src, "width", 720))
         h = int(getattr(src, "height", 480))
         if r is None:
@@ -394,10 +313,6 @@ class SessionStore:
             self._renderers[key] = r
         else:
             r.invalidate(params)
-        # The environment and the timeline are per-frame, so they are given to the renderer rather than
-        # folded into `params` -- and both paths need it: a cached renderer invalidated with new
-        # parameters still holds the old timeline.  Without this, editing a keyframe in the interface
-        # changes nothing on screen.
         env, kf = project.environment_from(), project.keyframe_set()
         if getattr(r, "_keyframes", None) is not kf or getattr(r, "_environment", None) is not env:
             r.set_time_varying(kf, env)
@@ -445,6 +360,8 @@ class SessionStore:
             "timeline": list(project.keyframes or []),
             "created": time.time(),
         }
+        if isinstance(graph_dict, dict):
+            entry["graph"] = graph_dict
         self.custom_presets[key] = entry
         self._save_custom_presets_disk()
         return {"key": key, **entry}
@@ -465,7 +382,7 @@ class SessionStore:
             return CAMCORDER_PRESETS[key]["layers"]
         for group in PROFILE_LIBRARY.values():
             if key in group:
-                return group[key]["layers"]
+                return group[key].get("layers") or group[key].get("values") or {}
         return {}
 
     def _preset_spec(self, key: str) -> tuple[dict | None, bool]:
@@ -487,6 +404,14 @@ class SessionStore:
         layers = spec.get("layers") or spec.get("values") or {}
         if not layers:
             return project
+        # Support profile entries whose `values` is a flat dict for one layer (e.g. CAMERA_PROFILES["docu_1989_telecine"])
+        first_val = next(iter(layers.values()), None)
+        if first_val is not None and not isinstance(first_val, dict):
+            for grp_name, grp_items in PROFILE_LIBRARY.items():
+                if key in grp_items:
+                    target_layer = {"media": "tape", "player": "player", "display": "display", "camera": "camera"}.get(grp_name, grp_name)
+                    layers = {target_layer: dict(layers)}
+                    break
         if is_full_preset:
             base = {lay: dict(vals) for lay, vals in _PRESET_BASELINE_LAYERS.items()}
             project.params = merge_values(base, layers)
@@ -495,6 +420,7 @@ class SessionStore:
                 project.standard = str(spec["standard"])
         else:
             project.params = merge_values(project.params or {}, layers)
+            project.preset = key
         if "environment" in spec:
             project.environment = dict(spec.get("environment") or {})
         elif is_full_preset:

@@ -101,10 +101,14 @@ class AudioSpec:
     def from_params(cls, params: dict) -> "AudioSpec":
         p = params or {}
         cfg = p.get("audio") if isinstance(p.get("audio"), dict) else p
+        fmt_cfg = p.get("format") if isinstance(p.get("format"), dict) else {}
+        s_type = int(round(float(cfg.get("synth_type", 0.0))))
+        if float(fmt_cfg.get("test_gen_enabled", 0.0)) > 0.5 and int(round(float(fmt_cfg.get("test_tone_mode", 0.0)))) > 0:
+            s_type = 1
         return cls(
             enabled=float(cfg.get("enabled", 1.0)) > 0.5,
             mode=int(round(float(cfg.get("mode", 0.0)))),
-            synth_type=int(round(float(cfg.get("synth_type", 0.0)))),
+            synth_type=s_type,
             hifi_unlock_thresh=float(np.clip(cfg.get("hifi_unlock_thresh", 0.32), 0.05, 1.0)),
             linear_bandwidth=float(np.clip(cfg.get("linear_bandwidth", 7500.0), 800.0, 16000.0)),
             azimuth_loss=float(np.clip(cfg.get("azimuth_loss", 0.22), 0.0, 1.0)),
@@ -579,6 +583,22 @@ class AudioSimulator:
                 pitch_shift_rate[sl] += (drum_sp - 1.0) * 0.35
                 p_dev += abs(drum_sp - 1.0) * 35.0
 
+            # 2b. Module 4: Mechanical Transport & Servo State Machine Audio Coupling
+            #     (Belt slip droop, pinch-roller eccentricity wow, reel-pack tension ripple,
+            #      servo hunting, Pause/Stop mute, and Record-Pause splice pop)
+            from ..codecs.transport_servo import TransportServoSpec, evaluate_transport_audio_mod
+            ts_spec = TransportServoSpec.from_params(f_params)
+            if ts_spec.is_active():
+                ts_aud = evaluate_transport_audio_mod(tape_cfg, f, u_f, fps=self.fps, seed=self.seed)
+                pitch_shift_rate[sl] += ts_aud["dv_over_v"]
+                p_dev += float(ts_aud["pitch_pct"])
+                if np.any(ts_aud["drop_gate"] > 1e-4):
+                    dropout_env[sl] = np.maximum(dropout_env[sl], ts_aud["drop_gate"])
+                    ff.dropout_level = max(ff.dropout_level, float(np.max(ts_aud["drop_gate"])))
+                mute_arr = np.clip(1.0 - ts_aud["amp_gain"], 0.0, 1.0)
+                if np.any(mute_arr > 1e-4):
+                    hdmi_mute_env[sl] = np.maximum(hdmi_mute_env[sl], mute_arr)
+
             # 3. Capstan Stiction Grab & Release (`TapePlan.stiction`)
             if f in stiction_by_frame and aud_spec.stiction_pitch > 1e-4:
                 for sev in stiction_by_frame[f]:
@@ -723,6 +743,62 @@ class AudioSimulator:
             if eff_hum > 1e-4:
                 hum_env[sl] = float(np.clip(eff_hum, 0.0, 1.2))
                 ff.ground_hum = float(hum_env[s0_c])
+
+            # 8b. Shared Power Bus Coupling (Battery Load Sag Pitch Droop, Startup Spin-Up & PSU Ripple/EMI Hum)
+            if (float(conn_cfg.get("psu_ripple", 0.0)) > 1e-4
+                    or float(conn_cfg.get("battery_sag", 0.0)) > 1e-4
+                    or float(conn_cfg.get("battery_level", 1.0)) < 0.999
+                    or float(conn_cfg.get("startup_surge", 0.0)) > 1e-4
+                    or float(conn_cfg.get("emi_crosstalk", 0.0)) > 1e-4):
+                from ..codecs.power_bus import evaluate_power_bus
+                pb = evaluate_power_bus(
+                    f_params, frame_index=f, fps=self.fps, height=H_vid,
+                    row_luma=None, stiction_loss=float(ff.stiction_grab),
+                    seed=self.seed,
+                )
+                dp_rate = float(pb.audio_pitch_ratio) - 1.0
+                if abs(dp_rate) > 1e-6:
+                    pitch_shift_rate[sl] += dp_rate
+                    ff.pitch_deviation_pct = float(ff.pitch_deviation_pct + dp_rate * 100.0)
+                if pb.audio_hum_amp > 1e-5:
+                    hum_env[sl] = np.clip(hum_env[sl] + float(pb.audio_hum_amp), 0.0, 1.5).astype(np.float32)
+                    ff.ground_hum = float(hum_env[s0_c])
+
+            # 8c. Analog Video Switcher Crosspoint Click & Hum Coupling (`switcher_mode`)
+            if int(round(float(conn_cfg.get("switcher_mode", 0.0)))) > 0:
+                from ..codecs.switcher import AnalogSwitcherSpec, compute_switcher_audio_transient
+                sw_spec = AnalogSwitcherSpec.from_params(conn_cfg)
+                t_f_samples = (f / self.fps) + u_f.astype(np.float64) / self.fps
+                sw_aud = compute_switcher_audio_transient(sw_spec, t_f_samples, seed=self.seed)
+                if np.any(np.abs(sw_aud["click_pop"]) > 1e-5):
+                    crack_clicks[sl] = crack_clicks[sl] + sw_aud["click_pop"]
+                if sw_aud["hum_add"] > 1e-5:
+                    hum_env[sl] = np.clip(hum_env[sl] + float(sw_aud["hum_add"]), 0.0, 1.5).astype(np.float32)
+                    ff.ground_hum = float(hum_env[s0_c])
+
+            # 8d. Broadcast Patchbay & Distribution Amplifier Coupling (`da_enabled`, `patch_crosstalk`, `patch_contact_aging`)
+            from ..codecs.patchbay_da import PatchbayDASpec, compute_patchbay_audio_transient
+            da_spec = PatchbayDASpec.from_params(conn_cfg)
+            if da_spec.is_active():
+                t_f_samples = (f / self.fps) + u_f.astype(np.float64) / self.fps
+                da_aud = compute_patchbay_audio_transient(da_spec, t_f_samples, seed=self.seed)
+                if np.any(np.abs(da_aud["crackle"]) > 1e-5):
+                    crack_clicks[sl] = crack_clicks[sl] + da_aud["crackle"]
+                    ff.crack_spike = float(max(ff.crack_spike, float(np.max(np.abs(da_aud["crackle"])))))
+                if np.any(np.abs(da_aud["crosstalk_tone"]) > 1e-5):
+                    crack_clicks[sl] = crack_clicks[sl] + da_aud["crosstalk_tone"]
+                if da_aud["hum_add"] > 1e-5:
+                    hum_env[sl] = np.clip(hum_env[sl] + float(da_aud["hum_add"]), 0.0, 1.5).astype(np.float32)
+                    ff.ground_hum = float(hum_env[s0_c])
+
+            # 8e. Transfer & Dubbing Workstation Audio Sync Offset & Multi-Gen Hiss (`transfer_station_mode`)
+            ply_cfg = f_params.get("player") or {}
+            if int(round(float(ply_cfg.get("transfer_station_mode", 0.0)))) > 0:
+                from ..codecs.transfer_workstation import TransferWorkstationSpec, compute_transfer_audio_effect
+                tw_spec = TransferWorkstationSpec.from_params(ply_cfg)
+                tw_aud = compute_transfer_audio_effect(tw_spec, self.sample_rate, s1_c - s0_c, seed=self.seed + f)
+                if tw_aud["active"] and np.any(np.abs(tw_aud["noise_vec"]) > 1e-6):
+                    crack_clicks[sl] = crack_clicks[sl] + tw_aud["noise_vec"]
 
             # 9. RF Coaxial Link & Damp Interface Sync-Slip Buzz (`rf_present`, `rf_moisture`, `rf_corrosion`, `rf`)
             rf_on = float(conn_cfg.get("rf_present", 0.0)) > 0.5
@@ -1149,6 +1225,28 @@ class AudioSimulator:
                 fly_wave = np.sin(2.0 * np.pi * f_line * t_arr)[:, None].astype(np.float32)
                 sig = sig + fly_wave * fly_amp
 
+        # Step 6b: Option R Spatial Acoustic Room Field (Early Reflections, RT60 Tail, Spatial EMI Hum & HVAC Rumble)
+        conn_cfg_env = self.params.get("connector") or {}
+        if float(conn_cfg_env.get("env_field_enabled", 0.0)) > 0.5 or int(round(float(conn_cfg_env.get("env_field_mode", 0.0)))) > 0:
+            from ..codecs.spatial_environment_field import SpatialEnvFieldSpec, compute_spatial_acoustic_audio
+            env_sp = SpatialEnvFieldSpec.from_params(conn_cfg_env)
+            sig, env_aud_meta = compute_spatial_acoustic_audio(
+                sig, env_sp, sample_rate=sr, start_s=start_s, seed=self.seed
+            )
+        else:
+            env_aud_meta = {}
+
+        # Step 6c: Option S Network Streaming Audio Compression, Rebuffer Stalls & Packet-Loss Dropouts
+        codec_cfg_str = self.params.get("codec") or {}
+        if float(codec_cfg_str.get("stream_enabled", 0.0)) > 0.5 or int(round(float(codec_cfg_str.get("stream_mode", 0.0)))) > 0:
+            from ..codecs.network_streaming_era import NetworkStreamingSpec, compute_streaming_audio_effect
+            str_sp = NetworkStreamingSpec.from_params(codec_cfg_str)
+            sig, str_aud_meta = compute_streaming_audio_effect(
+                sig, str_sp, sample_rate=sr, start_s=start_s
+            )
+        else:
+            str_aud_meta = {}
+
         # Final output gain & soft limiter
         sig = sig * float(self.spec.master_gain)
         if np.any(hdmi_mute_env > 0.5):
@@ -1175,6 +1273,7 @@ class AudioSimulator:
             "rms_db": round(float(20.0 * np.log10(max(1e-6, float(np.sqrt(np.mean(sig ** 2)))))), 2),
             "rf_tuner_cascaded": bool(rf_enabled_cascade and mode_name in ("vhs_linear", "vhs_hifi", "hi8_afm")),
             **rf_cascade_meta,
+            **({"spatial_acoustic": env_aud_meta} if env_aud_meta else {}),
         }
         return AudioRun(
             samples=sig,
@@ -1243,6 +1342,40 @@ class AudioSimulator:
         ).astype(np.float32)[:, None]
         buzz_amp = (0.0015 + 0.012 * multipath + 0.008 * (1.0 - fm_quieting)) * float(np.clip(self.spec.rf_buzz + 0.25, 0.0, 1.5))
 
+        # Channel-switch (换台) intercarrier FM unlock static burst, varactor sweep chirp & 50Hz V-Sync roll buzz
+        sw_rate = float(rf_cfg.get("channel_switch_rate", 0.0))
+        sw_dur = float(rf_cfg.get("channel_switch_dur_s", 0.28))
+        lo_sw = float(rf_cfg.get("lo_sweep_mhz", 0.0))
+        vs_roll = float(rf_cfg.get("vsync_roll", 0.0))
+        if sw_rate > 1e-4 or lo_sw > 1e-4 or vs_roll > 1e-4:
+            sw_env = np.zeros(n, dtype=np.float32)
+            if sw_rate > 1e-4:
+                period_s = 1.0 / max(0.05, sw_rate)
+                dur_s = float(np.clip(sw_dur, 0.06, min(1.5, period_s * 0.85)))
+                phase_s = (t + 0.18 * period_s) % period_s
+                in_sw = phase_s < dur_s
+                u = np.clip(phase_s / max(1e-4, dur_s), 0.0, 1.0)
+                env_u = np.where(u < 0.15, u / 0.15,
+                        np.where(u < 0.70, 1.0, np.exp(-4.5 * (u - 0.70) / 0.30)))
+                sw_env = np.where(in_sw, env_u, 0.0).astype(np.float32)
+                # Switching relay / tuner contact click transient at start of switch
+                click_env = np.where(in_sw & (u < 0.04), np.exp(-u / 0.008) * np.sin(2.0 * np.pi * 920.0 * t), 0.0).astype(np.float32)
+            else:
+                click_env = np.zeros(n, dtype=np.float32)
+
+            eff_sw = np.clip(sw_env + 0.35 * lo_sw, 0.0, 1.0)
+            # 1) Unsquelched 6.5 MHz PAL-D FM discriminator static burst ("沙沙" white/pink noise crash)
+            static_raw = rng.standard_normal((n, 2)).astype(np.float32)
+            static_band = _one_pole_highpass(_one_pole_lowpass(static_raw, 4800.0, sr), 320.0, sr)
+            # 2) Varactor LO sweep heterodyne whistle & 50Hz V-Sync vertical roll frame buzz
+            chirp_freq = 420.0 + 1650.0 * np.sin(2.0 * np.pi * 3.5 * t) * eff_sw
+            chirp_phase = 2.0 * np.pi * np.cumsum(chirp_freq / float(sr))
+            chirp_wave = (0.12 * lo_sw * eff_sw * np.sin(chirp_phase))[:, None].astype(np.float32)
+            vroll_buzz = (0.14 * (vs_roll * 0.5 + 0.5 * eff_sw) * np.sign(np.sin(2.0 * np.pi * 50.0 * t)))[:, None].astype(np.float32)
+            # Duck program audio during carrier loss and inject FM discriminator static + click + buzz
+            duck = (1.0 - 0.86 * eff_sw)[:, None].astype(np.float32)
+            out = out * duck + static_band * (0.34 * eff_sw)[:, None] + chirp_wave + vroll_buzz + (0.28 * click_env)[:, None]
+
         out = (out + hiss_shaped * hiss_amp + buzz_wave * buzz_amp).astype(np.float32)
         meta = {
             "rf_cnr_db": round(cnr_db, 2),
@@ -1272,3 +1405,14 @@ class AudioSimulator:
             return run.frame_faults
         finally:
             self.sample_rate = orig_sr
+
+    def timeline(self, start_s: float = 0.0, duration_s: float = 1.0, tape_plan=None) -> dict[str, Any]:
+        start_f = max(0, int(round(start_s * self.fps)))
+        n_f = max(1, int(round(duration_s * self.fps)))
+        faults = self.extract_fault_envelope(start_f, n_f, tape_plan=tape_plan)
+        return {
+            "fps": self.fps,
+            "start_s": start_s,
+            "duration_s": duration_s,
+            "frames": [f.to_dict() for f in faults],
+        }

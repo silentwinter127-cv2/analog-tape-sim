@@ -2,78 +2,124 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>接口故障测试台 · analog-tape-sim</title>
+<title>接口故障测试台 · 虚拟媒介实验室 (Virtual Media Lab)</title>
 <style>
   :root {
-    --bg: #14110f; --panel: #1e1a17; --line: #322b26; --ink: #e8e0d6;
-    --dim: #948a7f; --accent: #d9a441; --bad: #c9704f; --good: #7fa86a;
+    --bg: #111622;
+    --panel: #171e2e;
+    --panel2: #1d263b;
+    --line: rgba(148, 179, 218, 0.14);
+    --ink: #e2ecf8;
+    --dim: #8b9eb7;
+    --accent: #38bdf8;
+    --accent2: #6366f1;
+    --bad: #f87171;
+    --good: #34d399;
+    --neo-out: 6px 6px 14px #090c14, -5px -5px 12px rgba(45, 62, 94, 0.42);
+    --neo-sm: 4px 4px 9px #090c14, -3px -3px 8px rgba(45, 62, 94, 0.36);
+    --neo-in: inset 4px 4px 9px #090c14, inset -3px -3px 8px rgba(45, 62, 94, 0.35);
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    margin: 0; background: radial-gradient(circle at 20% 0%, #192338 0%, var(--bg) 75%);
+    color: var(--ink);
+    font: 13px/1.55 "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   }
   header {
-    position: sticky; top: 0; z-index: 10; background: #1a1614;
-    border-bottom: 1px solid var(--line); padding: 10px 16px;
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(23, 30, 46, 0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 6px 20px rgba(6, 9, 15, 0.65);
+    padding: 12px 20px;
     display: flex; gap: 18px; align-items: center; flex-wrap: wrap;
   }
-  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
-  h1 small { color: var(--dim); font-weight: 400; margin-left: 8px; }
-  .ctl { display: flex; align-items: center; gap: 7px; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; color: #f0f6ff; }
+  h1 small { color: var(--dim); font-weight: 400; margin-left: 10px; font-size: 12px; }
+  .ctl {
+    display: flex; align-items: center; gap: 8px;
+    background: #131926; padding: 5px 12px; border-radius: 10px;
+    box-shadow: var(--neo-in); border: 1px solid rgba(148, 179, 218, 0.08);
+  }
   .ctl label { color: var(--dim); font-size: 12px; }
-  input[type=range] { width: 130px; accent-color: var(--accent); }
+  input[type=range] { width: 130px; accent-color: var(--accent); cursor: pointer; }
   .val {
     color: var(--accent); font-family: ui-monospace, monospace; font-size: 12px;
-    min-width: 34px; text-align: right;
+    min-width: 36px; text-align: right; font-weight: 600;
   }
   button {
-    background: #2a2420; color: var(--ink); border: 1px solid var(--line);
-    border-radius: 4px; padding: 5px 11px; cursor: pointer; font-size: 12px;
+    background: linear-gradient(145deg, #202a40, #161d2c);
+    color: var(--ink);
+    border: 1px solid rgba(160, 195, 240, 0.12);
+    box-shadow: var(--neo-sm);
+    border-radius: 10px; padding: 6px 14px; cursor: pointer; font-size: 12px;
+    transition: all 0.18s ease;
   }
-  button:hover { border-color: var(--accent); color: var(--accent); }
-  button.primary { background: var(--accent); color: #1a1614; border-color: var(--accent);
-                   font-weight: 600; }
-  main { padding: 16px; }
+  button:hover {
+    border-color: rgba(56, 189, 248, 0.45);
+    color: var(--accent);
+    transform: translateY(-1px);
+  }
+  button:active {
+    box-shadow: var(--neo-in);
+    transform: translateY(0);
+  }
+  button.primary {
+    background: linear-gradient(135deg, #0ea5e9, #3b82f6);
+    color: #06101e; border-color: rgba(125, 211, 252, 0.5);
+    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(14, 165, 233, 0.35), -2px -2px 6px rgba(125, 211, 252, 0.18);
+  }
+  main { padding: 20px; }
   h2 {
     font-size: 12px; text-transform: uppercase; letter-spacing: .09em;
-    color: var(--dim); margin: 22px 0 10px; font-weight: 600;
-    border-bottom: 1px solid var(--line); padding-bottom: 6px;
+    color: var(--accent); margin: 24px 0 12px; font-weight: 600;
+    border-bottom: 1px solid var(--line); padding-bottom: 7px;
   }
   h2:first-child { margin-top: 0; }
-  h2 span { text-transform: none; letter-spacing: 0; color: #6d6459;
+  h2 span { text-transform: none; letter-spacing: 0; color: var(--dim);
             font-weight: 400; margin-left: 8px; font-size: 12px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-          gap: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(305px, 1fr));
+          gap: 16px; }
   .tile {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    background: linear-gradient(145deg, #1b2437, #141a29);
+    border: 1px solid rgba(160, 195, 240, 0.1);
+    box-shadow: var(--neo-out);
+    border-radius: 14px;
     overflow: hidden; display: flex; flex-direction: column;
+    padding: 8px;
   }
-  .tile img { width: 100%; display: block; background: #0d0b0a; aspect-ratio: 4/3;
-              object-fit: contain; }
-  .tile .cap { padding: 7px 9px; border-top: 1px solid var(--line); }
-  .tile .name { font-weight: 600; font-size: 12.5px; }
-  .tile .why { color: var(--dim); font-size: 11.5px; margin-top: 3px; min-height: 30px; }
-  .tile .row { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+  .tile img {
+    width: 100%; display: block; background: #090d14; aspect-ratio: 4/3;
+    object-fit: contain; border-radius: 9px;
+    box-shadow: var(--neo-in);
+  }
+  .tile .cap { padding: 10px 8px 4px; }
+  .tile .name { font-weight: 600; font-size: 13px; color: #f0f6ff; }
+  .tile .why { color: var(--dim); font-size: 11.5px; margin-top: 4px; min-height: 30px; line-height: 1.5; }
+  .tile .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
   .tile input[type=range] { flex: 1; width: auto; }
-  .tile .ms { color: #6d6459; font-family: ui-monospace, monospace; font-size: 10.5px;
+  .tile .ms { color: #647894; font-family: ui-monospace, monospace; font-size: 10.5px;
               margin-left: auto; }
-  .tile.clean { border-color: #3d4a35; }
+  .tile.clean { border-color: rgba(52, 211, 153, 0.35); }
   .tile.clean .name { color: var(--good); }
   .note {
-    background: #1a1614; border: 1px solid var(--line); border-left: 3px solid var(--accent);
-    border-radius: 4px; padding: 10px 13px; margin: 12px 0; color: #c8beb2;
-    font-size: 12.5px; line-height: 1.6;
+    background: linear-gradient(145deg, #182032, #131927);
+    border: 1px solid rgba(148, 179, 218, 0.12);
+    border-left: 3px solid var(--accent);
+    box-shadow: var(--neo-out);
+    border-radius: 12px; padding: 12px 16px; margin: 12px 0 18px; color: #b8cae0;
+    font-size: 12.5px; line-height: 1.65;
   }
   .note b { color: var(--ink); }
-  .status { color: var(--dim); font-size: 11.5px; margin-left: auto;
+  .status { color: var(--accent); font-size: 11.5px; margin-left: auto;
             font-family: ui-monospace, monospace; }
-  .busy { opacity: .55; }
+  .busy { opacity: .6; }
 </style>
 </head>
 <body>
 <header>
-  <h1>接口故障测试台<small>一个界面看完所有接口的物理退化</small></h1>
+  <h1>接口故障测试台<small>Virtual Media Lab (虚拟媒介实验室) · 一个界面看完所有接口的物理退化</small></h1>
   <div class="ctl">
     <label>统一受潮</label>
     <input type="range" id="allMoist" min="0" max="1" step="0.02" value="0.5">
@@ -114,17 +160,8 @@
 const LAYERS = ["camera", "format", "codec", "connector", "rf", "tape", "player", "display"];
 const T = 0.4, SCALE = 0.45;
 
-/* Every tile is a whole parameter set plus a caption.  The baseline is the same project the
-   main UI uses, so what is shown here is the chain that will actually be used, not a
-   stripped-down test harness. */
-const BASE_PARAMS = null;   /* filled from /api/project on load */
+const BASE_PARAMS = null;
 
-/* Every parameter the connector and display layers can move must be named here.
-   `/api/project` MERGES a patch into the current parameters rather than replacing them --
-   measured: setting only `rf_present` left `hdmi_present` at 1.0 from an earlier request. So
-   a tile that posts only its own interface would render every interface set by the tile
-   before it as well, and its picture would not match its caption. Naming all of them is what
-   makes each tile independent, and a missed one stays live from the previous tile. */
 function cleanConnector() {
   return {
     hdmi_present: 0, hdmi_moisture: 0, hdmi_corrosion: 0,
@@ -137,12 +174,9 @@ function cleanTape() {
   return { stiction_rate: 0, stiction_amount: 0, stiction_stretch: 0 };
 }
 function cleanDisplay() {
-  /* crt_age was missing from the first version of this, and because the endpoint merges,
-     an aged CRT from the previous tile stayed live for every tile after it. */
   return { crt_moisture: 0, crt_corrosion: 0, crt_age: 0.3 };
 }
 
-/* kind: which connector type the tile drives, so the shared slider knows what to set */
 const TILES = [
   /* --- the clean baseline --- */
   { group: "base", name: "干净基线", clean: true,
@@ -235,7 +269,6 @@ function tileParams(tile) {
   return deepMerge(BASE, tile.params || {});
 }
 
-/* Apply a shared slider value to every tile that responds to that parameter. */
 function applyShared() {
   const m = parseFloat($("allMoist").value);
   const c = parseFloat($("allCorr").value);
@@ -267,9 +300,6 @@ async function post(path, body) {
   return r.json();
 }
 
-/* Render one tile: set the whole parameter set, then fetch the frame.  Setting the project
-   per tile rather than per slider-move keeps each image self-consistent: the server renders
-   whatever the project says at the moment the frame is requested. */
 async function renderTile(tile, imgEl, msEl) {
   const t0 = performance.now();
   const res = await post("/api/project", { params: tileParams(tile) });
@@ -314,8 +344,6 @@ async function renderAll() {
 
 async function loadBase() {
   const p = await fetch("/api/project").then((r) => r.json());
-  /* Neutralise everything this page is not testing, so a tile's difference is the interface
-     and not whatever the main UI was left on. */
   BASE = deepMerge(p.params, { connector: cleanConnector(), tape: cleanTape(),
                                display: cleanDisplay() });
   for (const tile of TILES) {

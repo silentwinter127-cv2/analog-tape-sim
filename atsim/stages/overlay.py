@@ -13,20 +13,15 @@ from __future__ import annotations
 import numpy as np
 
 from ..codecs.osd import CharacterGenerator, OSDPlan, parse_lines
+from ..codecs.master_playout import MasterPlayoutSpec, apply_master_playout
+from ..codecs.playout_automation_v2 import PlayoutAutomationV2Spec, apply_playout_automation_v2
+from ..codecs.media_ecosystem_evolution import MediaEcosystemSpec, apply_media_ecosystem_evolution
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 
 
 def _available_font_keys() -> tuple[str, ...]:
     """
     The fonts the panel may offer, in the order the panel lists them.
-
-    Read from the registry rather than written out here.  The tuple this replaces held three names while
-    the registry held fifteen, so every index above 2 was clamped to the third: measured over the API,
-    fourteen distinct indices were posted and the server drew `lyusung` every time.  The panel lists the
-    registry, so the two disagreed.
-
-    `font_catalogue()` filters entries whose file is missing, so the dropdown and the engine agree about
-    availability as well.
     """
     from ..codecs.fonts import font_catalogue
     keys = tuple(d["key"] for d in font_catalogue() if d.get("available"))
@@ -39,12 +34,10 @@ class OverlayStage(Stage):
     name = "overlay"
     layers = ("overlay",)
 
-    #: which slot this instance occupies: 0 = after the display, 1 = before the tape
+    #: which slot this instance occupies: 0 = after the display, 1 = before the tape, -1 = node graph node
     SLOT_TAIL = 0
     SLOT_PRE_TAPE = 1
-    #: reference vertical resolution that `cell_h`, `letter_gap`, `line_gap`, `shadow_x/y` are specified in.
-    #: Scaling all pixel-unit OSD parameters by `height / REF_HEIGHT` makes the preview (e.g. 0.5x = 240p/276p)
-    #: and the full-resolution export (1.0x = 480p/552p/1080p) have the *exact same visual proportion*.
+    SLOT_GRAPH = -1
     REF_HEIGHT = 240.0
 
     def __init__(self, ctx: RenderContext, slot: int = 0):
@@ -94,20 +87,19 @@ class OverlayStage(Stage):
         self.anim_speed = float(cfg.get("anim_speed", 1.0))
         self.anim_in_s = float(cfg.get("anim_in_s", 1.2))
         self.anim_cycle_s = float(cfg.get("anim_cycle_s", 0.0))
+        self.playout_spec = MasterPlayoutSpec.from_params(cfg)
+        self.auto_v2_spec = PlayoutAutomationV2Spec.from_params(cfg)
+        self.eco_spec = MediaEcosystemSpec.from_params(cfg)
         self._apply_style()
 
     def on_params_changed(self) -> None:
         self._read_params()
 
-    # **Derived from the registry, not repeated.**
     FONTS = _available_font_keys()
 
     def _generator(self, width: int, height: int):
         fonts = _available_font_keys()
         key = fonts[int(np.clip(round(self.font_kind), 0, len(fonts) - 1))]
-        # Scale all pixel-denominated OSD parameters proportionally to the frame height relative to REF_HEIGHT (240p).
-        # At 240p (standard 0.5x preview of 480p), ratio is 1.0; at 480p/552p/1080p export, cell_h, gaps, shadow
-        # offset, and outline thickness scale proportionally so preview and export have identical visual proportions.
         scale_r = max(0.25, float(height) / self.REF_HEIGHT)
         eff_cell_h = max(6, int(round(self.cell_h * scale_r)))
         eff_letter_gap = int(round(self.letter_gap * scale_r))
@@ -154,7 +146,6 @@ class OverlayStage(Stage):
                            "font": key, "lines": len(plan.lines)}
         return self._gen
 
-    #: (glyph colour, outline colour, italic) for each template.  Index 0 is "custom".
     STYLE_PRESETS = (
         None,
         ((0.35, 0.95, 0.45), (0.03, 0.05, 0.04), 0.0),     # 1: green inside near-black: the OSD classic
@@ -179,8 +170,6 @@ class OverlayStage(Stage):
         self.outline_colour = tuple(float(v) for v in outline)
         if self.italic == 0.0:
             self.italic = float(italic)
-        # Apply default era-authentic optical/bevel characteristics for documentary templates (6..9)
-        # when the user has not explicitly overridden them away from 0.0:
         if st == 6:
             if self.bevel <= 1e-4:
                 self.bevel = 0.55
@@ -205,20 +194,81 @@ class OverlayStage(Stage):
         pass
 
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
+        if self.playout_spec.enabled and self.slot != self.SLOT_PRE_TAPE:
+            from ..core.signal import SignalFrame, composite_encode
+            sig_p = buf.meta["signal"] if "signal" in buf.meta else None
+            from_disp = bool(buf.meta["from_display"]) if "from_display" in buf.meta else False
+            base_p = buf.rgb if (buf.rgb is not None and (from_disp or sig_p is None)) else sig_p.to_rgb()
+            flt = (buf.meta["format"] == "no_signal") if "format" in buf.meta else False
+            p_rgb, p_res = apply_master_playout(
+                base_p, self.playout_spec, std=buf.std,
+                frame_index=int(buf.index), fps=float(self.ctx.fps),
+                upstream_fault=flt,
+            )
+            meta_p = dict(buf.meta)
+            sig_out = SignalFrame.from_rgb(p_rgb, buf.std)
+            meta_p["signal"] = sig_out
+            meta_p["master_playout"] = p_res["report"]
+            meta_p["playout_buses"] = {
+                "pgm_rgb": p_res["pgm_rgb"],
+                "clean_feed_rgb": p_res["clean_feed_rgb"],
+                "pvw_rgb": p_res["pvw_rgb"],
+            }
+            comp_p = composite_encode(sig_out.y, sig_out.i, sig_out.q, buf.std, chroma_gain=0.63) if buf.composite is not None else None
+            buf = FrameBuffer(p_rgb, comp_p, buf.index, buf.time, buf.std, meta_p)
+        if self.auto_v2_spec.is_active() and self.slot != self.SLOT_PRE_TAPE:
+            from ..core.signal import SignalFrame, composite_encode
+            sig_a = buf.meta["signal"] if "signal" in buf.meta else None
+            from_disp_a = bool(buf.meta["from_display"]) if "from_display" in buf.meta else False
+            base_a = buf.rgb if (buf.rgb is not None and (from_disp_a or sig_a is None)) else sig_a.to_rgb()
+            flt_a = (buf.meta["format"] == "no_signal") if "format" in buf.meta else False
+            a_rgb, a_res = apply_playout_automation_v2(
+                base_a, self.auto_v2_spec, std=buf.std,
+                frame_index=int(buf.index), fps=float(self.ctx.fps),
+                upstream_meta=buf.meta,
+                upstream_fault=flt_a,
+            )
+            meta_a = dict(buf.meta)
+            sig_a_out = SignalFrame.from_rgb(a_rgb, buf.std)
+            meta_a["signal"] = sig_a_out
+            meta_a["playout_automation_v2"] = a_res.get("report", a_res) if isinstance(a_res, dict) else a_res
+            if isinstance(a_res, dict) and "pgm_rgb" in a_res:
+                meta_a["playout_buses"] = {
+                    "pgm_rgb": a_res["pgm_rgb"],
+                    "clean_feed_rgb": a_res["clean_feed_rgb"],
+                    "pvw_rgb": a_res["pvw_rgb"],
+                }
+            comp_a = composite_encode(sig_a_out.y, sig_a_out.i, sig_a_out.q, buf.std, chroma_gain=0.63) if buf.composite is not None else None
+            buf = FrameBuffer(a_rgb, comp_a, buf.index, buf.time, buf.std, meta_a)
+        if self.eco_spec.is_active() and self.slot != self.SLOT_PRE_TAPE:
+            from ..core.signal import SignalFrame, composite_encode
+            sig_e = buf.meta["signal"] if "signal" in buf.meta else None
+            from_disp_e = bool(buf.meta["from_display"]) if "from_display" in buf.meta else False
+            base_e = buf.rgb if (buf.rgb is not None and (from_disp_e or sig_e is None)) else sig_e.to_rgb()
+            e_rgb, e_res = apply_media_ecosystem_evolution(
+                base_e, self.eco_spec, frame_index=int(buf.index), seed=int(self.ctx.seed) + 809,
+            )
+            meta_e = dict(buf.meta)
+            sig_e_out = SignalFrame.from_rgb(e_rgb, buf.std)
+            meta_e["signal"] = sig_e_out
+            meta_e["media_ecosystem_evolution"] = e_res
+            comp_e = composite_encode(sig_e_out.y, sig_e_out.i, sig_e_out.q, buf.std, chroma_gain=0.63) if buf.composite is not None else None
+            buf = FrameBuffer(e_rgb, comp_e, buf.index, buf.time, buf.std, meta_e)
         if not self.enabled or not self.text:
             return buf
-        if self.at != self.slot:
-            # this instance is in the slot the parameter did not choose; the other one draws
+        if self.slot != self.SLOT_GRAPH and self.at != self.slot:
             return buf
         from ..core.signal import SignalFrame, composite_encode
 
         sig_in: SignalFrame | None = buf.meta.get("signal")
-        # Draw onto the current signal's reconstructed picture when upstream has already formed a signal
-        # (e.g. at SLOT_PRE_TAPE after format/codec/connector), NEVER onto the stale raw camera `buf.rgb`.
-        # Drawing onto `buf.rgb` and re-encoding `SignalFrame.from_rgb(out)` discarded every change that
-        # `FormatStage` (luma/chroma bandwidth, chroma_gain, color_noise) and `CodecStage` (MPEG-1 VCD 352x240
-        # or MiniDV 4:1:1) had applied, causing the entire picture look to shift when `at=1` was selected!
-        if self.slot == self.SLOT_PRE_TAPE and sig_in is not None:
+        in_signal_domain = (
+            sig_in is not None
+            and (
+                self.slot == self.SLOT_PRE_TAPE
+                or (self.slot == self.SLOT_GRAPH and (buf.composite is not None or not buf.meta.get("from_display", False)))
+            )
+        )
+        if in_signal_domain and sig_in is not None:
             base_rgb = sig_in.to_rgb()
         else:
             base_rgb = buf.rgb.astype(np.float32, copy=False)
@@ -235,10 +285,7 @@ class OverlayStage(Stage):
 
         meta = dict(buf.meta)
         sig_osd = SignalFrame.from_rgb(out, buf.std)
-        if self.slot == self.SLOT_PRE_TAPE and sig_in is not None:
-            # Blend Y, I, Q ONLY on the pixels where the character generator actually drew (glyphs,
-            # outline, shadow, bevel, glow, or background box), preserving the upstream encoded Y, I, Q
-            # everywhere else bit-for-bit.
+        if in_signal_domain and sig_in is not None:
             w_m = np.clip(mask, 0.0, 1.0).astype(np.float32)
             y_new = (sig_in.y * (1.0 - w_m) + sig_osd.y * w_m).astype(np.float32)
             i_new = (sig_in.i * (1.0 - w_m) + sig_osd.i * w_m).astype(np.float32)

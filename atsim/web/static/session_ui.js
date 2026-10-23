@@ -1035,10 +1035,13 @@
   }
 
   function pushProject(patch) {
+    const payload = (patch && patch.params && typeof patch.params === "object")
+      ? patch
+      : { params: patch };
     if (typeof setProject === "function") {
-      setProject({ params: patch });
+      setProject(payload);
     } else if (typeof api === "function" && typeof jsonPost === "function") {
-      api("/api/project", jsonPost({ params: patch })).then((d) => {
+      api("/api/project", jsonPost(payload)).then((d) => {
         if (typeof applyProject === "function") applyProject(d);
       });
     }

@@ -1,4 +1,4 @@
-/* analog-tape-sim WebUI
+/* Virtual Media Lab (虚拟媒介实验室) WebUI
  *
  * The page is deliberately schema-driven: every control is generated from
  * /api/schema, so adding a parameter to the Python schema makes it appear here
@@ -79,6 +79,12 @@ function applyProject(d) {
   // 维度面板：环境 / 设备个体 / 关键帧时间线。放在最后，
   // 所以面板反映的是服务端刚刚返回的状态——只有一份真相。
   syncWTBar();
+  syncQuadBar();
+  const clrOvBtn = $("btnClearOverlay");
+  if (clrOvBtn) {
+    const ovPath = (S.params && S.params.connector && S.params.connector.switcher_overlay_path) || "";
+    clrOvBtn.classList.toggle("hidden", !ovPath);
+  }
   if (window.SessionUI) SessionUI.syncFromProject(d);
 }
 
@@ -108,8 +114,28 @@ function syncWTBar() {
 function wireChrome() {
   $("btnImport").onclick = () => $("clipFile").click();
   $("clipFile").onchange = uploadClip;
+  const btnOv = $("btnImportOverlay");
+  const ovFile = $("overlayFile");
+  if (btnOv && ovFile) {
+    btnOv.onclick = () => ovFile.click();
+    ovFile.onchange = uploadOverlay;
+  }
+  const btnClrOv = $("btnClearOverlay");
+  if (btnClrOv) {
+    btnClrOv.onclick = clearOverlay;
+  }
   const still = $("btnStill");
   if (still) still.onclick = exportStill;
+  const stillIn = $("btnQuadStillInline");
+  if (stillIn) stillIn.onclick = exportStill;
+  const burstBtn = $("btnQuadBurst");
+  if (burstBtn) burstBtn.onclick = exportQuadBurst;
+  const burstIn = $("btnQuadBurstInline");
+  if (burstIn) burstIn.onclick = exportQuadBurst;
+  const zipBtn = $("btnQuadZip");
+  if (zipBtn) zipBtn.onclick = exportQuadZip;
+  const zipIn = $("btnQuadZipInline");
+  if (zipIn) zipIn.onclick = exportQuadZip;
   $("seed").onchange = () => setProject({ seed: parseInt($("seed").value, 10) || 0 });
   $("timeSlider").oninput = () => {
     S.t = parseFloat($("timeSlider").value);
@@ -195,9 +221,11 @@ function wireChrome() {
   $("tlClose").onclick = () => $("modal").classList.add("hidden");
   $("jobClose").onclick = () => $("jobbar").classList.add("hidden");
   wireWTBar();
+  wireQuadBar();
   initDivider();
   layoutAB();
   initAudioMonitor();
+  if (window.BroadcastScopes) BroadcastScopes.init();
 }
 
 function wireWTBar() {
@@ -274,20 +302,29 @@ function jsonPost(obj) {
            body: JSON.stringify(obj) };
 }
 
+S.abSplit = 0.5;
+
 function initDivider() {
   const v = $("viewer"), d = $("divider");
   let drag = false;
   const move = (e) => {
-    if (!drag) return;
-    const r = v.getBoundingClientRect();
-    const x = Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1);
-    d.style.left = (x * 100) + "%";
-    $("originalImg").style.clipPath = `inset(0 0 0 ${x * 100}%)`;
+    if (!drag || !e) return;
+    const a = $("previewImg");
+    const box = (a && a.clientWidth > 10) ? a.getBoundingClientRect() : v.getBoundingClientRect();
+    const x = Math.min(Math.max((e.clientX - box.left) / Math.max(1, box.width), 0), 1);
+    S.abSplit = x;
+    syncAB();
   };
-  d.onmousedown = () => drag = true;
+  d.onmousedown = (e) => { e.preventDefault(); drag = true; };
   window.addEventListener("mouseup", () => drag = false);
   window.addEventListener("mousemove", move);
-  d.ontouchmove = (e) => move(e.touches[0]);
+  d.ontouchstart = () => { drag = true; };
+  d.ontouchmove = (e) => { if (e.touches && e.touches[0]) move(e.touches[0]); };
+  window.addEventListener("resize", () => syncAB());
+  if (typeof ResizeObserver !== "undefined" && v) {
+    const ro = new ResizeObserver(() => syncAB());
+    ro.observe(v);
+  }
 }
 
 function layoutAB() {
@@ -298,25 +335,21 @@ function layoutAB() {
 }
 
 /**
- * Force the two images onto one identical rectangle.
- *
- * `object-fit: contain` sizes each image by *its own* aspect ratio, so two images
- * with different ratios are centred and scaled differently -- the comparison then
- * lines up nowhere, and content at the frame edges (the head-switching strip, most
- * obviously) never appears in the same place on both sides.  Here the rectangle is
- * computed once and applied to both, so a given screen pixel is the same part of
- * the picture on either side of the divider.
+ * Force the two images AND the A/B divider onto one identical centered rectangle,
+ * dynamically re-centering whenever the viewer resizes (fixing collapsed drawer UI bug).
  */
 function syncAB() {
-  const v = $("viewer"), a = $("previewImg"), b = $("originalImg");
+  const v = $("viewer"), a = $("previewImg"), b = $("originalImg"), d = $("divider");
   if (!v || !a || !b) return;
   const vw = v.clientWidth, vh = v.clientHeight;
   const rw = S.frameW || a.naturalWidth || 4;
   const rh = S.frameH || a.naturalHeight || 3;
   if (!vw || !vh || !rw || !rh) return;
   const scale = Math.min(vw / rw, vh / rh);
-  const w = rw * scale, h = rh * scale;
-  const left = (vw - w) / 2, top = (vh - h) / 2;
+  const w = Math.max(1, Math.round(rw * scale));
+  const h = Math.max(1, Math.round(rh * scale));
+  const left = Math.round((vw - w) / 2);
+  const top = Math.round((vh - h) / 2);
   for (const el of [a, b]) {
     el.style.width = w + "px";
     el.style.height = h + "px";
@@ -324,9 +357,18 @@ function syncAB() {
     el.style.top = top + "px";
     el.style.right = "auto";
     el.style.bottom = "auto";
-    el.style.objectFit = "fill";   // the box now has the right ratio already
+    el.style.objectFit = "fill";
+  }
+  const split = (typeof S.abSplit === "number") ? S.abSplit : 0.5;
+  b.style.clipPath = `inset(0 0 0 ${(split * 100).toFixed(2)}%)`;
+  if (d) {
+    d.style.top = top + "px";
+    d.style.height = h + "px";
+    d.style.bottom = "auto";
+    d.style.left = Math.round(left + w * split) + "px";
   }
 }
+window.syncAB = syncAB;
 
 /* --------------------------------------------------------------- tabs */
 function buildLayerTabs() {
@@ -349,7 +391,7 @@ function buildLayerTabs() {
 }
 
 function buildPresetTabs() {
-  const tabs = [["factory", "整套配置"], ["custom", "自定义预设"], ["media", "记录媒介"],
+  const tabs = [["factory", "整套配置"], ["custom", "自定义预设"], ["film", "胶片/LOMO"], ["media", "记录媒介"],
                 ["player", "播放设备"], ["display", "显示设备"], ["camera", "摄像机"]];
   $("presetTabs").innerHTML = "";
   tabs.forEach(([k, label]) => {
@@ -470,11 +512,416 @@ function renderParams() {
 // here.  The control still calls `setParam(layer, key, value)` with a number, so the API, the settings file, the
 // keyframes and the render path are all unchanged: only the widget differs.
 const SELECTORS = {
+  "rf.tx_quad_corner": [
+    [0, "0 · 2×2 四分屏全览"],
+    [1, "1 · 左上角（主控直通基带）"],
+    [2, "2 · 右上角（发射机天线探头）"],
+    [3, "3 · 左下角（模拟开路接收）"],
+    [4, "4 · 右下角（数字地面 DTT 接收）"],
+  ],
+  "rf.tx_show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 标准演播室分框"],
+  ],
+  "rf.tx_show_text": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示角落标签"],
+    [2, "2 · 显示角落标签 + 底部遥测栏"],
+  ],
+  "rf.sat_ird_osd": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示角落标签"],
+    [2, "2 · 显示完整 C/N 与 TS 统计文字"],
+  ],
+  "rf.sat_quad_corner": [
+    [0, "0 · 2×2 四分屏全览"],
+    [1, "1 · 左上角（晴空基带基准）"],
+    [2, "2 · 右上角（模拟 C 波段 FM）"],
+    [3, "3 · 左下角（数字 DVB-S 悬崖）"],
+    [4, "4 · 右下角（C/N 悬崖曲线面板）"],
+  ],
+  "rf.sat_show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 标准演播室分框"],
+  ],
+  "player.transfer_quad_corner": [
+    [0, "0 · 2×2 四分屏全览"],
+    [1, "1 · 左上角（Gen-0 母带基准）"],
+    [2, "2 · 右上角（路径 A 无 TBC 多代模拟复制）"],
+    [3, "3 · 左下角（路径 B 带 TBC 多代模拟复制）"],
+    [4, "4 · 右下角（路径 C 数字格式转码链）"],
+  ],
+  "player.transfer_show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 标准演播室分框"],
+  ],
+  "player.transfer_show_text": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示角落标签"],
+    [2, "2 · 显示角落标签 + 底部统计栏"],
+  ],
+  "player.inv_quad_corner": [
+    [0, "0 · 2×2 四分屏全览"],
+    [1, "1 · 左上角"],
+    [2, "2 · 右上角"],
+    [3, "3 · 左下角"],
+    [4, "4 · 右下角"],
+  ],
+  "player.inv_show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 标准演播室分框"],
+  ],
+  "player.inv_show_text": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示角落标签"],
+    [2, "2 · 显示角落标签 + 底部统计栏"],
+  ],
+  "camera.telecine_quad_corner": [
+    [0, "0 · 2×2 四分屏全览"],
+    [1, "1 · 左上角（16mm/35mm 胶片原片）"],
+    [2, "2 · 右上角（电视胶转磁母带）"],
+    [3, "3 · 左下角（家用 VHS 磁带录屏）"],
+    [4, "4 · 右下角（早期网络流媒体重压）"],
+  ],
+  "camera.telecine_show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 标准演播室分框"],
+  ],
+  "camera.telecine_show_text": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示角落标签"],
+    [2, "2 · 显示角落标签 + 底部状态栏"],
+  ],
+  "display.mv_quad_corner": [
+    [0, "0 · 完整多画面监视墙"],
+    [1, "1 · 左上角窗口 (CH1)"],
+    [2, "2 · 右上角窗口 (CH2)"],
+    [3, "3 · 左下角窗口 (CH3)"],
+    [4, "4 · 右下角窗口 (CH4)"],
+    [5, "5 · 第 5 窗口 (CH5)"],
+    [6, "6 · 第 6 窗口 (CH6)"],
+  ],
+  "display.mv_show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 演播室金属机架边框"],
+  ],
+  "film.stock": [
+    [0, "0 · 关闭独立胶片光化学模块"],
+    [1, "1 · Eastman Color 35mm 5247 (经典电影负片+2383印片)"],
+    [2, "2 · Kodak Ektachrome 16mm 7240 (电视台新闻反转片)"],
+    [3, "3 · Fujicolor 16mm 8514 (第4感青层翡翠纪实片)"],
+    [4, "4 · 早期醋酸片基暖红棕褪色档案拷贝"],
+    [5, "5 · Agfa Vista / Optima 200 (琥珀暖金与深可可红暗部)"],
+    [6, "6 · Kodak Ektachrome E100VS / Elite Chrome 100 (高饱和度反转片)"],
+    [7, "7 · Lomography Color Negative 400 (玫瑰洋红/丁香紫暗部与奶油高光)"],
+    [8, "8 · Expired Svema / ORWO Vintage Film (高底雾 D_min 粉彩鼠尾草绿)"],
+    [9, "9 · Polaroid SX-70 / 600 Time-Zero Integral Film (即时显影药浆与奶油高光)"],
+    [10, "10 · Lomography LomoChrome Purple XR 100-400 (绿→紫二向色耦合平移)"],
+    [11, "11 · 90s Tungsten Acid Olive-Chartreuse (90年代港式钨丝灯酸橄榄黄绿迫冲)"],
+    [12, "12 · Prussian Cyan-Navy & Electric Violet Rain (普鲁士深青蓝与电光紫雨夜乳剂)"],
+    [13, "13 · Fujifilm Pro 400H Pastel Candy High-Key (富士高调粉彩马卡龙专业负片)"],
+    [14, "14 · Vintage Brass-Olive & Maroon-Plum Petzval (复古黄铜橄榄与深紫红暗部乳剂)"],
+    [15, "15 · LOMO LC-A Minitar-1 Turquoise-Emerald X-Pro (松石青绿高反差正冲负)"],
+    [16, "16 · Meyer Trioplan Golden-Violet"],
+    [17, "17 · Kodak Vision3 500T 5219 (现代电影彩色负片 · 橙色遮罩+Remjet)"],
+    [18, "18 · Kodak Double-X 5222 (经典35mm全色黑白电影负片 · D-96银盐颗粒)"],
+    [19, "19 · Kodachrome 64 (历史K-14外偶法彩色反转片 · 高锐度档案级)"],
+    [20, "20 · Kodak Ektachrome 100D (现代E-6内偶法彩色反转片 · 直接正像)"],
+  ],
+  "film.optical_print_gen": [
+    [0, "0 · 原始摄影负片直扫 (OCN Direct Scan)"],
+    [1, "1 · 一代光学印片 (1st Gen Workprint)"],
+    [2, "2 · 二代中间片印片 (2nd Gen OCN → IP → IN)"],
+    [3, "3 · 三代院线发行拷贝 (3rd Gen OCN → IP → IN → 2383 Release Print)"],
+  ],
+  "film.shutter_blades": [
+    [2, "2 · 传统双叶片旋转快门 (24fps × 2 = 48Hz 光脉冲)"],
+    [3, "3 · 影院三叶片旋转快门 (24fps × 3 = 72Hz 低闪烁光脉冲)"],
+  ],
+  "film.process_mode": [
+    [0, "0 · 标准暗房冲洗 (C-41 / E-6 Standard)"],
+    [1, "1 · 正冲负 E-6 in C-41 Xpro (翡翠青绿阴影 + 金盏花暖金高光)"],
+    [2, "2 · 负冲正 C-41 in E-6 Xpro (丁香紫/玫瑰洋红阴影 + 奶油高光)"],
+    [3, "3 · 迫冲/减冲显影 (Push / Pull Process)"],
+    [4, "4 · 留银冲洗 (Bleach Bypass · 高反差金属银保留)"],
+    [5, "5 · 2×2 LOMO 光化学暗房四象限对照实验室"],
+  ],
+  "film.xpro_tint_mode": [
+    [0, "0 · 自动跟随冲洗工艺与胶卷型号"],
+    [1, "1 · 暗部翡翠青绿 + 高光金盏花暖金"],
+    [2, "2 · 暗部丁香紫/玫瑰红 + 高光奶油白"],
+    [3, "3 · 暗部可可暖褐 + 中间调琥珀蜜糖"],
+  ],
+  "film.bokeh_shape": [
+    [0, "0 · 关闭 / 标准圆形光圈"],
+    [1, "1 · Heart Bokeh 粉红桃心散景光斑 (Praktica / R2M 异形光圈)"],
+    [2, "2 · Starburst 四角星芒插片散景"],
+    [3, "3 · Diamond 菱形叶片孔径散景"],
+    [4, "4 · Petzval Swirl 匹兹伐切向猫眼旋焦散景"],
+    [5, "5 · Soap-Bubble Ring 梅耶过校正球差肥皂泡亮环散景"],
+    [6, "6 · Hexagonal Fairy-Light 六边形机械光圈奶油彩灯散景"],
+  ],
+  "film.bloom_veil_mode": [
+    [0, "0 · 关闭专项光学光晕/白雾"],
+    [1, "1 · 黄金时刻大逆光太阳耀斑洪流"],
+    [2, "2 · 无镀膜老镜头高调奶油白雾眩光与柔焦"],
+    [3, "3 · 点光源双层暖金日冕与防光晕层红橙背散射"],
+    [4, "4 · 斜向双色温冷紫-暖金光学分色光雾"],
+    [5, "5 · 2×2 LOMO 光学光晕与散景四象限对照实验室"],
+  ],
+  "film.light_leak_pattern": [
+    [0, "0 · 无漏光"],
+    [1, "1 · 右上角金琥珀斜向暖阳漏光"],
+    [2, "2 · 左侧铰链海绵老化红橙背散射漏光条"],
+    [3, "3 · 横贯画面粉红/洋红桃心光斑串"],
+    [4, "4 · 左下与右上双象限梦幻奶油光雾"],
+  ],
+  "film.telecine_pulldown": [
+    [0, "0 · 24fps 逐行直扫 (Direct 24p / 纯胶片扫描)"],
+    [1, "1 · NTSC 3:2 Pulldown (24fps→29.97i AA-BB-BC-CD-DD 隔行梳状)"],
+    [2, "2 · PAL 25fps 加速胶转磁 (+4.167% 加速与 +70.67 cents 升调)"],
+    [3, "3 · 2×2 跨媒介历史对照实验室 (胶片→胶转磁→VHS→流媒体)"],
+  ],
+  "film.quad_corner": [
+    [0, "0 · 2×2 四分屏同屏对照"],
+    [1, "1 · 左上角全屏 (E-6正冲负青绿暖金 / 胶片原片)"],
+    [2, "2 · 右上角全屏 (C-41负冲正桃心散景 / 3:2胶转磁)"],
+    [3, "3 · 左下角全屏 (过期胶卷高底雾粉彩 / 家用VHS录屏)"],
+    [4, "4 · 右下角全屏 (宝丽来浓暗角暖阳漏光 / 流媒体重压)"],
+  ],
+  "film.show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 暗房金属外框"],
+  ],
+  "film.show_text": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示四角短标签"],
+    [2, "2 · 显示标签 + 底部暗房遥测栏"],
+  ],
+  "camera.film_stock": [
+    [0, "0 · 关闭电影胶片系统"],
+    [1, "1 · Eastman Color 35mm 5247 (经典电影负片+印片)"],
+    [2, "2 · Kodak Ektachrome 16mm 7240 (电视台新闻反转片)"],
+    [3, "3 · Fujicolor 16mm 8514 (高感光翡翠青暗部纪实片)"],
+    [4, "4 · 早期醋酸片基暖红棕褪色档案拷贝"],
+  ],
+  "camera.telecine_pulldown": [
+    [0, "0 · 24fps 逐行直扫 (Direct 24p)"],
+    [1, "1 · NTSC 3:2 Pulldown (24fps→29.97i AA-BB-BC-CD-DD 隔行梳状)"],
+    [2, "2 · PAL 25fps 加速胶转磁 (+4.167% 加速与 +70.67 cents 升调)"],
+    [3, "3 · 2×2 跨媒介历史对照实验室 (胶片→胶转磁→VHS→流媒体)"],
+  ],
+  "player.inv_lab_mode": [
+    [0, "0 · 关闭参数反演与误差预算台"],
+    [1, "1 · 参数反演求解器与多解竞争假设 HUD"],
+    [2, "2 · 三级参数分离审计 (Physical / Device / Artistic) HUD"],
+    [3, "3 · 2×2 参数反演、残差热力图与 FADGI 误差预算实验室"],
+  ],
+  "player.archival_mode": [
+    [0, "0 · 跟随档案库开关"],
+    [1, "1 · 原始载体残件 (Original Carrier Artifact · 阿伦尼乌斯温湿度老化)"],
+    [2, "2 · 档案保存母版 (Preservation Master · 全画幅无损含 VBI/VITC)"],
+    [3, "3 · 过度清洗商业修复版 (Over-Cleaned DNR · 塑料蜡像感与证据链断裂)"],
+    [4, "4 · 2×2 多版本谱系树对照实验室 (ArchivalLineageTree + 重要属性损耗表)"],
+  ],
+  "connector.env_field_mode": [
+    [0, "0 · 跟随环境场开关"],
+    [1, "1 · 温湿度与结露粘带耦合 (冷机抱入暖房镜片起雾与磁鼓结露)"],
+    [2, "2 · 变压器/发射塔近场电磁耦合与接地环路工频干扰"],
+    [3, "3 · 房间声学混响 RT60 与窗户/钨丝灯混合光源耦合"],
+    [4, "4 · 四场全耦合 + 机房空间坐标探针 HUD"],
+    [5, "5 · 2×2 二维空间物理环境场与多维耦合四分屏实验室"],
+  ],
+  "overlay.auto_v2_mode": [
+    [0, "0 · 关闭 / 仅跟随总控开关"],
+    [1, "1 · 时间驱动定时顺播 (Time-Driven · 自动 5s VTR Preroll 预卷锁相切播)"],
+    [2, "2 · 条件/GPI 信号驱动 (Condition-Driven · 实时监测黑场/静帧/失锁触发跳转)"],
+    [3, "3 · 主备冗余倒换闭环 (Redundant Main/Backup · 看门狗超时无缝切备机/垫片)"],
+  ],
+  "overlay.auto_v2_fault_inject": [
+    [0, "0 · 正常顺播无异常 (Normal Schedule)"],
+    [1, "1 · MISSING_ASSET (素材缺失 / 磁带未上架 -> 自动降级切应急垫片)"],
+    [2, "2 · NOT_READY (磁带预卷未就绪 / 粘带失锁超时 -> 延迟切入或垫片兜底)"],
+    [3, "3 · SIGNAL_LOSS (在播主信号突然断流/无同步 -> 看门狗触发主备倒换)"],
+    [4, "4 · OVERRIDDEN (导播手动紧急强切 Emergency Take 接管自动化母线)"],
+    [5, "5 · FALLBACK (主源静帧/黑场超时 -> 自动无缝倒换至 BACKUP 备路)"],
+    [6, "6 · HELD (直播延时挂起 Hold -> 保持当前事件等待手动释放)"],
+  ],
+  "overlay.auto_v2_console_view": [
+    [0, "0 · 主播出母线画面（顶部叠加状态机与故障溯源状态栏）"],
+    [1, "1 · 2×2 播出自动化编排与三级故障因果反查控制台视图"],
+  ],
+  "rf.sat_ird_mode": [
+    [0, "0 · 关闭 (不经过卫星接收链路)"],
+    [1, "1 · 模拟 C 波段 FM 卫星接收机 (低 C/N 下爆发鱼骨黑白打火噪点 Sparkles)"],
+    [2, "2 · 数字 DVB-S QPSK 卫星接收解码器 (QEF 零雪花 vs 悬崖区 MPEG-2 宏块崩坏/静帧)"],
+    [3, "3 · 模拟 C 波段 FM vs 数字 DVB-S 同屏悬崖效应对照实验室 (2×2 四象限)"],
+  ],
+  "rf.sat_ird_osd": [
+    [0, "0 · 仅输出解码画面"],
+    [1, "1 · 叠加卫星 IRD 工程遥测 HUD (C/N · Eb/N0 · Viterbi/RS 误码率 · 打火率)"],
+  ],
+  "rf.tx_chain_mode": [
+    [0, "0 · 关闭 (不经过电视台大功率发射机激励链)"],
+    [1, "1 · 模拟大功率电视发射机 (VSB 残留边带激励 + 高功放 AM-AM/AM-PM + 馈线驻波 + 开路接收)"],
+    [2, "2 · 数字地面电视发射机 (COFDM 激励 + 高功放非线性 MER 退化 + 数字接收悬崖效应)"],
+    [3, "3 · 端到端开路广播 2×2 四象限对照测试台 (直通参考 / 天线口 / 模拟接收 / 数字接收)"],
+  ],
+  "player.transfer_station_mode": [
+    [0, "0 · 关闭 (正常播放链路)"],
+    [1, "1 · A. 模拟磁带数字化采集站 (VHS/Betacam → TBC → BT.601 采集卡)"],
+    [2, "2 · B. 磁带多代复制站 (1..8代模拟复制 · TBC抑制抖动 vs 不可逆带宽色度退化)"],
+    [3, "3 · C. 数字格式转码站 (4:2:2 → DV25 4:1:1 → VCD 4:2:0 跨格式重编码)"],
+    [4, "4 · 四路复制链对照实验室 (2×2 同屏四路复制 + TransferEvent 溯源遥测)"],
+  ],
+  "player.transfer_tbc_mode": [
+    [0, "0 · 无 TBC 直通 (Free-Run · 采集滑移与多代抖动发散)"],
+    [1, "1 · 行时基校正器 (Line TBC · 逐行同步与色同步重锁定)"],
+    [2, "2 · 全帧同步 TBC + Genlock (Frame Sync · 锁定行场时基与音频基准)"],
+  ],
+  "player.transfer_codec_target": [
+    [0, "0 · BT.601 YUV422 8-bit 采集直出"],
+    [1, "1 · DV25 (4:1:1 横向 1/4 色度抽样 + 25Mbps 8×8 DCT)"],
+    [2, "2 · MPEG-1 Video CD (352×240 CIF + 4:2:0 色度 + 1.15Mbps)"],
+    [3, "3 · 4:2:2 → DV25 (4:1:1) → VCD (4:2:0) 跨格式级联转码 (1/8 色度交集)"],
+  ],
+  "tape.edit_mode": [
+    [0, "0 · 关闭 (无剪辑介入)"],
+    [1, "1 · 线性组合编辑 (Assemble Edit · 切点全宽抹音闪黑与尾端 CTL 断轨)"],
+    [2, "2 · 线性插入编辑 (Insert Edit · 保留连续控制轨 + 旋转飞抹磁头替换)"],
+    [3, "3 · 早期非线编 · 实时预览 (NLE Preview · 半分辨率代理降级与缓存掉帧重复)"],
+    [4, "4 · 早期非线编 · 最终渲染导出 (NLE Export · 无掉帧全分辨率 + 转场二次 DCT 重编码)"],
+  ],
+  "tape.edit_flying_erase": [
+    [0, "0 · 无飞抹磁头 / 固定抹音头老化 (切点斜向旧轨残留重影 + 180° 彩虹差拍)"],
+    [1, "1 · 旋转飞抹磁头正常 (Flying Erase Head · 逐轨干净替换)"],
+  ],
+  "tape.edit_console_osd": [
+    [0, "0 · 仅输出节目画面"],
+    [1, "1 · 叠加 Sony BVE-9100 线性编辑 / NLE 多轨时间线工程状态栏"],
+  ],
   "camera.zoom_dynamic_mode": [
     [0, "手动固定 W–T 位置"],
     [1, "W→T 电动推进放大（光晕→具体光源）"],
     [2, "T→W 电动拉远缩小（具体光源→光晕）"],
     [3, "W↔T 往复变焦测试"],
+  ],
+  "camera.ccu_cam_id": [
+    [0, "0 · CAM-1 Sony BVP-370 (演播室 D65 标准基准座机)"],
+    [1, "1 · CAM-2 Ikegami HL-55 (偏暖高反差采访机位 · 需 CCU 降红升蓝配平)"],
+    [2, "2 · CAM-3 BTS LDK-90 (偏冷暗部微青全景机位 · 需 CCU 升红降蓝配平)"],
+    [3, "3 · CAM-4 老旧游机位 (CCD 暗电流基座抬升 + 绿偏 · 需黑平衡压暗)"],
+  ],
+  "camera.genlock_mode": [
+    [0, "0 · 锁定演播室主同步且自动线长定时 (Blackburst Genlock Locked)"],
+    [1, "1 · 脐带线缆长度相移未补偿 (Cable Delay Uncompensated · 6.51°/m 色相偏转)"],
+    [2, "2 · 外同步断线 / 内晶振自由漂移 (Free-Run Crystal Drift · 色相连续旋转+滚屏)"],
+    [3, "3 · BNC 同步头接触不良间歇掉锁冲击 (Intermittent Genlock Unlock)"],
+  ],
+  "overlay.playout_output_bus": [
+    [0, "0 · 主播出母线 PGM（含 DSK 台标 Bug、实时时钟与底部游走字幕）"],
+    [1, "1 · 干净净画面母线 Clean Feed（100% 不含 DSK 台标与字幕 · 供转播/归档）"],
+    [2, "2 · 预监母线 PVW（下一条节目源 + 安全框 + 预卷就绪指示）"],
+    [3, "3 · 主控双总线导播控制台视图（左 PVW + 右 PGM + Clean 小窗 + As-Run 播出日志）"],
+  ],
+  "overlay.playout_state": [
+    [0, "0 · 正常节目单在播 (ON-AIR Program)"],
+    [1, "1 · 录像带 5秒预卷倒计时锁相 (VTR Preroll Countdown -00:05..-00:01 -> Take)"],
+    [2, "2 · 信号中断/故障 -> 应急切入「PLEASE STAND BY / 请稍候」备用垫片"],
+    [3, "3 · 播出单自动顺播循环演示 (Auto-Cycle: Preroll -> On-Air -> Next)"],
+  ],
+  "format.test_pattern_mode": [
+    [0, "0 · 关闭（使用导入视频/内置默认图）"],
+    [1, "1 · SMPTE RP-219 75%彩条 + 反向蓝条 + -I/White/+Q + PLUGE(-4/0/+4 IRE)"],
+    [2, "2 · EBU Tech 3087 100/0/75/0 PAL 标准彩条 + 线性亮度斜坡"],
+    [3, "3 · FCC 0.5–5.0 MHz 多波群频响测试卡 (Multiburst)"],
+    [4, "4 · 5阶调制阶梯 (微分增益DG/微分相位DP) + 2T脉冲与12.5T色亮延迟脉冲"],
+    [5, "5 · Philips PM5544 / 电视台圆环几何与分辨率楔形卡（带动态扫描秒针）"],
+  ],
+  "format.test_tone_mode": [
+    [0, "0 · 跟随原片伴音"],
+    [1, "1 · 1 kHz (-18 dBFS / 0 VU) 广播正弦基准音"],
+    [2, "2 · 3.15 kHz IEC 60386 走带抖晃 (Wow & Flutter) 测量载波"],
+    [3, "3 · 20 Hz–15 kHz 对数扫频测试音"],
+  ],
+  "display.mv_layout": [
+    [0, "0 · 2×2 导播室四分屏监视墙 (CAM / VTR-RAW / TBC-OUT / PGM)"],
+    [1, "1 · 3×2 总控机房六画面监视桥（含配线架与银白荧光单色监看管）"],
+    [2, "2 · 1+3 导播主副非对称监视墙（左侧大屏主监 PGM + 右侧三路预监）"],
+  ],
+  "display.mv_fault_channel": [
+    [0, "0 · 全部监视通道正常锁相"],
+    [1, "1 · CH1 一号监视窗失锁/断流"],
+    [2, "2 · CH2 二号监视窗失锁/断流"],
+    [3, "3 · CH3 三号监视窗失锁/断流"],
+    [4, "4 · CH4 四号监视窗失锁/断流"],
+    [5, "5 · CH5 五号监视窗失锁/断流 (3×2模式)"],
+    [6, "6 · CH6 六号监视窗失锁/断流 (3×2模式)"],
+  ],
+  "display.mv_fault_mode": [
+    [0, "0 · 按通道设备类型自动分配失锁响应"],
+    [1, "1 · 纯黑无同步底噪 (Black No-Sync)"],
+    [2, "2 · RF 高频头 AGC 满增益白雪花 (RF Snow)"],
+    [3, "3 · 场行自由振荡斜向滚屏消隐带 (Free-Run Roll)"],
+    [4, "4 · 数字 TBC 末帧死锁残影冻结 (Frame Freeze)"],
+    [5, "5 · JVC/松下录像机本机蓝屏 + NO SIGNAL 字符替换 (VTR Blue OSD)"],
+  ],
+  "connector.da_termination_mode": [
+    [0, "0 · 标准 75Ω 单端接匹配 (1.0 Vpp / 0 dB)"],
+    [1, "1 · 未端接高阻开路环通 (High-Z Open · ~2.0 Vpp / +6 dB 过曝削波 + 正向重影)"],
+    [2, "2 · 违规无源三通双/多端接 (Passive T-Split 75Ω/N · 压降发暗 + 同步顶压缩 + 负向重影)"],
+    [3, "3 · 有源分配放大器隔离驱动 (Active DA 1-in-N-out · 75Ω 恒定电平 + 电缆均衡)"],
+  ],
+  "connector.patch_format_mismatch": [
+    [0, "0 · 正常信号格式匹配 (Composite / 正常跳线)"],
+    [1, "1 · S-Video 亮度 (Y) 误插复合口（色同步丢失→纯黑白画面）"],
+    [2, "2 · 分量 YPbPr / 绿通道误插复合口（无副载波→绿/品红偏色与同步滑移）"],
+    [3, "3 · SDI / 数字码流误插模拟复合口（满屏高频数字雪花杂波与失锁滚道）"],
+  ],
+  "connector.switcher_mode": [
+    [0, "0 · 关闭（直通主信号 Bus A）"],
+    [1, "1 · 非同步信号源硬切瞬态 (Non-Genlocked Hot Switch)"],
+    [2, "2 · 模拟 T-Bar 叠化 (Analog Mix / Dissolve)"],
+    [3, "3 · 模拟电压斜坡划像 (Analog Ramp Wipe)"],
+    [4, "4 · 模拟亮度键控 (Analog Luma Key)"],
+    [5, "5 · 模拟色度键控 (Analog Chroma Key)"],
+  ],
+  "connector.switcher_b_source": [
+    [0, "0 · 自适应自定义叠层 / 副机位画面 (Camera B)"],
+    [1, "1 · 自定义文字与字幕底栏叠层 (Lower-Third + Text)"],
+    [2, "2 · 自定义画中画小窗叠层 (PIP Window + Title)"],
+    [3, "3 · 已导入的自定义叠层图 / 副视频 (Uploaded Overlay)"],
+    [4, "4 · 自定义色调 / 渐变光效叠层 (Custom Color / Gradient)"],
+    [5, "5 · 经典 SMPTE/EBU 演播室彩条测试卡"],
+  ],
+  "connector.switcher_overlay_style": [
+    [0, "0 · 自动适配（上传图 / 纯净副画面 / 画中画）"],
+    [1, "1 · 自定义文字 + 字幕底栏 (Lower-Third + Text)"],
+    [2, "2 · 仅自定义文字 / 台标角标 (Text / Bug Only)"],
+    [3, "3 · 自定义画中画小窗 + 标题 (PIP Window + Title)"],
+    [4, "4 · 全画幅纯净副机位画面 (Full-Frame Camera B)"],
+    [5, "5 · 经典演播室徽标与字幕条 (Classic Emblem + Banner)"],
+  ],
+  "connector.switcher_wipe_pattern": [
+    [0, "0 · 水平拉幕划像 (Left → Right)"],
+    [1, "1 · 垂直拉幕划像 (Top → Bottom)"],
+    [2, "2 · 45° 对角斜切划像 (Diagonal)"],
+    [3, "3 · 中心菱形光圈划像 (Diamond Iris)"],
+    [4, "4 · 中心圆形光圈划像 (Circle Iris)"],
+  ],
+  "tape.transport_state": [
+    [0, "0 · 正常走带播放 (Play · 伺服锁相)"],
+    [1, "1 · 静态暂停定格 (Pause/Still · 跨轨双峰雪花带 + 场微颤)"],
+    [2, "2 · 压带轮啮合与 CTL 重锁定瞬态 (Play↔Pause 起停过渡)"],
+    [3, "3 · 无飞抹磁头暂停起录切口 (Record-Pause 彩虹叠印切口)"],
+    [4, "4 · 停机卸带瞬态 (Stop/Unthread · 磁鼓包角坍塌雪花帷幕)"],
   ],
   "camera.nv_mode": [
     [0, "关"],
@@ -497,6 +944,11 @@ const SELECTORS = {
     [1, "常规超视距弱信号 (Troposcatter)"],
     [2, "TV-DX 大气波导现象 (Atmospheric Ducting 异常清晰)"],
     [3, "电离层 Es 突发层反射 (Sporadic-E Skywave)"],
+  ],
+  "player.std_mismatch": [
+    [0, "0 · 制式正常匹配（跟随工程 NTSC/PAL）"],
+    [1, "1 · PAL (50Hz) 信号误入 NTSC (59.94Hz) 系统（9.94Hz 滚屏 + VBI 同步带 + 差拍消色）"],
+    [2, "2 · NTSC (59.94Hz) 信号误入 PAL (50Hz) 系统（反向滚屏 + PAL 倒相汉诺威色条）"],
   ],
   "rf.tuner_type": [
     [0, "传统铁壳高频头 (Can Tuner)"],
@@ -534,6 +986,115 @@ const SELECTORS = {
     [5, "5 · 纵向滚屏（片尾字幕）"],
     [6, "6 · 光学叠化淡入淡出"],
     [7, "7 · 横向滑入定格"],
+  ],
+  "codec.stream_mode": [
+    [0, "0 · 跟随总开关"],
+    [1, "1 · 早期拨号/宽带流媒体 (RealVideo G2 / WMV9)"],
+    [2, "2 · Web 2.0 早期视频网站 (360p FLV/H.263 + GOP呼吸)"],
+    [3, "3 · 现代自适应流媒体 (HLS/DASH ABR 阶跃 + 丢包/缓冲)"],
+    [4, "4 · 平台多代搬运重压与二次录屏"],
+    [5, "5 · 2×2 跨时代网络流媒体对照实验室"],
+  ],
+  "codec.stream_quad_corner": [
+    [0, "0 · 2×2 四分屏全览"],
+    [1, "1 · 左上角（采集源与TBC母本）"],
+    [2, "2 · 右上角（1999 RealVideo/WMV）"],
+    [3, "3 · 左下角（Web 2.0 平台多代转码）"],
+    [4, "4 · 右下角（现代 ABR 与网络缓冲遥测）"],
+  ],
+  "codec.stream_show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 标准演播室分框"],
+  ],
+  "codec.stream_show_text": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示角落标签"],
+    [2, "2 · 显示角落标签 + 底部遥测栏"],
+  ],
+  "display.percept_mode": [
+    [0, "0 · 跟随总开关"],
+    [1, "1 · 观众视网膜心理物理感知视图 (Mannos-Sakrison CSF)"],
+    [2, "2 · 机房值班员闭环矫正画面 (PID 跟踪微调 + CCU 配平)"],
+    [3, "3 · 物理误差 vs 人眼感知显著度 (JND) 热力图"],
+    [4, "4 · 2×2 感知与操作者行为闭环实验室"],
+  ],
+  "display.percept_quad_corner": [
+    [0, "0 · 2×2 四分屏全览"],
+    [1, "1 · 左上角（未干预物理故障输出）"],
+    [2, "2 · 右上角（观众视网膜 CSF 感知画面）"],
+    [3, "3 · 左下角（机房操作者闭环矫正画面）"],
+    [4, "4 · 右下角（JND 显著度与操作轨迹面板）"],
+  ],
+  "display.percept_show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 标准演播室分框"],
+  ],
+  "display.percept_show_text": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示角落标签"],
+    [2, "2 · 显示角落标签 + 底部遥测栏"],
+  ],
+  "overlay.eco_mode": [
+    [0, "0 · 跟随总开关"],
+    [1, "1 · 历史年代媒介生态实况投射 (按所选年份驱动)"],
+    [2, "2 · 备件与磁头断崖危机模拟 (Spare Collapse Cliff)"],
+    [3, "3 · 历史反事实情景推演输出 (Counterfactual)"],
+    [4, "4 · 2×2 媒介技术生态演化实验室 (1975–2035)"],
+  ],
+  "overlay.eco_scenario": [
+    [0, "0 · 真实历史基准轨迹 (Baseline History)"],
+    [1, "1 · 反事实 A：无损数字归档提前 10 年普及 (Early Digital)"],
+    [2, "2 · 反事实 B：磁头备件于 2005 年提前断供 (Spare Collapse)"],
+    [3, "3 · 反事实 C：全球公共档案强制冷库与开源备件计划"],
+  ],
+  "overlay.eco_quad_corner": [
+    [0, "0 · 2×2 四分屏全览"],
+    [1, "1 · 左上角（1992 模拟黄金期基准）"],
+    [2, "2 · 右上角（所选年份真实生态状态）"],
+    [3, "3 · 左下角（反事实情景推演状态）"],
+    [4, "4 · 右下角（1975–2035 七维演化曲线）"],
+  ],
+  "overlay.eco_show_border": [
+    [0, "0 · 无分框（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 标准演播室分框"],
+  ],
+  "overlay.eco_show_text": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示角落标签"],
+    [2, "2 · 显示角落标签 + 底部遥测栏"],
+  ],
+  "display.crt_magnet_mode": [
+    [0, "0 · 关闭强磁环境"],
+    [1, "1 · 强钕铁硼永磁体贴面（电子束黑洞+十字折叠+同心彩虹环）"],
+    [2, "2 · 强磁极旋转洛伦兹涡流（动态旋转色环与几何扭曲）"],
+    [3, "3 · 撤走磁铁后的铁磁荫罩永久剩磁 + PTC 消磁线圈净化"],
+    [4, "4 · 外部 50/60Hz 变压器交流漏磁扭动 + 阳极高压电晕"],
+    [5, "5 · 2×2 CRT 强磁场、铁磁剩磁与 PTC 消磁线圈四象限实验室"],
+  ],
+  "display.crt_magnet_quad_corner": [
+    [0, "0 · 显示完整 2×2 四分屏对照"],
+    [1, "1 · 仅显示左上角（强磁铁贴面黑洞 + 十字折叠 + 彩虹环）"],
+    [2, "2 · 仅显示右上角（磁极旋转洛伦兹涡流扭曲）"],
+    [3, "3 · 仅显示左下角（撤磁后铁磁荫罩永久剩磁色斑）"],
+    [4, "4 · 仅显示右下角（内置 PTC 消磁线圈交变振荡净化后）"],
+  ],
+  "display.crt_magnet_show_border": [
+    [0, "0 · 无分框线（无缝拼接）"],
+    [1, "1 · 细十字分框线"],
+    [2, "2 · 标准演播室分框"],
+  ],
+  "display.crt_magnet_show_text": [
+    [0, "0 · 不要文字（纯净画面）"],
+    [1, "1 · 仅显示角落标签"],
+    [2, "2 · 显示角落标签 + 底部遥测栏"],
+  ],
+  "display.kv1214_ab_split": [
+    [0, "0 · 全屏输出 Sony Trinitron KV-1214 效果"],
+    [1, "1 · 数字基准原片 vs Sony KV-1214 显像管左右同屏对照"],
+    [2, "2 · 2×2 四象限（数字原片 / KV-1214全貌 / 垂直荫栅微距 / 弯曲摩尔纹放大）"],
   ],
 };
 
@@ -744,6 +1305,9 @@ async function setProject(payload) {
   try {
     applyProject(await api("/api/project", jsonPost(payload)));
     renderParams();
+    if (typeof renderNodeInspector === "function" && typeof G !== "undefined" && G.state) {
+      renderNodeInspector();
+    }
     refreshPreview();
     loadTimelineMeta();
   } catch (e) { toast(e.message); }
@@ -751,7 +1315,12 @@ async function setProject(payload) {
 
 async function applyPreset(key) {
   try {
-    applyProject(await api("/api/preset", jsonPost({ key })));
+    const d = await api("/api/preset", jsonPost({ key }));
+    applyProject(d);
+    if (d.graph_state && typeof applyGraphState === "function") {
+      applyGraphState(d.graph_state);
+      if (typeof renderNodeInspector === "function") renderNodeInspector();
+    }
     renderParams();
     renderPresetList();
     refreshPreview();
@@ -773,6 +1342,38 @@ async function uploadClip(ev) {
   } catch (e) { toast("导入失败：" + e.message); }
 }
 
+async function uploadOverlay(ev) {
+  const f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  toast(`正在导入自定义叠层: ${f.name}…`);
+  try {
+    const r = await fetch("/api/upload_overlay", {
+      method: "POST", headers: { "X-Filename": encodeURIComponent(f.name) }, body: f });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    applyProject(j.project);
+    renderParams();
+    refreshPreview();
+    toast(`已应用自定义叠层: ${f.name}`);
+  } catch (e) {
+    toast("导入叠层失败：" + e.message);
+  } finally {
+    ev.target.value = "";
+  }
+}
+
+async function clearOverlay() {
+  try {
+    const r = await api("/api/clear_overlay", jsonPost({}));
+    if (r && r.project) applyProject(r.project);
+    renderParams();
+    refreshPreview();
+    toast("已清除自定义叠层图，恢复参数化自定义叠层");
+  } catch (e) {
+    toast("清除叠层失败：" + e.message);
+  }
+}
+
 /**
  * Export the frame at the current time cursor as a full-resolution still.
  *
@@ -789,19 +1390,31 @@ const EXPORT_PROFILES = {
 
 async function exportStill() {
   const btn = $("btnStill");
+  const btnIn = $("btnQuadStillInline");
   const was = btn ? btn.textContent : "";
+  const wasIn = btnIn ? btnIn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "导出中…"; }
+  if (btnIn) { btnIn.disabled = true; btnIn.textContent = "导出中…"; }
   try {
     const prof = EXPORT_PROFILES[S.exportQuality] || EXPORT_PROFILES.high;
     const sc = encodeURIComponent(S.exportScale || "1.0");
-    const url = `/api/still?t=${S.t}&scale=${sc}&format=${prof.format}&q=${prof.q}`;
+    const qCorner = $("quadCornerSel"), qBorder = $("quadBorderSel"), qText = $("quadTextSel");
+    const active = detectActiveQuadModule();
+    let extra = "";
+    if (active.isActive && qCorner && qBorder && qText) {
+      extra = `&corner=${encodeURIComponent(qCorner.value)}&border=${encodeURIComponent(qBorder.value)}&text=${encodeURIComponent(qText.value)}`;
+    }
+    const engine = (typeof G !== "undefined" && G.perNode) ? "&engine=graph" : "";
+    const url = `/api/still?t=${S.t}&scale=${sc}&format=${prof.format}&q=${prof.q}${extra}${engine}`;
     const r = await fetch(url);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const disp = r.headers.get("content-disposition") || "";
+    const m = disp.match(/filename="([^"]+)"/);
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     const ext = prof.format === "jpg" ? "jpg" : "png";
-    a.download = `atsim_${S.t.toFixed(2).replace(".", "_")}s.${ext}`;
+    a.download = (m && m[1]) ? m[1] : `atsim_${S.t.toFixed(2).replace(".", "_")}s.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -811,6 +1424,82 @@ async function exportStill() {
     toast("导出失败：" + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = was || "导出静帧"; }
+    if (btnIn) { btnIn.disabled = false; btnIn.textContent = wasIn || "⬇ 导出当前帧"; }
+  }
+}
+
+async function exportQuadBurst() {
+  const btn = $("btnQuadBurst");
+  const btnIn = $("btnQuadBurstInline");
+  const was = btn ? btn.textContent : "";
+  const wasIn = btnIn ? btnIn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "四连拍中…"; }
+  if (btnIn) { btnIn.disabled = true; btnIn.textContent = "四连拍中…"; }
+  try {
+    const prof = EXPORT_PROFILES[S.exportQuality] || EXPORT_PROFILES.high;
+    const sc = encodeURIComponent(S.exportScale || "1.0");
+    const qText = $("quadTextSel");
+    const tVal = qText ? parseInt(qText.value, 10) || 0 : 0;
+    const engine = (typeof G !== "undefined" && G.perNode) ? "&engine=graph" : "";
+    const url = `/api/still_quad_burst?t=${S.t}&scale=${sc}&format=${prof.format}&q=${prof.q}&border=0&text=${tVal}&include_quad=0&mode=json${engine}`;
+    const res = await api(url);
+    if (!res || !res.shots || !res.shots.length) throw new Error("未返回四连拍图像");
+    const ctype = res.content_type || (prof.format === "jpg" ? "image/jpeg" : "image/png");
+    for (let i = 0; i < res.shots.length; i++) {
+      const s = res.shots[i];
+      const bin = atob(s.b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+      const blob = new Blob([bytes], { type: ctype });
+      await new Promise((r) => setTimeout(r, i === 0 ? 0 : 140));
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = s.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 6000);
+    }
+    toast(`已完成批量四连拍（共 ${res.shots.length} 张全尺寸静帧：${res.shots.map((x) => x.label).join(" / ")}）`);
+  } catch (e) {
+    toast("批量四连拍失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = was || "📸 批量四连拍"; }
+    if (btnIn) { btnIn.disabled = false; btnIn.textContent = wasIn || "📸 批量四连拍 (4张)"; }
+  }
+}
+
+async function exportQuadZip() {
+  const btn = $("btnQuadZip");
+  const btnIn = $("btnQuadZipInline");
+  const was = btn ? btn.textContent : "";
+  const wasIn = btnIn ? btnIn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "打包中…"; }
+  if (btnIn) { btnIn.disabled = true; btnIn.textContent = "打包中…"; }
+  try {
+    const prof = EXPORT_PROFILES[S.exportQuality] || EXPORT_PROFILES.high;
+    const sc = encodeURIComponent(S.exportScale || "1.0");
+    const qBorder = $("quadBorderSel"), qText = $("quadTextSel");
+    const bVal = qBorder ? parseInt(qBorder.value, 10) || 0 : 0;
+    const tVal = qText ? parseInt(qText.value, 10) || 0 : 0;
+    const engine = (typeof G !== "undefined" && G.perNode) ? "&engine=graph" : "";
+    const url = `/api/still_quad_burst?t=${S.t}&scale=${sc}&format=${prof.format}&q=${prof.q}&border=${bVal}&text=${tVal}&include_quad=1&mode=zip${engine}`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `atsim_quad_burst_${S.t.toFixed(2).replace(".", "_")}s.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast("已打包下载四连拍 ZIP (含 2×2 四分屏 + 4 个独立角落静帧)");
+  } catch (e) {
+    toast("四连拍 ZIP 导出失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = was || "📦 四连拍ZIP"; }
+    if (btnIn) { btnIn.disabled = false; btnIn.textContent = wasIn || "📦 四连拍ZIP"; }
   }
 }
 
@@ -848,6 +1537,7 @@ async function refreshPreview() {
     const tl = await api("/api/timeline");
     paintTimeline(tl);
     refreshAudioTimeline();
+    if (window.BroadcastScopes) BroadcastScopes.refresh();
     if (typeof refreshGraphPerf === "function") await refreshGraphPerf();
   } catch (e) {
     // After the boot handler has replaced the body, `badge` no longer exists --
@@ -886,14 +1576,14 @@ function paintTimeline(tl) {
     seg.className = "tl-seg";
     seg.style.left = (i / stages.length * 100) + "%";
     seg.style.width = (100 / stages.length) + "%";
-    seg.style.background = s.dirty ? "rgba(232,163,61,.35)" : "rgba(127,191,106,.22)";
+    seg.style.background = s.dirty ? "rgba(56,189,248,.32)" : "rgba(52,211,153,.20)";
     seg.style.borderRight = "1px solid var(--line)";
     seg.title = `${s.label} · 缓存 ${s.cached} 帧${s.dirty ? " · 需重算" : ""}`;
     seg.textContent = s.label;
     seg.style.fontSize = "10px";
     seg.style.paddingLeft = "6px";
     seg.style.lineHeight = "16px";
-    seg.style.color = "#cbbfae";
+    seg.style.color = "#cbd5e1";
     track.appendChild(seg);
   });
   renderChainBar(stages);
@@ -909,7 +1599,7 @@ function paintTimeline(tl) {
     const x = (d.second / (total / (tl.fps || 30))) * 100;
     seg.style.left = Math.min(99, x) + "%";
     seg.style.width = "2px";
-    seg.style.background = "#d9614c";
+    seg.style.background = "#f87171";
     seg.style.opacity = 0.35 + 0.65 * (d.count / max);
     seg.title = `第 ${d.second} 秒：${d.count} 次失落`;
     def.appendChild(seg);
@@ -991,7 +1681,7 @@ async function showTimeline() {
 function toast(msg) {
   const b = $("badge");
   b.textContent = msg;
-  b.style.color = "#d9614c";
+  b.style.color = "#38bdf8";
   setTimeout(() => { b.style.color = ""; }, 2500);
 }
 
@@ -1149,9 +1839,9 @@ function drawAudioScope(cursorT) {
   const w = scope.width, h = scope.height;
   ctx.clearRect(0, 0, w, h);
 
-  ctx.fillStyle = "#100e0c";
+  ctx.fillStyle = "#0b0f18";
   ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = "#26211c";
+  ctx.strokeStyle = "#1e293b";
   ctx.beginPath();
   ctx.moveTo(0, 11); ctx.lineTo(w, 11);
   ctx.moveTo(0, 22); ctx.lineTo(w, 22);
@@ -1159,7 +1849,7 @@ function drawAudioScope(cursorT) {
 
   const wf = _audioTl.waveform || [];
   if (wf.length > 0) {
-    ctx.strokeStyle = "#7fbf6a";
+    ctx.strokeStyle = "#34d399";
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let i = 0; i < wf.length; i++) {
@@ -1204,7 +1894,7 @@ function drawAudioScope(cursorT) {
   const frac = ((tRef - _audioWinStart) / Math.max(0.001, _audioWinDur));
   if (frac >= 0 && frac <= 1) {
     const cx = frac * w;
-    ctx.strokeStyle = "#f2c14e";
+    ctx.strokeStyle = "#38bdf8";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(cx, 0);
@@ -1242,3 +1932,615 @@ boot().catch((e) => {
   document.body.innerHTML =
     `<pre class="err" style="padding:24px">启动失败：${e.message}\n\n${(e.stack || "").split("\n").slice(0, 8).join("\n")}</pre>`;
 });
+
+
+function _isGraphEngineActive() {
+  if (typeof G !== "undefined" && G.perNode) return true;
+  const eng = document.getElementById("engineGraph");
+  return !!(eng && eng.checked);
+}
+
+function _findActiveGraphNode(kind) {
+  if (!_isGraphEngineActive() || typeof G === "undefined" || !G.state || !G.state.graph) return null;
+  const nodes = G.state.graph.nodes || [];
+  const searchList = (list) => {
+    for (const nd of list) {
+      if (nd.enabled === false) continue;
+      if (nd.kind === kind) return nd;
+      if (nd.kind === "node_group" && nd.subgraph && Array.isArray(nd.subgraph.nodes)) {
+        const found = searchList(nd.subgraph.nodes);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  return searchList(nodes);
+}
+
+function _hasActiveGraphNode(kind) {
+  return !!_findActiveGraphNode(kind);
+}
+
+function detectActiveQuadModule() {
+  const p = S.params || {};
+  const rf = p.rf || {}, ply = p.player || {}, cam = p.camera || {}, dsp = p.display || {}, cn = p.connector || {};
+  const flm = p.film || {}, cod = p.codec || {}, osd = p.overlay || {};
+
+  // When Node Graph rendering (`☑ 用节点图渲染`) is active, prioritize any active 2x2 quad lab node in the graph first
+  if (_isGraphEngineActive()) {
+    if (_hasActiveGraphNode("stream_cdn_client")) {
+      return {
+        isActive: true,
+        nodeKind: "stream_cdn_client",
+        layer: "codec",
+        cornerKey: "stream_quad_corner",
+        borderKey: "stream_show_border",
+        textKey: "stream_show_text",
+        labels: [
+          "分屏: 2×2 四分屏 (网络流媒体传播实验室)",
+          "角落 1: 左上 · 采集源与TBC母本",
+          "角落 2: 右上 · 1999拨号RealVideo",
+          "角落 3: 左下 · Web2.0平台多代转码",
+          "角落 4: 右下 · 现代ABR与缓冲遥测",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("photochemical_film")) {
+      const nd = _findActiveGraphNode("photochemical_film");
+      const bvm = (nd && nd.params && nd.params.bloom_veil_mode !== undefined)
+        ? nd.params.bloom_veil_mode : (flm.bloom_veil_mode || 0);
+      const isOpticalLab = Math.round(bvm) === 5;
+      return {
+        isActive: true,
+        nodeKind: "photochemical_film",
+        layer: "film",
+        cornerKey: "quad_corner",
+        borderKey: "show_border",
+        textKey: "show_text",
+        labels: isOpticalLab
+          ? [
+              "分屏: 2×2 LOMO 光学光晕与散景实验室",
+              "角落 1: 左上 · 肥皂泡散景+斜向紫金光雾",
+              "角落 2: 右上 · 黄金时刻逆光太阳耀斑洪流",
+              "角落 3: 左下 · 无镀膜高调奶油白雾柔焦",
+              "角落 4: 右下 · 移轴浅景深+烛火双层光冕",
+            ]
+          : [
+              "分屏: 2×2 LOMO 光化学暗房实验室",
+              "角落 1: 左上 · E-6正冲负青绿暖金",
+              "角落 2: 右上 · C-41负冲正玫瑰桃心散景",
+              "角落 3: 左下 · 过期胶卷高底雾粉彩",
+              "角落 4: 右下 · 宝丽来浓暗角与暖阳漏光",
+            ],
+      };
+    }
+    if (_hasActiveGraphNode("film_scanner_telecine")) {
+      return {
+        isActive: true,
+        nodeKind: "film_scanner_telecine",
+        layer: "camera",
+        cornerKey: "telecine_quad_corner",
+        borderKey: "telecine_show_border",
+        textKey: "telecine_show_text",
+        labels: [
+          "分屏: 2×2 四分屏 (跨媒介胶转磁实验室)",
+          "角落 1: 左上 · 16mm 胶片原片",
+          "角落 2: 右上 · 电视飞点胶转磁",
+          "角落 3: 左下 · 家用 VHS 电视录屏",
+          "角落 4: 右下 · 网络流媒体重压",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("transfer_station")) {
+      return {
+        isActive: true,
+        nodeKind: "transfer_station",
+        layer: "player",
+        cornerKey: "transfer_quad_corner",
+        borderKey: "transfer_show_border",
+        textKey: "transfer_show_text",
+        labels: [
+          "分屏: 2×2 四分屏 (多代复制实验室)",
+          "角落 1: 左上 · Gen-0 母带基准",
+          "角落 2: 右上 · 无 TBC 多代模拟复制",
+          "角落 3: 左下 · 带 TBC 多代模拟复制",
+          "角落 4: 右下 · 4:1:1→4:2:0 数字转码",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("inversion_analyzer")) {
+      return {
+        isActive: true,
+        nodeKind: "inversion_analyzer",
+        layer: "player",
+        cornerKey: "inv_quad_corner",
+        borderKey: "inv_show_border",
+        textKey: "inv_show_text",
+        labels: [
+          "分屏: 2×2 四分屏 (FADGI 反演实验室)",
+          "角落 1: 左上 · 退化观测画面",
+          "角落 2: 右上 · 反演残差热力图",
+          "角落 3: 左下 · 多解竞争假设排序",
+          "角落 4: 右下 · FADGI 三级审计评分",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("archival_vault")) {
+      return {
+        isActive: true,
+        nodeKind: "archival_vault",
+        layer: "player",
+        cornerKey: "archival_quad_corner",
+        borderKey: "archival_show_border",
+        textKey: "archival_show_text",
+        labels: [
+          "分屏: 2×2 四分屏 (档案谱系树实验室)",
+          "角落 1: 左上 · 原始载体残件",
+          "角落 2: 右上 · 档案保存母版",
+          "角落 3: 左下 · 过度清洗商业修复版",
+          "角落 4: 右下 · 流媒体版与重要属性损耗",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("env_chamber")) {
+      return {
+        isActive: true,
+        nodeKind: "env_chamber",
+        layer: "connector",
+        cornerKey: "env_quad_corner",
+        borderKey: "env_show_border",
+        textKey: "env_show_text",
+        labels: [
+          "分屏: 2×2 四分屏 (空间物理环境场实验室)",
+          "角落 1: 左上 · 温湿度露点场与结露",
+          "角落 2: 右上 · 电磁干扰场与地环路",
+          "角落 3: 左下 · 光学与声学空间场耦合",
+          "角落 4: 右下 · 设备局域坐标物理遥测",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("tv_exciter_pa")) {
+      return {
+        isActive: true,
+        nodeKind: "tv_exciter_pa",
+        layer: "rf",
+        cornerKey: "tx_quad_corner",
+        borderKey: "tx_show_border",
+        textKey: "tx_show_text",
+        modeKey: "tx_chain_mode",
+        labels: [
+          "分屏: 2×2 四分屏 (发射机测试台)",
+          "角落 1: 左上 · 主控直通基带参考",
+          "角落 2: 右上 · 发射机高功放监测",
+          "角落 3: 左下 · 模拟开路接收终端",
+          "角落 4: 右下 · 数字地面 DTT 接收",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("sat_ird_receiver")) {
+      return {
+        isActive: true,
+        nodeKind: "sat_ird_receiver",
+        layer: "rf",
+        cornerKey: "sat_quad_corner",
+        borderKey: "sat_show_border",
+        textKey: "sat_ird_osd",
+        labels: [
+          "分屏: 2×2 四分屏 (卫星悬崖实验室)",
+          "角落 1: 左上 · 晴空卫星参考",
+          "角落 2: 右上 · 模拟 C 波段打火噪点",
+          "角落 3: 左下 · 数字 DVB-S 悬崖解码",
+          "角落 4: 右下 · 载噪比悬崖响应曲线",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("human_operator")) {
+      return {
+        isActive: true,
+        nodeKind: "human_operator",
+        layer: "display",
+        cornerKey: "percept_quad_corner",
+        borderKey: "percept_show_border",
+        textKey: "percept_show_text",
+        labels: [
+          "分屏: 2×2 四分屏 (人类视觉感知与操作闭环)",
+          "角落 1: 左上 · 未干预物理故障输出",
+          "角落 2: 右上 · 观众视网膜CSF感知",
+          "角落 3: 左下 · 机房操作者闭环矫正",
+          "角落 4: 右下 · JND显著度与操作面板",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("ecosystem_simulator")) {
+      return {
+        isActive: true,
+        nodeKind: "ecosystem_simulator",
+        layer: "overlay",
+        cornerKey: "eco_quad_corner",
+        borderKey: "eco_show_border",
+        textKey: "eco_show_text",
+        labels: [
+          "分屏: 2×2 四分屏 (媒介技术生态演化实验室)",
+          "角落 1: 左上 · 1992模拟黄金期基准",
+          "角落 2: 右上 · 所选年份真实生态状态",
+          "角落 3: 左下 · 反事实情景推演状态",
+          "角落 4: 右下 · 1975-2035七维演化曲线",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("crt_magnet_env")) {
+      return {
+        isActive: true,
+        nodeKind: "crt_magnet_env",
+        layer: "display",
+        cornerKey: "crt_magnet_quad_corner",
+        borderKey: "crt_magnet_show_border",
+        textKey: "crt_magnet_show_text",
+        labels: [
+          "分屏: 2×2 四分屏 (CRT 强磁场与消磁实验室)",
+          "角落 1: 左上 · 强钕铁硼磁铁贴面黑洞与彩虹环",
+          "角落 2: 右上 · 强磁极旋转洛伦兹涡流",
+          "角落 3: 左下 · 撤磁后铁磁荫罩永久剩磁色斑",
+          "角落 4: 右下 · 内置 PTC 消磁线圈交变振荡净化",
+        ],
+      };
+    }
+    if (_hasActiveGraphNode("multiview_wall")) {
+      return {
+        isActive: true,
+        nodeKind: "multiview_wall",
+        layer: "display",
+        cornerKey: "mv_quad_corner",
+        borderKey: "mv_show_border",
+        textKey: "mv_tally_umd",
+        labels: [
+          "分屏: 2×2 四分屏 (演播室多画面监视墙)",
+          "角落 1: 左上 · CH1 摄像机源",
+          "角落 2: 右上 · CH2 磁带直出 (VTR)",
+          "角落 3: 左下 · CH3 时基校正 (TBC)",
+          "角落 4: 右下 · CH4 主播出 (PGM)",
+        ],
+      };
+    }
+  }
+
+  if (Math.round(rf.tx_chain_mode || 0) >= 1) {
+    return {
+      isActive: true,
+      layer: "rf",
+      cornerKey: "tx_quad_corner",
+      borderKey: "tx_show_border",
+      textKey: "tx_show_text",
+      modeKey: "tx_chain_mode",
+      labels: [
+        "分屏: 2×2 四分屏 (发射机测试台)",
+        "角落 1: 左上 · 主控直通基带参考",
+        "角落 2: 右上 · 发射机高功放监测",
+        "角落 3: 左下 · 模拟开路接收终端",
+        "角落 4: 右下 · 数字地面 DTT 接收",
+      ],
+    };
+  }
+  if (Math.round(rf.sat_ird_mode || 0) >= 1) {
+    return {
+      isActive: true,
+      layer: "rf",
+      cornerKey: "sat_quad_corner",
+      borderKey: "sat_show_border",
+      textKey: "sat_ird_osd",
+      labels: [
+        "分屏: 2×2 四分屏 (卫星悬崖实验室)",
+        "角落 1: 左上 · 晴空卫星参考",
+        "角落 2: 右上 · 模拟 C 波段打火噪点",
+        "角落 3: 左下 · 数字 DVB-S 悬崖解码",
+        "角落 4: 右下 · 载噪比悬崖响应曲线",
+      ],
+    };
+  }
+  if (Math.round(ply.transfer_station_mode || 0) >= 1) {
+    return {
+      isActive: true,
+      layer: "player",
+      cornerKey: "transfer_quad_corner",
+      borderKey: "transfer_show_border",
+      textKey: "transfer_show_text",
+      labels: [
+        "分屏: 2×2 四分屏 (多代复制实验室)",
+        "角落 1: 左上 · Gen-0 母带基准",
+        "角落 2: 右上 · 无 TBC 多代模拟复制",
+        "角落 3: 左下 · 带 TBC 多代模拟复制",
+        "角落 4: 右下 · 4:1:1→4:2:0 数字转码",
+      ],
+    };
+  }
+  if ((flm.enabled || 0) > 0.5 && (Math.round(flm.bloom_veil_mode || 0) === 5 || Math.round(flm.process_mode || 0) === 5 || Math.round(flm.telecine_pulldown || 0) === 3)) {
+    const isOpticalLab = Math.round(flm.bloom_veil_mode || 0) === 5;
+    return {
+      isActive: true,
+      layer: "film",
+      cornerKey: "quad_corner",
+      borderKey: "show_border",
+      textKey: "show_text",
+      labels: isOpticalLab
+        ? [
+            "分屏: 2×2 LOMO 光学光晕与散景实验室",
+            "角落 1: 左上 · 肥皂泡散景+斜向紫金光雾",
+            "角落 2: 右上 · 黄金时刻逆光太阳耀斑洪流",
+            "角落 3: 左下 · 无镀膜高调奶油白雾柔焦",
+            "角落 4: 右下 · 移轴浅景深+烛火双层光冕",
+          ]
+        : [
+            "分屏: 2×2 LOMO 光化学暗房实验室",
+            "角落 1: 左上 · E-6正冲负青绿暖金",
+            "角落 2: 右上 · C-41负冲正玫瑰桃心散景",
+            "角落 3: 左下 · 过期胶卷高底雾粉彩",
+            "角落 4: 右下 · 宝丽来浓暗角与暖阳漏光",
+          ],
+    };
+  }
+  if ((cam.film_enabled || 0) > 0.5 && Math.round(cam.telecine_pulldown || 0) === 3) {
+    return {
+      isActive: true,
+      layer: "camera",
+      cornerKey: "telecine_quad_corner",
+      borderKey: "telecine_show_border",
+      textKey: "telecine_show_text",
+      labels: [
+        "分屏: 2×2 四分屏 (跨媒介胶转磁实验室)",
+        "角落 1: 左上 · 16mm 胶片原片",
+        "角落 2: 右上 · 电视飞点胶转磁",
+        "角落 3: 左下 · 家用 VHS 电视录屏",
+        "角落 4: 右下 · 网络流媒体重压",
+      ],
+    };
+  }
+  if ((ply.inv_lab_enabled || 0) > 0.5 || (ply.inv_lab_mode || 0) >= 1) {
+    return {
+      isActive: true,
+      layer: "player",
+      cornerKey: "inv_quad_corner",
+      borderKey: "inv_show_border",
+      textKey: "inv_show_text",
+      labels: [
+        "分屏: 2×2 四分屏 (FADGI 反演实验室)",
+        "角落 1: 左上 · 退化观测画面",
+        "角落 2: 右上 · 反演残差热力图",
+        "角落 3: 左下 · 多解竞争假设排序",
+        "角落 4: 右下 · FADGI 三级审计评分",
+      ],
+    };
+  }
+  if ((ply.archival_enabled || 0) > 0.5 || (ply.archival_mode || 0) >= 1) {
+    return {
+      isActive: true,
+      layer: "player",
+      cornerKey: "archival_quad_corner",
+      borderKey: "archival_show_border",
+      textKey: "archival_show_text",
+      labels: [
+        "分屏: 2×2 四分屏 (档案谱系树实验室)",
+        "角落 1: 左上 · 原始载体残件",
+        "角落 2: 右上 · 档案保存母版",
+        "角落 3: 左下 · 过度清洗商业修复版",
+        "角落 4: 右下 · 流媒体版与重要属性损耗",
+      ],
+    };
+  }
+  if ((cn.env_field_enabled || 0) > 0.5 || (cn.env_field_mode || 0) >= 1) {
+    return {
+      isActive: true,
+      layer: "connector",
+      cornerKey: "env_quad_corner",
+      borderKey: "env_show_border",
+      textKey: "env_show_text",
+      labels: [
+        "分屏: 2×2 四分屏 (空间物理环境场实验室)",
+        "角落 1: 左上 · 温湿度露点场与结露",
+        "角落 2: 右上 · 电磁干扰场与地环路",
+        "角落 3: 左下 · 光学与声学空间场耦合",
+        "角落 4: 右下 · 设备局域坐标物理遥测",
+      ],
+    };
+  }
+  if ((cod.stream_enabled || 0) > 0.5 || (cod.stream_mode || 0) >= 1) {
+    return {
+      isActive: true,
+      layer: "codec",
+      cornerKey: "stream_quad_corner",
+      borderKey: "stream_show_border",
+      textKey: "stream_show_text",
+      labels: [
+        "分屏: 2×2 四分屏 (网络流媒体传播实验室)",
+        "角落 1: 左上 · 采集源与TBC母本",
+        "角落 2: 右上 · 1999拨号RealVideo",
+        "角落 3: 左下 · Web2.0平台多代转码",
+        "角落 4: 右下 · 现代ABR与缓冲遥测",
+      ],
+    };
+  }
+  if ((dsp.percept_enabled || 0) > 0.5 || (dsp.percept_mode || 0) >= 1) {
+    return {
+      isActive: true,
+      layer: "display",
+      cornerKey: "percept_quad_corner",
+      borderKey: "percept_show_border",
+      textKey: "percept_show_text",
+      labels: [
+        "分屏: 2×2 四分屏 (人类视觉感知与操作闭环)",
+        "角落 1: 左上 · 未干预物理故障输出",
+        "角落 2: 右上 · 观众视网膜CSF感知",
+        "角落 3: 左下 · 机房操作者闭环矫正",
+        "角落 4: 右下 · JND显著度与操作面板",
+      ],
+    };
+  }
+  if ((osd.eco_enabled || 0) > 0.5 || (osd.eco_mode || 0) >= 1) {
+    return {
+      isActive: true,
+      layer: "overlay",
+      cornerKey: "eco_quad_corner",
+      borderKey: "eco_show_border",
+      textKey: "eco_show_text",
+      labels: [
+        "分屏: 2×2 四分屏 (媒介技术生态演化实验室)",
+        "角落 1: 左上 · 1992模拟黄金期基准",
+        "角落 2: 右上 · 所选年份真实生态状态",
+        "角落 3: 左下 · 反事实情景推演状态",
+        "角落 4: 右下 · 1975-2035七维演化曲线",
+      ],
+    };
+  }
+  if (Math.round(dsp.crt_magnet_mode || 0) === 5) {
+    return {
+      isActive: true,
+      layer: "display",
+      cornerKey: "crt_magnet_quad_corner",
+      borderKey: "crt_magnet_show_border",
+      textKey: "crt_magnet_show_text",
+      labels: [
+        "分屏: 2×2 四分屏 (CRT 强磁场与消磁实验室)",
+        "角落 1: 左上 · 强钕铁硼磁铁贴面黑洞与彩虹环",
+        "角落 2: 右上 · 强磁极旋转洛伦兹涡流",
+        "角落 3: 左下 · 撤磁后铁磁荫罩永久剩磁色斑",
+        "角落 4: 右下 · 内置 PTC 消磁线圈交变振荡净化",
+      ],
+    };
+  }
+  if ((dsp.mv_enabled || 0) > 0.5) {
+    return {
+      isActive: true,
+      layer: "display",
+      cornerKey: "mv_quad_corner",
+      borderKey: "mv_show_border",
+      textKey: "mv_tally_umd",
+      labels: [
+        "分屏: 2×2 四分屏 (演播室多画面监视墙)",
+        "角落 1: 左上 · CH1 摄像机源",
+        "角落 2: 右上 · CH2 磁带直出 (VTR)",
+        "角落 3: 左下 · CH3 时基校正 (TBC)",
+        "角落 4: 右下 · CH4 主播出 (PGM)",
+      ],
+    };
+  }
+  return {
+    isActive: false,
+    layer: "display",
+    cornerKey: "mv_quad_corner",
+    borderKey: "mv_show_border",
+    textKey: "mv_tally_umd",
+    labels: [
+      "分屏: 2×2 四分屏 (全链路四阶段同屏)",
+      "角落 1: 左上角 · 01 成像源 (全屏)",
+      "角落 2: 右上角 · 03 磁带直出 (全屏)",
+      "角落 3: 左下角 · 04 TBC 校正 (全屏)",
+      "角落 4: 右下角 · 05 最终输出 (全屏)",
+    ],
+  };
+}
+
+function syncQuadBar() {
+  const qCorner = $("quadCornerSel"), qBorder = $("quadBorderSel"), qText = $("quadTextSel");
+  if (!qCorner || !qBorder || !qText) return;
+  const active = detectActiveQuadModule();
+  const lay = Object.assign({}, (S.params && S.params[active.layer]) || {});
+  if (active.nodeKind) {
+    const gNode = _findActiveGraphNode(active.nodeKind);
+    if (gNode && gNode.params) {
+      Object.assign(lay, gNode.params);
+    }
+  }
+  let cornerVal = Math.round(lay[active.cornerKey] || 0);
+  if (active.modeKey && Math.round(lay[active.modeKey] || 0) >= 4) {
+    cornerVal = Math.round(lay[active.modeKey]) - 3;
+  }
+  cornerVal = Math.min(4, Math.max(0, cornerVal));
+
+  // Update option labels to reflect the active quad lab
+  if (active.labels && qCorner.options.length === 5) {
+    for (let i = 0; i < 5; i++) {
+      qCorner.options[i].textContent = active.labels[i];
+    }
+  }
+  qCorner.value = String(cornerVal);
+  qBorder.value = String(Math.round(lay[active.borderKey] !== undefined ? lay[active.borderKey] : 2));
+  const rawTextVal = Math.round(lay[active.textKey] !== undefined ? lay[active.textKey] : 0);
+  qText.value = active.textKey === "mv_tally_umd" ? (rawTextVal >= 1 ? "1" : "0") : String(Math.min(2, Math.max(0, rawTextVal)));
+
+  for (let i = 0; i <= 4; i++) {
+    const b = $("btnQuadC" + i);
+    if (b) {
+      b.classList.toggle("on", i === cornerVal && active.isActive);
+      if (active.labels && active.labels[i]) {
+        b.title = active.labels[i];
+      }
+    }
+  }
+}
+
+function wireQuadBar() {
+  const qCorner = $("quadCornerSel"), qBorder = $("quadBorderSel"), qText = $("quadTextSel");
+  if (!qCorner || !qBorder || !qText) return;
+  const applyAll = (forceCornerVal) => {
+    const active = detectActiveQuadModule();
+    const cVal = forceCornerVal !== undefined ? forceCornerVal : (parseFloat(qCorner.value) || 0);
+    qCorner.value = String(cVal);
+    const bVal = parseFloat(qBorder.value) || 0;
+    const tVal = parseFloat(qText.value) || 0;
+    const payload = {
+      params: {
+        rf: {
+          tx_quad_corner: cVal, tx_show_border: bVal, tx_show_text: tVal,
+          sat_quad_corner: cVal, sat_show_border: bVal, sat_ird_osd: tVal,
+        },
+        player: {
+          transfer_quad_corner: cVal, transfer_show_border: bVal, transfer_show_text: tVal,
+          inv_quad_corner: cVal, inv_show_border: bVal, inv_show_text: tVal,
+          archival_quad_corner: cVal, archival_show_border: bVal, archival_show_text: tVal,
+        },
+        connector: {
+          env_quad_corner: cVal, env_show_border: bVal, env_show_text: tVal,
+        },
+        camera: {
+          telecine_quad_corner: cVal, telecine_show_border: bVal, telecine_show_text: tVal,
+        },
+        film: {
+          quad_corner: cVal, show_border: bVal, show_text: tVal,
+        },
+        codec: {
+          stream_quad_corner: cVal, stream_show_border: bVal, stream_show_text: tVal,
+        },
+        display: {
+          mv_quad_corner: cVal, mv_show_border: bVal, mv_tally_umd: Math.min(1, tVal),
+          percept_quad_corner: cVal, percept_show_border: bVal, percept_show_text: tVal,
+          crt_magnet_quad_corner: cVal, crt_magnet_show_border: bVal, crt_magnet_show_text: tVal,
+        },
+        overlay: {
+          eco_quad_corner: cVal, eco_show_border: bVal, eco_show_text: tVal,
+        },
+      }
+    };
+    const rfLay = (S.params && S.params.rf) || {};
+    if (Math.round(rfLay.tx_chain_mode || 0) >= 4) {
+      payload.params.rf.tx_chain_mode = 3;
+    }
+    const usingGraph = _isGraphEngineActive();
+    // If no quad lab is active yet and not in a quad-node graph, turn on Multiview 2x2 Wall
+    if (!active.isActive && !usingGraph) {
+      payload.params.display.mv_enabled = 1.0;
+      payload.params.display.mv_layout = 0.0;
+    } else if (usingGraph && active.nodeKind && active.nodeKind !== "multiview_wall") {
+      // Clear accidental mv_enabled from previous fallback clicks when a graph quad node is active
+      payload.params.display.mv_enabled = 0.0;
+    }
+    setProject(payload);
+  };
+  qCorner.onchange = () => applyAll();
+  qBorder.onchange = () => applyAll();
+  qText.onchange = () => applyAll();
+  for (let i = 0; i <= 4; i++) {
+    const b = $("btnQuadC" + i);
+    if (b) {
+      b.onclick = () => applyAll(i);
+    }
+  }
+}

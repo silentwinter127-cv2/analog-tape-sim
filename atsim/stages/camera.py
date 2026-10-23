@@ -17,6 +17,7 @@ import os
 import numpy as np
 
 from ..codecs.operator import HAND
+from ..codecs.studio_ccu_genlock import StudioCCUSpec, apply_studio_ccu
 from ..codecs.autocontrol import (ExposureLoop, FocusLoop, WhiteBalanceLoop,
                                   centre_weights)
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
@@ -27,8 +28,8 @@ from ..core.signal import gaussian_kernel, lowpass
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 from ..codecs.lens import (LensSpec, field_curvature, longitudinal_ca, chromatic_aberration,
                            coma, astigmatism, spherical, distortion, source_glow,
-                           optical_wt_zoom, light_streaks, draw_trv310e_zoom_osd,
-                           coating_ghost_dispersion)
+                           optical_wt_zoom, light_streaks, asymmetric_ccd_smear_and_trench,
+                           draw_trv310e_zoom_osd, coating_ghost_dispersion, _bilinear_sample_2d)
 
 
 def _subpixel_shift(rgb: np.ndarray, dx: float, dy: float) -> np.ndarray:
@@ -297,6 +298,7 @@ class CameraStage(Stage):
         self.color_cast = float(cfg.get("color_cast", 0.0))
         self.highlight_tint = float(cfg.get("highlight_tint", 0.0))
         self.vcd_color_tone = float(cfg.get("vcd_color_tone", 0.0))
+        self.ccd_flash_falloff = float(cfg.get("ccd_flash_falloff", 0.0))
         # --- lens and sensor type -------------------------------------
         self.lens_wear = float(cfg.get("lens_wear", 0.0))
         self.lens_flare = float(cfg.get("lens_flare", 0.0))
@@ -307,6 +309,7 @@ class CameraStage(Stage):
         self.flare_blades = float(cfg.get("flare_blades", 6.0))
         self.sensor_type = str(cfg.get("sensor_type", 0.0))
         self.is_3ccd = self.sensor_type in ("1", "1.0", "3ccd", "3CCD")
+        self.ccu_spec = StudioCCUSpec.from_params(cfg)
 
 
     # ------------------------------------------------------------------
@@ -894,12 +897,18 @@ class CameraStage(Stage):
 
     def _flare(self, rgb: np.ndarray) -> np.ndarray:
         """
-        CCD vertical smear: bright highlights bleed along the readout column.
+        Up-Down Asymmetric Interline CCD Vertical Smear + Flanking VOD/HOD Anti-Blooming Dark Trenches.
 
-        This is the single most recognisable low-light signature of an interlaced
-        CCD camcorder -- a street lamp drags a vertical stripe down the frame.  It
-        is an *imager* artefact, not a display or tape one, so it belongs here and
-        must not be confusable with the display stage's bloom.
+        Calibrated against SONY DCR-TRV310E night captures (`328073600181017743.jpeg`,
+        `4081604481662954477.jpeg`, `862831116-1416402190.jpeg`):
+          1. **Downward (`dy > 0`) vs Upward (`dy < 0`) Asymmetry**:
+             Vertical shift register readout clocks charge downward across overloaded photosites,
+             producing a flared core-neck funnel + a razor-sharp (`1-2.5 px` wide), intense cyan-blue/white
+             vertical needle extending to the bottom edge, while upward pre-transfer leakage is ~2.8x weaker,
+             wider, and decays much faster.
+          2. **Flanking Dark VOD/HOD Anti-Blooming Trenches (`垂直溢出亮线两侧伴随暗槽`)**:
+             Immediately adjacent horizontally (`|dx| ~ 1.5..5.0 px`, stronger on the right side `dx > 0`),
+             the vertical overflow drain pulls the background below its own exposure.
         """
         if self.smear < 1e-4 or (getattr(self.nv, "_emit", None) is not None and self.smear <= 0.40):
             if getattr(self, 'light_streak_amount', 0.0) > 1e-4:
@@ -908,31 +917,13 @@ class CameraStage(Stage):
                                      length=getattr(self, 'light_streak_length', 0.55),
                                      zoom_pos=getattr(self, '_cur_eff_zoom', 0.0))
             return rgb
-        # **Per channel, because the excess charge is a property of each well.**  The red channel's well fills
-        # first in a tungsten-lit highlight, then green's, then blue's -- so the charge that spills down the
-        # vertical transfer channel carries a per-channel excess, and because blue has the most left to give the
-        # streak reads **cyan-blue**.  The version this replaces reduced the highlight to `hot.mean(axis=0)`, one
-        # scalar, and added it back with a single tint: all three channels got the same vertical profile, so the
-        # smear was **achromatic at its root** and a blown white lamp produced a neutral grey stripe.  No parameter
-        # could make it blue in the direction the physics requires, because the blue end has to come from blue
-        # having more excess rather than from a tint that happens to be blue.
-        #
-        # The thresholds are the same shape as the axial-CA discussion elsewhere: the *order* is the physics (red
-        # clips first), and the three numbers are the filter transmissions.
-        clips = np.array([0.78, 0.86, 0.94], dtype=np.float32)[None, None, :]
-        hot = np.clip(rgb - clips, 0.0, None)
-        if not np.any(hot > 0.0):
-            return rgb
-        # **Each channel keeps its own column profile.**  The line here used to be `hot.mean(axis=0)`, which
-        # reduced the three channels back to one -- so the comment above claimed per-channel behaviour that the
-        # code did not have, which is the fault this project keeps finding.  Sharper than a lens flare, because
-        # this is charge transfer rather than scattering.
-        cols = hot.mean(axis=0, keepdims=True)
-        cols = lowpass(cols, 3.0, axis=1)
-        # a wavelength-dependent transfer efficiency, because blue is transferred less efficiently along the
-        # readout and lingers: the reason a night smear reads cyan rather than the grey a pure threshold gives
-        lead = np.array([0.80, 1.00, 1.30], dtype=np.float32)[None, None, :]
-        out = (rgb + (0.85 * self.smear) * cols * lead).astype(np.float32)
+
+        out = asymmetric_ccd_smear_and_trench(
+            rgb,
+            smear_amount=self.smear,
+            length_scale=getattr(self, 'light_streak_length', 0.65),
+            zoom_pos=getattr(self, '_cur_eff_zoom', 0.0),
+        )
         if getattr(self, 'light_streak_amount', 0.0) > 1e-4:
             out = light_streaks(out, self.light_streak_amount,
                                 angle_deg=getattr(self, 'light_streak_angle', 0.0),
@@ -942,36 +933,98 @@ class CameraStage(Stage):
 
     def _halation(self, rgb: np.ndarray) -> np.ndarray:
         """
-        Highlight bloom at the sensor, with the magenta fringe of an overexposed
-        CCD.  Applied before the tape, so it sits *under* any tape artefacts --
-        which is what the reference material shows: the glow is part of the
-        original exposure, the noise sits on top of it.
+        Non-Uniform Highlight Overflow & Scalloped Multi-Petal Starburst Halo at the Sensor/Optics.
+
+        Calibrated against SONY DCR-TRV310E night captures (`328073600181017743.jpeg`,
+        `4081604481662954477.jpeg`, `862831116-1416402190.jpeg`):
+          1. **Vertical Diamond Droplet & Asymmetric Comatic Inner Core**:
+             Small and medium point emitters (such as building corridor lamps) bloom into vertically
+             elongated diamond droplets with a slight lower-right comatic bulge and downward cyan tip.
+          2. **Scalloped 6-Petal Asymmetric Iris & On-Chip Microlens Starburst Skirt**:
+             Strong street lamps and headlights cast a polygonal/scalloped multi-petal halo skirt
+             (`peak/median >= 1.46x` angular modulation around the ring) with prominent lobes at
+             `~36, 108, 180, 216, 272, 0 deg` and deep diffraction notches at `~245 deg` and `~320 deg`.
         """
         if self.halation < 1e-4 or (getattr(self.nv, "_emit", None) is not None and self.halation <= 0.50):
             return rgb
         a = float(self.halation)
+        h, w = rgb.shape[:2]
+        sc = min(h, w) / 540.0
         lum = rgb @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
-        hot = np.clip((lum - 0.72) / 0.28, 0.0, None)
-        # a tight core dominates; the wide veil is deliberately much weaker and
-        # *scaled by how much of the frame is actually blown out*, so a mostly
-        # mid-tone scene does not get a global pink wash (an earlier version used
-        # a flat veil and tinted the whole sky)
-        core = lowpass(hot, 2.5 + 3.5 * a)
-        veil = lowpass(hot, 12.0 + 20.0 * a)
+        hot = np.clip((lum - 0.70) / 0.28, 0.0, None)
+        if not np.any(hot > 0.0):
+            return rgb
+
+        # 1. Anisotropic Vertical-Diamond Core + Lower-Right Comatic Bulge
+        sig_c = (2.2 + 3.2 * a) * max(0.65, sc)
+        core_v = lowpass(lowpass(hot, max(0.6, 0.72 * sig_c), axis=1), max(0.8, 1.38 * sig_c), axis=0)
+        core_h = lowpass(lowpass(hot, max(0.8, 1.25 * sig_c), axis=1), max(0.5, 0.68 * sig_c), axis=0)
+        core = 0.62 * core_v + 0.38 * core_h
+        # Slight downward-right comatic asymmetry on the core droplet
+        sh_y = max(1, int(round(1.4 * sc)))
+        sh_x = max(1, int(round(1.2 * sc)))
+        core_coma = np.roll(np.roll(core_v, sh_y, axis=0), sh_x, axis=1)
+        core = 0.76 * core + 0.24 * core_coma
+
+        # Distinguish isolated point lamps (< 3% of frame) from broad reflective flash/daylight objects
+        hot_area_frac = float(np.mean(hot > 0.05))
+        broad_damp = 1.0 / (1.0 + 35.0 * max(0.0, hot_area_frac - 0.030))
+
+        # 2. Scalloped 6-Petal Asymmetric Starburst Skirt (`peak/median >= 1.46x` angular modulation)
+        petal_src = lowpass(hot ** 1.15, max(0.9, 2.2 * sc))
+        petal_reach = (11.0 + 22.0 * a) * max(0.65, sc)
+        petal_defs = (
+            (36.0, 1.32, 1.08),
+            (108.0, 1.22, 1.02),
+            (180.0, 0.86, 0.86),
+            (216.0, 1.26, 1.04),
+            (272.0, 0.90, 0.88),
+            (0.0, 0.88, 0.86),
+        )
+
+        def _shift2d_scalar(plane2d: np.ndarray, dy_f: float, dx_f: float) -> np.ndarray:
+            iy = int(round(dy_f))
+            ix = int(round(dx_f))
+            if iy == 0 and ix == 0:
+                return plane2d
+            res = np.empty_like(plane2d)
+            if iy >= 0:
+                sy0, sy1, dy0, dy1 = 0, max(0, h - iy), iy, h
+                ry = 0
+            else:
+                sy0, sy1, dy0, dy1 = min(h, -iy), h, 0, max(0, h + iy)
+                ry = h - 1
+            if ix >= 0:
+                sx0, sx1, dx0, dx1 = 0, max(0, w - ix), ix, w
+                rx = 0
+            else:
+                sx0, sx1, dx0, dx1 = min(w, -ix), w, 0, max(0, w + ix)
+                rx = w - 1
+            res[:] = plane2d[ry, rx]
+            if dy1 > dy0 and dx1 > dx0:
+                res[dy0:dy1, dx0:dx1] = plane2d[sy0:sy1, sx0:sx1]
+            return res
+
+        petal_skirt = np.zeros_like(hot)
+        for p_deg, p_w, p_rscale in petal_defs:
+            p_rad = np.deg2rad(p_deg)
+            ux, uy = float(np.cos(p_rad)), float(np.sin(p_rad))
+            for frac in (0.28, 0.56, 0.86, 1.16):
+                dist = petal_reach * p_rscale * frac
+                w_step = p_w * float(np.exp(-1.95 * frac)) * 0.22
+                petal_skirt += _shift2d_scalar(petal_src, -uy * dist, -ux * dist) * w_step
+
+        veil = lowpass(hot, (11.0 + 18.0 * a) * max(0.65, sc))
         peak = float(core.max())
         if peak > 1e-6:
-            core = core / peak
-        coverage = float(np.clip(hot.mean() * 14.0, 0.0, 1.0))
-        halo = np.clip(0.80 * core + 0.32 * coverage * veil, 0.0, 1.6)
-        # **The halo's colour is the source's, not a constant.**  Scattered light keeps the spectrum of what it came
-        # from, so a halo around a blue-white line should be blue-white.  The fixed tint below is a real lens
-        # property, but as a *constant* it dilutes a small chroma difference -- measured, a thin blue line under a
-        # halation came back at B-R +0.000 against its own +0.024, and no value of the existing parameters recovered
-        # it, because raising saturation cannot restore a difference that neutral light has divided away.
-        #
-        # So the tint is taken from the blown region itself, normalised so its **luminance is unchanged**: a scene
-        # with no blown source, or a neutral one, therefore behaves exactly as before, and only a coloured source
-        # moves.  Built from the same `hot` mask, per channel, so it is the colour of what is actually blowing out.
+            core = (core / peak) * broad_damp + core * (1.0 - broad_damp)
+        p_peak = float(petal_skirt.max())
+        if p_peak > 1e-6:
+            petal_skirt = (petal_skirt / p_peak) * broad_damp + petal_skirt * (1.0 - broad_damp)
+
+        coverage = float(np.clip(hot.mean() * 14.0, 0.0, 1.0)) * broad_damp
+        halo = np.clip(0.64 * core + 0.42 * petal_skirt + 0.24 * coverage * veil, 0.0, 1.75)
+
         blown = rgb * hot[..., None]
         mass = float(hot.sum())
         if mass > 1e-6:
@@ -983,10 +1036,17 @@ class CameraStage(Stage):
                 src_tint = np.ones(3, np.float32)
         else:
             src_tint = np.ones(3, np.float32)
-        lens_tint = np.array([1.05, 0.88, 1.05], dtype=np.float32)
+        lens_tint = np.array([1.02, 0.92, 1.12], dtype=np.float32)
         mix = float(np.clip(self.halation_source_colour, 0.0, 1.0))
         tint = (1.0 - mix) * lens_tint + mix * src_tint
-        return (rgb + (a * 0.52) * halo[..., None] * tint[None, None, :]).astype(np.float32)
+
+        # Outer petal fringe carries a subtle cool cyan-blue chromatic dispersion
+        outer_cyan = np.array([0.80, 1.04, 1.32], dtype=np.float32)[None, None, :]
+        halo_rgb = (
+            (0.64 * core + 0.24 * coverage * veil)[..., None] * tint[None, None, :]
+            + (0.42 * petal_skirt)[..., None] * (0.55 * tint[None, None, :] + 0.45 * outer_cyan)
+        )
+        return (rgb + (a * 0.54) * halo_rgb).astype(np.float32)
 
     def _shadow_depth(self, rgb: np.ndarray) -> np.ndarray:
         """
@@ -1188,6 +1248,73 @@ class CameraStage(Stage):
             rgb = (0.5 * np.power(np.clip(rgb, 0.0, 1.0) / 0.5, kk)).astype(np.float32)
         return np.clip(rgb * g + b, 0.0, 2.0).astype(np.float32)
 
+    def _apply_ccd_flash_still(self, rgb: np.ndarray) -> np.ndarray:
+        """
+        Physical Sony Cyber-shot 1/2.7" Super HAD CCD + Built-in Xenon Flash + Memory Stick JFIF
+        still-capture response (calibrated against Ref `2ff39b085b1b4f3629272046535e92ca.jpg`, 1024x768):
+          1. Direct on-camera Xenon flash inverse-square & reflector beam falloff (`center/corner ~ 5.84x`
+             on near-field tabletop macro/still shots; adaptive so already flash-lit photos are not
+             double-darkened in the corners).
+          2. Metallic specular foil punch (`p99 ~ 0.962`, crisp `>0.95` glints) with cool silver-cyan
+             midtone balance (`B/G ~ 1.048, R/G ~ 0.931`) and subtle microlens blue/purple edge fringing.
+          3. Warm dark-wood shadow toe (`R/G ~ 1.308` for `L < 0.15`) from ambient incandescent room light
+             mixing into the flash falloff zone + CCD dark-current warm bias.
+        """
+        amt = float(np.clip(getattr(self, "ccd_flash_falloff", 0.0), 0.0, 1.5))
+        if amt <= 1e-4:
+            return rgb
+        h, w = rgb.shape[:2]
+        out = np.clip(rgb, 0.0, 2.0).astype(np.float32)
+        lum = out @ LUMA
+
+        # Measure existing center-to-corner ratio so a photo that ALREADY has strong flash falloff (like Ref)
+        # receives only gentle peripheral shaping instead of double-vignetting:
+        ch0, ch1 = int(h * 0.28), int(h * 0.72)
+        cw0, cw1 = int(w * 0.28), int(w * 0.72)
+        c_mean = float(lum[ch0:ch1, cw0:cw1].mean()) + 1e-4
+        kh, kw = max(4, int(h * 0.14)), max(4, int(w * 0.14))
+        k_mean = 0.25 * float(
+            lum[:kh, :kw].mean() + lum[:kh, -kw:].mean() + lum[-kh:, :kw].mean() + lum[-kh:, -kw:].mean()
+        ) + 1e-4
+        existing_ratio = c_mean / k_mean
+        vig_adapt = float(np.clip((4.8 - existing_ratio) / 3.8, 0.12, 1.0))
+
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        nx = (xx / max(1.0, w - 1.0)) * 2.0 - 1.0
+        ny = (yy / max(1.0, h - 1.0)) * 2.0 - 1.0
+        # Slight upward-central Xenon flash reflector hot-spot
+        r2 = (nx * 0.92) ** 2 + ((ny + 0.04) * 1.04) ** 2
+        flash_env = 1.0 / (1.0 + (1.35 * amt * vig_adapt) * (r2 ** 1.15))
+        flash_gain = (1.0 + 0.16 * amt * vig_adapt) * flash_env
+        out = out * flash_gain[..., None]
+
+        # Cool Xenon flash metallic midtone (`B/G ~ 1.048, R/G ~ 0.931`) vs warm shadow toe (`R/G ~ 1.308`)
+        lum2 = np.clip(out @ LUMA, 0.0, 1.5)
+        shadow_w = np.clip((0.18 - lum2) / 0.16, 0.0, 1.0) ** 1.35
+        mid_w = np.clip((lum2 - 0.14) / 0.22, 0.0, 1.0) * np.clip((0.88 - lum2) / 0.25, 0.0, 1.0)
+        spec_w = np.clip((lum2 - 0.74) / 0.22, 0.0, 1.0)
+
+        # Warm ambient/dark-current toe in the peripheral shadows
+        warm_toe = np.array([1.14, 0.96, 0.84], dtype=np.float32)[None, None, :]
+        # Cool Xenon flash metallic foil response in midtones
+        cool_mid = np.array([0.96, 1.00, 1.045], dtype=np.float32)[None, None, :]
+        # Specular foil micro-contrast & purple/blue microlens fringe on sharp metallic gradients
+        gx = np.abs(np.gradient(lum2, axis=1))
+        gy = np.abs(np.gradient(lum2, axis=0))
+        edge_glint = np.clip((np.hypot(gx, gy) - 0.04) / 0.14, 0.0, 1.0) * mid_w
+
+        mix_a = float(np.clip(amt, 0.0, 1.0))
+        out = (
+            out * (1.0 - 0.55 * mix_a * shadow_w[..., None] - 0.45 * mix_a * mid_w[..., None])
+            + (out * warm_toe) * (0.55 * mix_a * shadow_w[..., None])
+            + (out * cool_mid) * (0.45 * mix_a * mid_w[..., None])
+        )
+        # Subtle warm-wood pedestal in deep darks + cool blue microlens edge bloom on foil edges
+        out[..., 0] += (0.008 * mix_a) * shadow_w + (0.018 * mix_a) * spec_w
+        out[..., 1] += (0.016 * mix_a) * spec_w
+        out[..., 2] += (0.024 * mix_a) * edge_glint + (0.022 * mix_a) * spec_w
+        return np.clip(out, 0.0, 1.5).astype(np.float32)
+
     def _color_science(self, rgb: np.ndarray) -> np.ndarray:
         """
         The imager's colour cast and its highlight tint.
@@ -1223,7 +1350,7 @@ class CameraStage(Stage):
                     * np.clip((rel_peak0 - 0.21) / 0.39, 0.0, 1.0)
                     * np.clip((rel_grad0 - 0.033) / 0.052, 0.0, 1.0))
 
-            if float(emit.max()) > 1e-3:
+            if float(emit.max()) > 1e-3 and float((sat0 > 0.48).mean()) > 0.14:
                 # Mesh-filling optical envelope: fills in the dark perforated mesh holes over Top_Fan and Front_Fan
                 k_mesh = max(1, int(round(4 * sc)))
                 rgb_max_env = _mf_cfa(rgb0, size=(k_mesh, k_mesh, 1))
@@ -1407,27 +1534,101 @@ class CameraStage(Stage):
         out[..., 1] = (y - 0.299 * out[..., 0] - 0.114 * out[..., 2]) / 0.587
         return out.astype(np.float32)
 
-    def _gain_noise(self, rgb: np.ndarray, frame_index: int) -> np.ndarray:
+    def _signal_noise_envelope(self, rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
-        AGC gain: raising the gain amplifies the sensor's read noise with it, and
-        on these camcorders that noise is strongly *chromatic*.  Modelled as a
-        single luminance-ish grain plus a colour-difference noise term, which is
-        what makes night footage speckle in red/green/blue rather than grey.
+        Physical SONY DCR-TRV310E Non-Uniform Signal-Dependent Noise Envelope (`env_luma`, `env_chroma`).
+
+        Calibrated across luminance bins on `328073600181017743.jpeg`, `4081604481662954477.jpeg`,
+        and `862831116-1416402190.jpeg`:
+          1. **Dead-Black Night Sky (`L < 0.035`)**: DSP dark-pedestal coring + DV25 8x8 DCT dead-zone
+             suppresses noise down to `~0.06` (`Y_std ~ 0.0016` in real captures).
+          2. **Mid-Dark Surfaces & Glowing Halo Skirts (`L in [0.08, 0.85]`)**: Photon shot noise (`sqrt(L)`)
+             amplified by high AGC gain + 8x8 DV macroblock quantization reaches `1.15..1.45` (`Y_std` 4x-10x
+             higher than in the pitch-black sky!).
+          3. **Saturated Highlight Cores (`L > 0.88`)**: CCD full-well capacity saturation and ADC white
+             clipping flatten variance back down to `~0.05` (`Y_std ~ 0.0033` inside lamp cores).
         """
-        if self.gain <= 1e-4:
+        lum = np.clip(rgb @ LUMA, 0.0, 1.5)
+        peak_ch = np.clip(rgb.max(axis=-1), 0.0, 1.5)
+        # 1. Dark-pedestal coring gate (suppresses noise in L < 0.035 dead-black night sky)
+        dark_core = 0.055 + 0.945 * (np.clip((lum - 0.018) / 0.068, 0.0, 1.0) ** 1.35)
+        # 2. Photon shot + AGC mid-dark & halo-skirt bell boost (peaks across L = 0.12..0.80)
+        shot_agc = 0.74 + 0.72 * np.sin(np.clip((lum - 0.03) / 0.85, 0.0, 1.0) * np.pi)
+        # 3. Full-well highlight saturation clamp (suppresses noise inside L > 0.88 blown cores)
+        sat_level = np.maximum(lum, peak_ch * 0.95)
+        sat_clamp = 1.0 - 0.95 * (np.clip((sat_level - 0.84) / 0.13, 0.0, 1.0) ** 1.25)
+
+        env_luma = (dark_core * shot_agc * sat_clamp).astype(np.float32)
+        # Chroma mottle peaks in dark-to-midtone surfaces & inner halo skirts (L = 0.06..0.65)
+        chroma_bell = 0.65 + 0.78 * np.sin(np.clip((lum - 0.025) / 0.72, 0.0, 1.0) * np.pi)
+        env_chroma = (dark_core * chroma_bell * sat_clamp).astype(np.float32)
+        return env_luma, env_chroma
+
+    def _gain_noise(self, rgb: np.ndarray, frame_index: int, scale_mult: float = 1.0) -> np.ndarray:
+        """
+        Non-uniform SONY DCR-TRV310E Low-Light AGC + Complementary-CFA (`Cy/Ye/Mg/Gr`) + 8x8 Block Noise.
+
+        Combines:
+          1. Signal-dependent bell envelope (`_signal_noise_envelope`): quiet cored black sky (`L < 0.03`),
+             strong granular noise in mid-dark road/foliage/building & lamp halo skirts (`L in [0.08, 0.85]`),
+             and smooth clamped white highlight cores (`L > 0.90`).
+          2. Horizontally anisotropic CDS/AGC streak luminance grain (`sigma_x ~ 2.1*sc, sigma_y ~ 0.8*sc`)
+             + horizontal optical-black line clamp ripple.
+          3. 8x8 DV25 macroblock variance modulation (boosted near luminance gradients / halo skirts).
+          4. 4:1:1 complementary-CFA (`Cr` magenta-green and `Cb` blue-yellow) horizontal chroma blotches.
+        """
+        if self.gain <= 1e-4 or scale_mult <= 1e-4:
             return rgb
-        g = float(self.gain)
+        g = float(self.gain) * float(scale_mult)
+        h, w = rgb.shape[:2]
+        sc = max(0.5, min(h, w) / 540.0)
         rng = np.random.default_rng(
-            (int(self.ctx.seed) * 2654435761 + frame_index * 40503) & 0xFFFFFFFF)
-        shape = rgb.shape[:2]
-        lum_grain = self._coarse_noise(rng, shape, 1.0)
-        chroma_grain = self._coarse_noise(rng, shape, 2.2)
-        amt = 0.055 * g
-        out = rgb + (amt * lum_grain)[..., None]
-        # push the colour noise along R/B and G in opposition (chroma speckle)
-        out[..., 0] += amt * 0.85 * chroma_grain
-        out[..., 2] += amt * 0.85 * chroma_grain
-        out[..., 1] -= amt * 0.55 * chroma_grain
+            (int(self.ctx.seed) * 2654435761 + int(frame_index) * 40503 + int(round(scale_mult * 97))) & 0xFFFFFFFF)
+
+        env_y, env_c = self._signal_noise_envelope(rgb)
+
+        # 8x8 DV25 macroblock activity modulation (patchy block-level grain variance)
+        bh, bw = max(1, (h + 7) // 8), max(1, (w + 7) // 8)
+        blk_rnd = rng.uniform(0.66, 1.42, size=(bh, bw)).astype(np.float32)
+        blk_map = np.repeat(np.repeat(blk_rnd, 8, axis=0), 8, axis=1)[:h, :w]
+
+        # Boost block grain slightly on halo skirts and edge gradients where DV25 selects coarser quantizer class
+        lum = np.clip(rgb @ LUMA, 0.0, 1.5)
+        grad_mag = np.abs(lum - lowpass(lum, max(1.2, 3.0 * sc)))
+        grad_boost = 1.0 + 0.45 * np.clip(grad_mag / 0.08, 0.0, 1.0)
+        mod_y = env_y * blk_map * grad_boost
+        mod_c = env_c * (0.55 + 0.45 * blk_map)
+
+        # 1. Horizontally anisotropic CDS streak luma grain + fine shot grain + optical-black row clamp
+        raw_y1 = rng.standard_normal((h, w)).astype(np.float32)
+        cds_streak = lowpass(lowpass(raw_y1, max(0.9, 2.15 * sc), axis=1), max(0.4, 0.78 * sc), axis=0)
+        cds_streak /= max(1e-6, float(cds_streak.std()))
+
+        raw_y2 = rng.standard_normal((h, w)).astype(np.float32)
+        fine_shot = lowpass(lowpass(raw_y2, max(0.5, 0.95 * sc), axis=1), max(0.35, 0.58 * sc), axis=0)
+        fine_shot /= max(1e-6, float(fine_shot.std()))
+
+        row_clamp = rng.standard_normal((h, 1)).astype(np.float32)
+        row_clamp = lowpass(row_clamp, max(0.4, 0.70 * sc), axis=0)
+        row_clamp /= max(1e-6, float(row_clamp.std()))
+
+        lum_grain = (0.62 * cds_streak + 0.38 * fine_shot + 0.16 * row_clamp) * mod_y
+
+        # 2. Complementary-CFA (Cy/Ye/Mg/Gr) + 4:1:1 horizontal chroma mottle (independent Cr and Cb blotches)
+        raw_cr = rng.standard_normal((h, w)).astype(np.float32)
+        cr_mottle = lowpass(lowpass(raw_cr, max(1.4, 3.8 * sc), axis=1), max(0.7, 1.45 * sc), axis=0)
+        cr_mottle /= max(1e-6, float(cr_mottle.std()))
+
+        raw_cb = rng.standard_normal((h, w)).astype(np.float32)
+        cb_mottle = lowpass(lowpass(raw_cb, max(1.4, 3.8 * sc), axis=1), max(0.7, 1.45 * sc), axis=0)
+        cb_mottle /= max(1e-6, float(cb_mottle.std()))
+
+        amt_y = 0.044 * g
+        amt_c = 0.036 * g
+        out = rgb + (amt_y * lum_grain)[..., None]
+        out[..., 0] += amt_c * (0.95 * cr_mottle + 0.20 * cb_mottle) * mod_c
+        out[..., 1] -= amt_c * (0.48 * cr_mottle + 0.28 * cb_mottle) * mod_c
+        out[..., 2] += amt_c * (1.12 * cb_mottle + 0.25 * cr_mottle) * mod_c
         return out.astype(np.float32)
 
     def _coarse_noise(self, rng: np.random.Generator,
@@ -1753,12 +1954,17 @@ class CameraStage(Stage):
 
         if self.sensor_noise > 1e-4:
             n = self._noise_field(rgb.shape[:2]).sample(buf.index)
-            rgb = rgb + (self.sensor_noise * 0.35) * n[..., None]
+            env_sn, _ = self._signal_noise_envelope(rgb)
+            rgb = rgb + (self.sensor_noise * 0.35) * (n * env_sn)[..., None]
 
         if self.fixed_pattern > 1e-4:
-            rgb = rgb + (self.fixed_pattern * 0.06) * self._fixed_pattern(rgb.shape[:2])
+            env_fp, _ = self._signal_noise_envelope(rgb)
+            rgb = rgb + (self.fixed_pattern * 0.06) * self._fixed_pattern(rgb.shape[:2]) * (0.25 + 0.75 * env_fp[..., None])
 
-        rgb = self._gain_noise(rgb, buf.index)
+        # Pre-halo sensor readout fraction (30%); the remaining 70% CDS/AGC + CFA mottle runs after
+        # optical halation & CCD smear so glowing halo skirts carry realistic signal-dependent grain
+        # while dead-black sky and saturated lamp cores remain cored/clamped.
+        rgb = self._gain_noise(rgb, buf.index, scale_mult=0.30)
 
         # 3CCD: each sensor carries one primary, so read noise enters as
         # *luminance* grain rather than as colour speckle, and there is no
@@ -1789,6 +1995,7 @@ class CameraStage(Stage):
         rgb = self._lens_flare(rgb)
         rgb = self._flare(rgb)
         rgb = coating_ghost_dispersion(rgb, self.lens)
+        rgb = self._gain_noise(rgb, buf.index, scale_mult=0.70)
         # **Lens aberrations, before the camera's own sharpening.**  Aperture correction is applied by
         # the camera *after* the lens has done its work, so sharpening first would let it undo the
         # corner softening -- which is the one thing field curvature is supposed to leave visible.
@@ -1859,6 +2066,7 @@ class CameraStage(Stage):
             # (1.0) is a clearly soft picture and the loop's typical steps are visible but gentle.
             rgb = lowpass(rgb, 0.6 + 4.5 * self._defocus, axis=None)
         rgb = self._lens_wear(rgb)
+        rgb = self._apply_ccd_flash_still(rgb)
         rgb = self._color_science(rgb)
         # The sensor's own readout, at the very end.  A stuck site is a *readout* defect, so it happens
         # after the charge has accumulated, after the analogue gain and after the camera's own signal
@@ -1886,12 +2094,34 @@ class CameraStage(Stage):
         self.gain = _saved_gain
 
         out_meta = dict(buf.meta)
+        # --- Module 3: Shared Power & Electrical Bus coupling on Camera ---
+        from ..codecs.power_bus import evaluate_power_bus, apply_camera_power_effects
+        row_lum_cam = (np.clip(rgb, 0.0, 1.0) @ LUMA).mean(axis=1)
+        pstate = evaluate_power_bus(
+            self.ctx.params, int(buf.index), self.ctx.fps,
+            rgb.shape[0], rgb.shape[1], self.ctx.seed,
+            row_luma=row_lum_cam, zoom_vel=zoom_vel,
+        )
+        if pstate.active:
+            rgb = apply_camera_power_effects(rgb, pstate, int(buf.index), self.ctx.seed)
+            out_meta["power_bus"] = pstate
+
         if wt_active:
             out_meta["wt_zoom"] = {
                 "zoom_pos": round(eff_wt_zoom, 4),
                 "magnification": round(wt_mag, 3),
                 "effective_f_number": round(1.4 + (2.9 - 1.4) * (eff_wt_zoom ** 1.15), 2),
             }
+
+        if self.ccu_spec.enabled:
+            rgb, ccu_info = apply_studio_ccu(
+                np.clip(rgb, 0.0, 1.5).astype(np.float32),
+                self.ccu_spec, buf.std,
+                frame_index=int(buf.index), fps=self.ctx.fps, seed=int(self.ctx.seed) + 101,
+            )
+            out_meta["ccu_genlock"] = ccu_info
+        out_clipped = np.clip(rgb, 0.0, 1.0).astype(np.float32)
+        out_meta["tap_camera_rgb"] = out_clipped
         return FrameBuffer(np.clip(rgb, 0.0, 2.0).astype(np.float32), None,
                            buf.index, buf.time, buf.std, out_meta)
 

@@ -14,6 +14,11 @@ from ..codecs.connectors import (CONNECTORS, degrade_composite, degrade_digital,
                                  degrade_rf, degrade_rf_signal, degrade_svideo,
                                  impedance, reflection_coefficient)
 from ..codecs.rf import RFLink, RFParams
+from ..codecs.switcher import AnalogSwitcherSpec, apply_analog_switcher
+from ..codecs.patchbay_da import PatchbayDASpec, apply_patchbay_da, DistAmpStage, PatchRouterStage
+from ..codecs.satellite_ird import SatelliteIRDSpec, apply_satellite_ird
+from ..codecs.tv_transmitter_chain import TVTransmitterSpec, apply_tv_transmitter_chain
+from ..codecs.spatial_environment_field import SpatialEnvFieldSpec, apply_spatial_environment_field
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 from ..core.signal import SignalFrame
 
@@ -55,6 +60,11 @@ class ConnectorStage(Stage):
         self.mains_hz = f("mains_hz", 50.0)
         self.shield = float(np.clip(f("rf_shielding", 0.0), 0.0, 1.0))
         self.leakage = f("svideo_leakage")
+        self.switcher_spec = AnalogSwitcherSpec.from_params(c)
+        self.da_spec = PatchbayDASpec.from_params(c)
+        self.sat_spec = SatelliteIRDSpec.from_params(r)
+        self.tx_spec = TVTransmitterSpec.from_params(r)
+        self.env_spec = SpatialEnvFieldSpec.from_params(c)
 
         # RF / TV-DX broadcast link parameters
         self.rf_link_on = rf_f("enabled", 0.0) > 0.5
@@ -83,6 +93,13 @@ class ConnectorStage(Stage):
             tuning_offset_khz=rf_f("tuning_offset_khz", 0.0),
             front_end_overload=rf_f("front_end_overload", 0.0),
             color_killer_threshold_db=rf_f("color_killer_threshold_db", 18.0),
+            channel_switch_rate=rf_f("channel_switch_rate", 0.0),
+            channel_switch_dur_s=rf_f("channel_switch_dur_s", 0.38),
+            lo_sweep_mhz=rf_f("lo_sweep_mhz", 0.0),
+            vsync_roll=rf_f("vsync_roll", 0.0),
+            vbi_bar_vis=rf_f("vbi_bar_vis", 0.75),
+            flagging=rf_f("flagging", 0.0),
+            hanover_bars=rf_f("hanover_bars", 0.0),
         )
         if self._rflink is None:
             self._rflink = RFLink(self.ctx.std, self.rf_params, seed=self.ctx.seed)
@@ -107,7 +124,15 @@ class ConnectorStage(Stage):
                 "reflection": round(abs(reflection_coefficient(spec.nominal_z, z)), 4)}
 
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
-        active = self.hdmi_on or self.av_on or self.svideo_on or self.rf_on or self.rf_link_on
+        from ..codecs.power_bus import PowerBusSpec, evaluate_power_bus
+        pbus_spec = PowerBusSpec.from_params(self.ctx.params)
+        pbus_on = pbus_spec.is_active()
+        sw_on = self.switcher_spec.is_active()
+        da_on = self.da_spec.is_active()
+        sat_on = self.sat_spec.is_active()
+        tx_on = self.tx_spec.is_active()
+        env_on = self.env_spec.is_active()
+        active = self.hdmi_on or self.av_on or self.svideo_on or self.rf_on or self.rf_link_on or pbus_on or sw_on or da_on or sat_on or tx_on or env_on
         if not active:
             return buf
 
@@ -186,6 +211,10 @@ class ConnectorStage(Stage):
                 i_rf = i_rf * ck_gain
                 q_rf = q_rf * ck_gain
 
+            y_rf, i_rf, q_rf, glitch_info = self._rflink.apply_post_demod_glitches(
+                y_rf, i_rf, q_rf, buf.index, self.ctx.fps,
+                np.random.default_rng((int(self.ctx.seed) * 4099 + buf.index * 97) & 0xFFFFFFFF))
+            rf_info.update(glitch_info)
             sig = SignalFrame(y_rf.astype(np.float32),
                               i_rf.astype(np.float32),
                               q_rf.astype(np.float32))
@@ -213,9 +242,200 @@ class ConnectorStage(Stage):
             rgb = np.clip(sig.to_rgb(), 0.0, 1.0).astype(np.float32)
             comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
 
+        sq = float(self.cfg_of("connector").get("aspect_squeeze", 0.0))
+        if sq > 1e-4 and sig is not None:
+            h_s, w_s = sig.y.shape
+            ratio = float(np.clip(1.0 - 0.25 * sq, 0.5, 1.0))
+            act_w = max(8, int(round(w_s * ratio)))
+            pad_l = (w_s - act_w) // 2
+            xs = np.linspace(0.0, w_s - 1.0, act_w, dtype=np.float32)
+            x0 = np.floor(xs).astype(np.int32)
+            x1 = np.minimum(x0 + 1, w_s - 1)
+            fx = (xs - x0)[None, :]
+            def _sq_plane(pl, fill=0.0):
+                out_p = np.full((h_s, w_s), fill, dtype=np.float32)
+                out_p[:, pad_l:pad_l + act_w] = pl[:, x0] * (1.0 - fx) + pl[:, x1] * fx
+                return out_p
+            sig = SignalFrame(_sq_plane(sig.y, 0.02), _sq_plane(sig.i, 0.0), _sq_plane(sig.q, 0.0))
+            rgb = np.clip(sig.to_rgb(), 0.0, 1.0).astype(np.float32)
+            from ..core.signal import composite_encode
+            comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+
+        # ---- 6. Analog Video Switcher / Mixer & Special Effects Generator (Module 6 / Candidate C)
+        if sw_on:
+            if sig is None:
+                sig = SignalFrame.from_rgb(np.clip(rgb, 0.0, 1.0), buf.std)
+            bus_b_yiq = meta["bus_b_yiq"] if "bus_b_yiq" in meta else None
+            y_sw, i_sw, q_sw, sw_info = apply_analog_switcher(
+                sig.y, sig.i, sig.q, self.switcher_spec,
+                frame_index=int(buf.index), fps=self.ctx.fps,
+                std=buf.std, seed=self.ctx.seed, bus_b_yiq=bus_b_yiq,
+            )
+            sig = SignalFrame(y_sw, i_sw, q_sw)
+            rgb = np.clip(sig.to_rgb(), 0.0, 1.0).astype(np.float32)
+            comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+            report["switcher"] = sw_info
+            meta["switcher"] = sw_info
+            self.state["switcher"] = sw_info
+
+        # ---- 6b. Broadcast Patchbay, Distribution Amplifier & 75-Ohm Impedance Load (Candidate E)
+        if da_on:
+            if sig is None:
+                sig = SignalFrame.from_rgb(np.clip(rgb, 0.0, 1.0), buf.std)
+            bus_b_yiq = meta["bus_b_yiq"] if "bus_b_yiq" in meta else None
+            y_da, i_da, q_da, da_info = apply_patchbay_da(
+                sig.y, sig.i, sig.q, self.da_spec,
+                frame_index=int(buf.index), fps=self.ctx.fps,
+                std=buf.std, seed=self.ctx.seed, bus_b_yiq=bus_b_yiq,
+            )
+            sig = SignalFrame(y_da, i_da, q_da)
+            rgb = np.clip(sig.to_rgb(), 0.0, 1.0).astype(np.float32)
+            comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+            report["patchbay_da"] = da_info
+            meta["patchbay_da"] = da_info
+            self.state["patchbay_da"] = da_info
+
+        if pbus_on:
+            pstate = meta["power_bus"] if "power_bus" in meta else None
+            if pstate is None:
+                h_c, w_c = rgb.shape[:2]
+                row_l = (np.clip(rgb, 0.0, 1.0) @ np.array([0.299, 0.587, 0.114], np.float32)).mean(axis=1)
+                pstate = evaluate_power_bus(self.ctx.params, int(buf.index), self.ctx.fps, h_c, w_c, self.ctx.seed, row_luma=row_l)
+                meta["power_bus"] = pstate
+            if pstate is not None and pstate.active:
+                report["power_bus"] = pstate.to_dict()
+                self.state["power_bus"] = report["power_bus"]
+
+        # ---- 7. Satellite IRD Receiver & Analog/Digital Cliff Effect (Candidate M)
+        if sat_on:
+            base_sat = sig.to_rgb() if sig is not None else np.clip(rgb, 0.0, 1.0)
+            rgb_sat, sat_info = apply_satellite_ird(
+                base_sat, self.sat_spec, std=buf.std,
+                frame_index=int(buf.index), fps=float(self.ctx.fps), seed=int(self.ctx.seed),
+            )
+            sig = SignalFrame.from_rgb(rgb_sat, buf.std)
+            sig._rf_direct = True
+            rgb = rgb_sat
+            comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+            report["satellite_ird"] = sat_info["report"]
+            meta["satellite_ird"] = sat_info
+            self.state["satellite_ird"] = sat_info["report"]
+
+        # ---- 8. TV Transmitter Exciter, High-Power Amplifier & End-to-End Broadcast Bench (Candidate N)
+        if tx_on:
+            base_tx = sig.to_rgb() if sig is not None else np.clip(rgb, 0.0, 1.0)
+            rgb_tx, tx_info = apply_tv_transmitter_chain(
+                base_tx, self.tx_spec, std=buf.std,
+                frame_index=int(buf.index), fps=float(self.ctx.fps), seed=int(self.ctx.seed),
+            )
+            sig = SignalFrame.from_rgb(rgb_tx, buf.std)
+            sig._rf_direct = True
+            rgb = rgb_tx
+            comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+            report["tv_transmitter"] = tx_info["report"]
+            meta["tv_transmitter"] = tx_info
+            self.state["tv_transmitter"] = tx_info["report"]
+
+        # ---- 9. 2D Spatial Physical Environment Field & Multi-Domain Coupling (Candidate R)
+        if env_on:
+            base_env = sig.to_rgb() if sig is not None else np.clip(rgb, 0.0, 1.0)
+            rgb_env, env_info = apply_spatial_environment_field(
+                base_env, self.env_spec,
+                frame_index=int(buf.index), fps=float(self.ctx.fps), seed=int(self.ctx.seed) + 89,
+            )
+            sig = SignalFrame.from_rgb(rgb_env, buf.std)
+            sig._rf_direct = True
+            rgb = rgb_env
+            comp = composite_encode(sig.y, sig.i, sig.q, buf.std, chroma_gain=0.63)
+            report["spatial_environment"] = env_info
+            meta["spatial_environment"] = env_info
+            self.state["spatial_environment"] = env_info
+
         meta["signal"] = sig
         meta["connector"] = report
         return FrameBuffer(rgb, comp, buf.index, buf.time, buf.std, meta)
 
+    @staticmethod
+    def _apply_aspect_squeeze(rgb: np.ndarray, sq: float = 1.0) -> tuple[np.ndarray, dict]:
+        arr = np.asarray(rgb, dtype=np.float32)
+        h_s, w_s = arr.shape[:2]
+        s_val = float(np.clip(sq, 0.0, 1.5))
+        if s_val <= 1e-4:
+            return arr.copy(), {"aspect_squeeze": 0.0, "active_width_px": w_s, "pillarbox_px": 0}
+        ratio = float(np.clip(0.75 ** s_val, 0.45, 1.0))
+        act_w = max(8, int(round(w_s * ratio)))
+        pad_l = (w_s - act_w) // 2
+        pad_r = w_s - act_w - pad_l
+        xs = np.linspace(0.0, w_s - 1.0, act_w, dtype=np.float32)
+        x0 = np.floor(xs).astype(np.int32)
+        x1 = np.minimum(x0 + 1, w_s - 1)
+        fx = (xs - x0)[None, :, None] if arr.ndim == 3 else (xs - x0)[None, :]
+        squeezed = arr[:, x0] * (1.0 - fx) + arr[:, x1] * fx
+        out = np.zeros_like(arr)
+        out[:, pad_l:pad_l + act_w] = squeezed
+        return out.astype(np.float32), {
+            "aspect_squeeze": round(s_val, 3),
+            "width_ratio": round(act_w / max(1.0, float(w_s)), 4),
+            "active_width_px": int(act_w),
+            "pillarbox_px": int(pad_l),
+            "pillarbox_right_px": int(pad_r),
+        }
+
     def describe(self) -> dict:
         return dict(self.state)
+
+
+class VideoSwitcherStage(Stage):
+    """
+    Standalone Analog Video Switcher / Mixer stage for the `video_switcher` node in the node graph.
+    Accepts `in_a` via `buf` and optional `in_b` via `buf.meta[bus_b_yiq]`.
+    """
+
+    name = "video_switcher"
+    layers = ("connector",)
+
+    def __init__(self, ctx: RenderContext):
+        super().__init__(ctx)
+        self._read_params()
+
+    def _read_params(self) -> None:
+        c = self.cfg_of("connector")
+        self.spec = AnalogSwitcherSpec.from_params(c)
+
+    def on_params_changed(self) -> None:
+        self._read_params()
+
+    def apply(self, buf: FrameBuffer) -> FrameBuffer:
+        from ..core.signal import composite_encode, demod_chroma, split_composite
+        meta = dict(buf.meta)
+        sig: SignalFrame | None = meta.get("signal")
+        comp = buf.composite
+        if sig is None:
+            if comp is not None:
+                y, ch = split_composite(comp, buf.std, comb_depth=0.0, chroma_bandwidth_hz=0.9e6)
+                i, q = demod_chroma(ch / 0.63, buf.std, i_bw_hz=1.5e6, q_bw_hz=1.5e6)
+                sig = SignalFrame(y, i, q)
+            else:
+                sig = SignalFrame.from_rgb(np.clip(buf.rgb, 0.0, 1.0), buf.std)
+
+        eff_spec = self.spec
+        bus_b_yiq = meta["bus_b_yiq"] if "bus_b_yiq" in meta else None
+        # If placed explicitly in the graph with `in_b` wired and mode was left at 0, default to Wipe (3)
+        if not eff_spec.is_active() and bus_b_yiq is not None:
+            import dataclasses
+            eff_spec = dataclasses.replace(eff_spec, mode=3)
+
+        if not eff_spec.is_active():
+            return buf
+
+        y_sw, i_sw, q_sw, sw_info = apply_analog_switcher(
+            sig.y, sig.i, sig.q, eff_spec,
+            frame_index=int(buf.index), fps=self.ctx.fps,
+            std=buf.std, seed=self.ctx.seed, bus_b_yiq=bus_b_yiq,
+        )
+        sig_out = SignalFrame(y_sw, i_sw, q_sw)
+        rgb_out = np.clip(sig_out.to_rgb(), 0.0, 1.0).astype(np.float32)
+        comp_out = composite_encode(sig_out.y, sig_out.i, sig_out.q, buf.std, chroma_gain=0.63)
+        meta["signal"] = sig_out
+        meta["switcher"] = sw_info
+        return FrameBuffer(rgb_out, comp_out, buf.index, buf.time, buf.std, meta)

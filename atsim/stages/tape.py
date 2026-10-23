@@ -265,6 +265,9 @@ class TapeStage(Stage):
         self.do_len = float(cfg.get("dropout_len", 0.35))
         self.do_color = float(cfg.get("dropout_color", 0.45))
         self.do_soft = float(cfg.get("dropout_softness", 0.35))
+        self.doc_hold = float(np.clip(cfg.get("doc_hold", 0.65), 0.0, 1.0))
+        self.edit_glitch_rate = float(np.clip(cfg.get("edit_glitch_rate", 0.0), 0.0, 2.0))
+        self.edit_glitch_severity = float(np.clip(cfg.get("edit_glitch_severity", 0.65), 0.0, 1.5))
         self.wear = float(cfg.get("wear", 0.25))
         self.crease_rate = float(cfg.get("crease_rate", 0.20))
         self.noise_floor = float(cfg.get("noise_floor", 0.18))
@@ -302,6 +305,18 @@ class TapeStage(Stage):
         self.base_cracking = float(cfg.get("base_cracking", 0.0))
         self.base_breakage = float(cfg.get("base_breakage", 0.0))
         self.sp_lp_mix = float(cfg.get("sp_lp_mix", 0.0))
+        # --- Module 4 (Candidate B): Mechanical Transport & Servo State Machine ---
+        from ..codecs.transport_servo import TransportServoSpec
+        self.transport_servo_spec = TransportServoSpec.from_params(self.ctx.params)
+        from ..codecs.edit_controller_nle import EditControllerSpec
+        self.edit_controller_spec = EditControllerSpec(
+            edit_mode=int(round(float(cfg.get("edit_mode", 0.0)))),
+            point_slip_frames=int(round(float(cfg.get("edit_point_slip_frames", 2.0)))),
+            flying_erase=float(cfg.get("edit_flying_erase", 1.0)) > 0.5,
+            preroll_sec=float(cfg.get("edit_preroll_sec", 5.0)),
+            nle_complexity=float(cfg.get("edit_nle_complexity", 0.65)),
+            console_osd=float(cfg.get("edit_console_osd", 0.0)) > 0.5,
+        )
 
     def on_params_changed(self) -> None:
         old_clog = (getattr(self, "head_clog", 0.0), getattr(self, "clog_bands", 3.0),
@@ -1160,75 +1175,136 @@ class TapeStage(Stage):
         scale_w = W / 600.0
         cols = np.arange(W, dtype=np.float32)[None, :]
 
-        # --- 1. Physical Helical-Scan Head-Switch Track Handover (calibrated on 1986 NV-180 VHS) ---
-        # A 2-head rotary drum swaps from Head A to Head B at ~6.5 H before V-sync (e.g. row 473 of 480).
-        # The picture is NOT erased to a dark grey bar across those lines: the outgoing/incoming
-        # head still reads the video track, but because of the diurnal head-gap phase step (tau_hs),
-        # the horizontal sync pulse after the switch arrives shifted by ~21..37 px, causing the TBC /
-        # H-AFC to sample the active line shifted leftward and exposing the black HBI blanking zone
-        # on the right edge (with an exponential PLL recovery ramp toward row H-2).
+        # --- 1. Physical Helical-Scan Head-Switch Track Handover & H-AFC PLL Recovery ---
+        # In VHS helical scan (SMPTE 170M / IEC 60774-1), the two video heads (180 deg apart on the drum
+        # with ~186 deg tape wrap overlap) switch at ~6.5 H before V-sync.
+        # Three distinct physical zones occur at the bottom of the frame:
+        #   (A) 1-2 Line RF Switching Seam (`r_rel == 0..1`): where the rotary transformer RF flip-flop
+        #       switches from Head A to Head B, creating a thin FM limiter phase-discontinuity seam and
+        #       a 1H delay-line comb burst-phase cancellation ONLY on the 1-2 lines straddling the switch.
+        #   (B) Exponential H-AFC PLL Phase Pull-In (`r_rel >= 1`): tape tension/dihedral skew (tau_hs)
+        #       causes the first H-sync pulse from the incoming head to arrive shifted by Delta_x0.
+        #       The receiver's Horizontal AFC phase-locked loop pulls the line phase exponentially back
+        #       toward zero (`exp(-(r_rel - 1) / tau_afc)`), producing a curved hook/skew at the seam
+        #       rather than translating the entire bottom band as a rigid rectangular block.
+        #   (C) Post-Switch Overlap Picture Retention & Shift-Proportional HBI Edge: below the 1-2 seam
+        #       lines, the newly engaged head reads the valid overlap track so active luma and chroma
+        #       are preserved, and the exposed right-hand HBI blanking porch is strictly proportional
+        #       to each line's actual leftward displacement.
         drift = float(self.tracking_error)
         step_eff = float(np.clip(0.55 * amp + 0.85 * drift, 0.0, 1.8))
 
-        # Distance in woven frame rows from the top of the head-switch band:
-        # At band=4 (7 bottom rows: H-7..H-1, i.e. 473..479 of 480):
-        #   r_from_band_top = 0 at row H-7 (473: the exact mid-line head-switch row),
-        #   1 at H-6 (474), 2 at H-5 (475), 3 at H-4 (476), 4 at H-3 (477), 5 at H-2 (478), 6 at H-1 (479).
         band_start_row = max(0, H - (2 * band - 1))
         in_band = rows >= band_start_row
         r_rel = np.maximum(0, rows - band_start_row).astype(np.float32)
         span_rows = max(1.0, float(H - 1 - band_start_row))
         s_norm = np.clip(r_rel / span_rows, 0.0, 1.0).astype(np.float32)
 
-        # PLL phase-step envelope:
-        #   r_rel == 0 (row 473): head switch happens near the right end of this line, so the line itself is unshifted (0.0);
-        #   r_rel == 1 (row 474): first H-sync after switch is delayed, shifting line by ~0.58 of peak (-21 px);
-        #   r_rel == 2 (row 475): full PLL excursion (~1.05 -> -37 px);
-        #   r_rel >= 3 (rows 476..478): H-PLL pulls back exponentially from 0.96 toward 0.78 (-34 -> -30 px).
-        pll_env = np.where(
-            r_rel < 0.5,
-            0.0,
-            np.where(
-                r_rel < 1.5,
-                0.58,
-                np.clip(1.16 - 0.42 * s_norm, 0.76, 1.06),
-            ),
-        ).astype(np.float32)
+        try:
+            _fmt_cfg = self.ctx.layer("format")
+            _luma_bw = float(_fmt_cfg.get("luma_bandwidth", 3.0))
+            _chroma_bw = float(_fmt_cfg.get("chroma_bandwidth", 0.75))
+        except Exception:
+            _luma_bw, _chroma_bw = 3.0, 0.75
+        is_nv180_capture = (band == 4 and 2.4 <= _luma_bw <= 2.85 and 0.45 <= _chroma_bw <= 0.58)
 
-        # Field-to-field capstan servo hunting wobble
-        wobble = (2.5 * step_eff * np.sin(frame_index * 0.73 + rows * 0.11) * (r_rel >= 1.0)).astype(np.float32)
-        shift_px = (-(36.0 * scale_w * step_eff * pll_env + wobble) * in_band).astype(np.float32)
-
-        y_out = horizontal_shift(y, shift_px)
-        i_out = horizontal_shift(i, shift_px)
-        q_out = horizontal_shift(q, shift_px)
-
-        # --- 2. Mid-line RF head-switch transient & right-hand HBI blanking cut ---
-        # On the switching scanline (`r_rel == 0`, row 473), the head switch occurs near x ~ 91.8% of the line
-        # width (49 px from the right edge at W=600), creating a brief RF envelope transient spike followed by
-        # pedestal black for the remainder of the line.
-        # On subsequent lines (`r_rel >= 1`, rows 474..478), the leftward H-PLL shift exposes `49 -> 31` px of right HBI.
-        step_norm = float(np.clip(step_eff / 0.85, 0.35, 1.15))
-        r_black_px = np.where(
-            r_rel < 0.5,
-            49.0 * scale_w * step_norm,
-            np.where(
-                r_rel < 1.5,
+        if is_nv180_capture:
+            # 1986 Panasonic NV-180 portable backpack VCR capture (`10月16日.mp4`) calibration:
+            # Unbuffered 7-row bottom handover with wide diurnal skew step (32..49 px right HBI).
+            pll_env = np.where(
+                r_rel < 0.5,
+                0.0,
+                np.where(
+                    r_rel < 1.5,
+                    0.58,
+                    np.clip(1.16 - 0.42 * s_norm, 0.76, 1.06),
+                ),
+            ).astype(np.float32)
+            wobble = (2.5 * step_eff * np.sin(frame_index * 0.73 + rows * 0.11) * (r_rel >= 1.0)).astype(np.float32)
+            shift_px = (-(36.0 * scale_w * step_eff * pll_env + wobble) * in_band).astype(np.float32)
+            step_norm = float(np.clip(step_eff / 0.85, 0.35, 1.15))
+            r_black_px = np.where(
+                r_rel < 0.5,
                 49.0 * scale_w * step_norm,
                 np.where(
-                    r_rel < 2.5,
-                    48.0 * scale_w * step_norm,
+                    r_rel < 1.5,
+                    49.0 * scale_w * step_norm,
                     np.where(
-                        r_rel < 3.5,
-                        42.0 * scale_w * step_norm,
-                        32.0 * scale_w * step_norm,
+                        r_rel < 2.5,
+                        48.0 * scale_w * step_norm,
+                        np.where(
+                            r_rel < 3.5,
+                            42.0 * scale_w * step_norm,
+                            32.0 * scale_w * step_norm,
+                        ),
                     ),
                 ),
-            ),
-        ).astype(np.float32)
+            ).astype(np.float32)
+            c_keep_1d = (1.0 - np.clip(amp * (0.15 + 0.75 * (s_norm ** 1.3)), 0.0, 0.96))
+        else:
+            # Standard VHS Helical-Scan + H-AFC PLL Exponential Pull-In + Mid-Line RF Switch Transient
+            # (Calibrated against Early Hong Kong VHS Commercial `29ebaf66b0fc1bd0f9ab276e5e969169.mp4`):
+            #   1. Peak horizontal displacement occurs right at the head-switch seam (`r_rel == 0..2`,
+            #      measured mean 7.92 px, p90 18.0 px on `bot-2`) and decays downward toward the bottom
+            #      row (`bot-1`: 5.14 px, `bot-0`: 4.45 px) as the H-AFC loop pulls back into lock.
+            #   2. Even and odd fields switch at slightly different drum phases and carry an interlaced
+            #      comb sawtooth (`comb_step`) between adjacent woven scanlines.
+            #   3. On the switching seam lines (`r_rel < 2.0`), the rotary transformer flips at mid-line
+            #      coordinate `sw_x_row`: before `sw_x_row` the outgoing head is still reading undisturbed,
+            #      right at `sw_x_row` the FM limiter produces a sharp white+black bipolar impulse dash,
+            #      and after `sw_x_row` the incoming head shifts horizontally by `shift_px`.
+            #   4. Post-switch rows preserve active picture content while the 629 kHz colour-under phase
+            #      step across the 1H delay-line comb produces a characteristic olive/yellow-green APC tint.
+            tau_afc = max(2.2, min(5.5, 0.38 * span_rows))
+            exp_pull = np.exp(-np.maximum(0.0, r_rel - 1.0) / tau_afc)
+            pll_env = np.where(
+                r_rel < 0.5,
+                0.72,
+                0.82 * exp_pull + 0.18 * np.exp(-np.maximum(0.0, r_rel - 1.0) / max(7.0, span_rows * 1.1)),
+            ).astype(np.float32)
 
-        # ONLY on the very last scanline of the odd field (`rows == H - 1`, row 479) does the signal enter
-        # the vertical blanking equalizing-pulse interval part-way across the line (`x ~ 42%..86%`).
+            # Interlaced field-comb sawtooth between Head A (even rows) and Head B (odd rows)
+            comb_sign = np.where(field == 0, 1.0, -0.62).astype(np.float32)
+            comb_step = (2.6 * amp + 4.2 * drift) * scale_w * comb_sign * exp_pull
+            peak_px = (9.2 * amp + 15.8 * drift) * scale_w
+            wobble = (1.45 * step_eff * scale_w * np.sin(frame_index * 0.73 + rows * 0.19) * exp_pull).astype(np.float32)
+            shift_px = (-((peak_px * pll_env + comb_step + wobble)) * in_band).astype(np.float32)
+
+            r_black_px = np.where(
+                r_rel < 0.5,
+                np.maximum(3.5 * scale_w * amp, -shift_px * 0.85),
+                np.clip(-shift_px + 1.2 * scale_w * amp, 0.0, 26.0 * scale_w),
+            ).astype(np.float32)
+
+            seam_comb_loss = np.exp(-0.5 * ((r_rel - 0.8) / 1.05) ** 2).astype(np.float32)
+            c_keep_1d = 1.0 - np.clip(amp * (0.48 * seam_comb_loss + 0.05 * exp_pull), 0.0, 0.78)
+
+        y_shifted = horizontal_shift(y, shift_px)
+        i_shifted = horizontal_shift(i, shift_px)
+        q_shifted = horizontal_shift(q, shift_px)
+
+        if is_nv180_capture:
+            y_out, i_out, q_out = y_shifted, i_shifted, q_shifted
+        else:
+            # Per-field mid-line head-switch coordinate `sw_x_row`:
+            # On the switching seam scanlines (`r_rel < 2.0`), only the portion after `sw_x_row` comes from
+            # the incoming head (`y_shifted`), creating an authentic mid-line horizontal fracture at `sw_x_row`!
+            sw_f0 = 0.24 + 0.46 * (0.5 + 0.5 * float(np.sin(frame_index * 1.37 + 0.4)))
+            sw_f1 = 0.35 + 0.46 * (0.5 + 0.5 * float(np.sin(frame_index * 1.37 + 1.2)))
+            sw_x_row = (float(W) * np.where(field == 0, sw_f0, sw_f1))[:, None].astype(np.float32)
+            post_sw_x = np.clip((cols - sw_x_row) / max(0.8, 1.6 * scale_w), 0.0, 1.0).astype(np.float32)
+            seam_line_mask = (r_rel < 1.8)[:, None].astype(np.float32)
+            head_b_gate = seam_line_mask * post_sw_x + (1.0 - seam_line_mask)
+            y_out = y * (1.0 - head_b_gate) + y_shifted * head_b_gate
+            i_out = i * (1.0 - head_b_gate) + i_shifted * head_b_gate
+            q_out = q * (1.0 - head_b_gate) + q_shifted * head_b_gate
+
+            # Partial 1H Dropout Compensator (DOC) vertical line-hold across the switching seam
+            y_prev_field = np.roll(y_out, 2, axis=0)
+            doc_hold = (np.exp(-0.5 * ((r_rel - 0.9) / 0.95) ** 2) * in_band)[:, None].astype(np.float32) * post_sw_x * float(np.clip(amp * 0.36, 0.0, 0.48))
+            y_out = y_out * (1.0 - doc_hold) + y_prev_field * doc_hold
+
+        # --- 2. Mid-line RF head-switch seam transient & right-hand HBI blanking cut ---
         vbi_cut_x = float(W) * (0.64 + 0.22 * float(np.sin(frame_index * 0.61 + 0.4)))
         active_end = np.where(
             (rows == H - 1) & in_band,
@@ -1236,30 +1312,64 @@ class TapeStage(Stage):
             W - r_black_px,
         )[:, None].astype(np.float32)
 
-        # Soft 1.8-pixel transition into the right-hand black HBI zone, plus a subtle RF switch spike at the edge
         hbi_gate = np.clip((active_end - cols) / max(0.8, 1.8 * scale_w), 0.0, 1.0).astype(np.float32)
         sw_spike = (np.exp(-0.5 * ((cols - (active_end - 3.2 * scale_w)) / max(0.8, 1.5 * scale_w)) ** 2)
-                    * in_band[:, None].astype(np.float32) * float(np.clip(amp * 0.20, 0.0, 0.28)))
+                    * in_band[:, None].astype(np.float32) * float(np.clip(amp * 0.22, 0.0, 0.30)))
 
-        # Inside the active part of the head-switch band, luma is preserved with only a slight RF envelope dip
-        # on the first post-switch row, while in the right-hand HBI zone it drops to pedestal black (~0.018).
-        row_dip = (1.0 - 0.06 * amp * (r_rel == 1.0).astype(np.float32))[:, None]
+        if is_nv180_capture:
+            seam_env = (np.exp(-0.5 * (r_rel / 0.75) ** 2) * in_band).astype(np.float32)[:, None]
+            sw_x_frac = 0.28 + 0.44 * (0.5 + 0.5 * float(np.sin(frame_index * 1.37 + 0.9)))
+            sw_x_gate = np.clip((cols - float(W) * sw_x_frac) / max(1.0, 6.0 * scale_w), 0.0, 1.0).astype(np.float32)
+            seam_ripple = (0.08 + 0.10 * noise) * seam_env * sw_x_gate * float(np.clip(amp, 0.0, 1.2))
+            overlap_ripple = (0.016 * amp * noise * np.exp(-r_rel / max(3.0, span_rows * 0.65))[:, None]) * in_band[:, None].astype(np.float32)
+            row_dip = (1.0 - 0.06 * amp * (r_rel == 1.0).astype(np.float32))[:, None]
+        else:
+            # Bipolar White/Black RF Switching Transient Impulse Packet (`切换点黑白双极性限幅尖峰簇`):
+            # At `cols ~ sw_x_row` on the switching seam lines (`r_rel ~ 0..2.2`), the rotary transformer
+            # RF phase jump drives the FM limiter into a crisp white spike dash flanked by a black unlock trough.
+            w_pkt = max(5.0, (14.0 + 18.0 * float(np.clip(amp, 0.0, 1.2))) * scale_w)
+            dx_sw = cols - sw_x_row
+            pkt_white = np.exp(-0.5 * ((dx_sw - 0.30 * w_pkt) / max(1.0, 0.24 * w_pkt)) ** 2)
+            pkt_black = (
+                0.62 * np.exp(-0.5 * ((dx_sw + 0.14 * w_pkt) / max(0.8, 0.16 * w_pkt)) ** 2)
+                + 0.88 * np.exp(-0.5 * ((dx_sw - 0.84 * w_pkt) / max(1.0, 0.22 * w_pkt)) ** 2)
+            )
+            fm_carrier_mod = 0.74 + 0.42 * np.cos(2.0 * np.pi * cols / max(1.6, 2.6 * scale_w)) + 0.34 * noise
+            seam_pkt_env = (np.exp(-0.5 * ((r_rel - 0.85) / 1.10) ** 2) * in_band).astype(np.float32)[:, None]
+            bipolar_pkt = seam_pkt_env * float(np.clip(amp, 0.0, 1.2)) * (
+                0.52 * pkt_white * fm_carrier_mod - 0.34 * pkt_black
+            )
+            # Fine post-switch RF envelope ripple along the switching line
+            seam_tail = (0.045 + 0.075 * noise) * seam_pkt_env * post_sw_x * float(np.clip(amp, 0.0, 1.2))
+            seam_ripple = (bipolar_pkt + seam_tail).astype(np.float32)
+            overlap_ripple = (0.020 * amp * noise * np.exp(-r_rel / max(3.0, span_rows * 0.70))[:, None]) * in_band[:, None].astype(np.float32)
+            row_dip = (1.0 - 0.04 * amp * (r_rel == 1.0).astype(np.float32))[:, None]
+
         hbi_floor = (0.015 + 0.010 * np.abs(noise)).astype(np.float32)
         in_b_2d = in_band[:, None].astype(np.float32)
-        y_band_settled = np.clip(y_out * row_dip + sw_spike, 0.0, 1.1) * hbi_gate + hbi_floor * (1.0 - hbi_gate)
+        y_band_settled = np.clip(y_out * row_dip + sw_spike + seam_ripple + overlap_ripple, 0.0, 1.1) * hbi_gate + hbi_floor * (1.0 - hbi_gate)
         y_out = y * (1.0 - in_b_2d) + y_band_settled * in_b_2d
 
         # Store `hs_active_end` in plan or stage state so PlayerStage can preserve the sharp HBI blanking step
         self._last_hs_in_band = in_band
         self._last_hs_active_end = active_end[:, 0]
 
-        # --- 3. 1H/2H Delay-Line Comb Chroma Wash-Out across the Head Switch ---
-        # Because the colour-under burst phase jumps across the head switch, the 1H/2H delay-line comb filter
-        # sums out-of-phase adjacent lines, progressively washing out chroma toward the bottom of the band
-        # (`s_norm` 0 -> 1) and zeroing chroma inside the HBI blanking zone.
-        c_keep = (1.0 - np.clip(amp * (0.15 + 0.75 * (s_norm ** 1.3)), 0.0, 0.96))[:, None] * hbi_gate
-        i_out = i * (1.0 - in_b_2d) + (i_out * c_keep) * in_b_2d
-        q_out = q * (1.0 - in_b_2d) + (q_out * c_keep) * in_b_2d
+        # --- 3. 1H/2H Delay-Line Comb Chroma & Post-Switch APC Burst Phase Shift ---
+        c_keep = c_keep_1d[:, None].astype(np.float32) * hbi_gate
+        if not is_nv180_capture:
+            # Post-switch 629 kHz colour-under APC burst phase step across the 1H delay-line comb:
+            # Suppresses R and B slightly relative to G (`dRGB ~ (-0.043, -0.005, -0.055)` in HK VHS commercial),
+            # imparting the characteristic olive / yellow-green APC phase-step tint to the bottom rows.
+            apc_env = (exp_pull * in_band).astype(np.float32)[:, None] * head_b_gate * hbi_gate
+            phi_apc = (0.24 * amp * comb_sign)[:, None].astype(np.float32) * apc_env
+            cs_a, sn_a = np.cos(phi_apc), np.sin(phi_apc)
+            i_rot = i_out * cs_a - q_out * sn_a - (0.022 * amp) * apc_env
+            q_rot = i_out * sn_a + q_out * cs_a - (0.034 * amp) * apc_env
+            i_out = i * (1.0 - in_b_2d) + (i_rot * c_keep) * in_b_2d
+            q_out = q * (1.0 - in_b_2d) + (q_rot * c_keep) * in_b_2d
+        else:
+            i_out = i * (1.0 - in_b_2d) + (i_out * c_keep) * in_b_2d
+            q_out = q * (1.0 - in_b_2d) + (q_out * c_keep) * in_b_2d
 
         # --- chroma phase step at the head switch --------------------------
         # In SP the two heads hand the subcarrier over with phase continuity
@@ -1342,10 +1452,28 @@ class TapeStage(Stage):
         if total is None or not np.any(total > 0.0):
             return comp, empty
 
-        # lost FM carrier: the picture content is gone, replaced by broadband
-        # noise around a white level -- the classic white streak
-        carrier = 0.72 + 0.30 * self._luma_band_noise(rng, comp.shape)
-        comp = comp * (1.0 - total) + carrier * total
+        # Physical FM Limiter Unlock Spike + 1H Delay-Line Dropout Compensator (DOC)
+        # On a VCR like the Panasonic NV-J27, when the RF envelope drops below the FM limiter
+        # threshold (~ -14 dB):
+        #   1) At the leading/trailing edge of the dropout (`edge_spike`), the FM discriminator
+        #      unlocked zero-crossings produce a sharp black-to-white impulse comet tail;
+        #   2) Inside the dropout body, the 1H glass delay-line DOC substitutes the previous
+        #      scanline (`y[r-1]`) up to `doc_hold`, while uncompensated severity bursts as snow.
+        noise = self._luma_band_noise(rng, comp.shape)
+        carrier_snow = 0.76 + 0.32 * noise
+        doc_w = float(np.clip(getattr(self, "doc_hold", 0.65), 0.0, 1.0))
+        if doc_w > 1e-3 and comp.shape[0] >= 3:
+            prev_line = np.roll(comp, 1, axis=0)
+            prev_line[0] = comp[0]
+            #Leading/trailing FM unlock spike (white head + dark tail along scanline)
+            grad_x = np.gradient(total, axis=1)
+            white_head = np.clip(grad_x * 2.2, 0.0, 1.0)
+            dark_tail = np.clip(-grad_x * 1.8, 0.0, 1.0)
+            doc_rep = prev_line * doc_w + carrier_snow * (1.0 - doc_w)
+            doc_rep = np.clip(doc_rep + 0.45 * white_head - 0.35 * dark_tail, 0.0, 1.2)
+            comp = comp * (1.0 - total) + doc_rep * total
+        else:
+            comp = comp * (1.0 - total) + carrier_snow * total
         return comp, total
 
     def _apply_creases(self, comp: np.ndarray, frame_index: int
@@ -1375,6 +1503,63 @@ class TapeStage(Stage):
         soft = lowpass(comp, 1.6)
         comp = comp * (1.0 - 0.55 * total) + soft * (0.55 * total)
         return comp, total
+
+    def _apply_edit_glitch(self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
+                           frame_index: int, rng: np.random.Generator
+                           ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+        """
+        Panasonic NV-J27 Pause/Record Edit Transition & CTL Servo Hunting Glitch (`换台/启停录拼接故障`).
+
+        When a consumer VHS deck pauses/resumes recording or switches RF channels while recording,
+         lack of a flying erase head and a momentary phase step in the 25 Hz linear Control Track (CTL)
+        cause:
+          1. A transient rainbow FM over-modulation / erase-gap flash across a horizontal band;
+          2. Temporary capstan CTL servo hunting that sweeps a tracking-loss snow band vertically
+             up from the bottom head-switching zone while shearing scanlines sideways;
+          3. Brief 629 kHz colour-under APC unlock (hue rotation + desaturation).
+        """
+        rate = float(getattr(self, "edit_glitch_rate", 0.0))
+        sev = float(getattr(self, "edit_glitch_severity", 0.65))
+        if rate <= 1e-4 or sev <= 1e-4:
+            return y, i, q, 0.0
+        fps = max(1.0, float(self.ctx.fps))
+        t_sec = frame_index / fps
+        period_s = 1.0 / max(0.08, rate)
+        # Offset by 0.42 period so edit glitches interleave with RF channel switches
+        local_t = (t_sec + 0.42 * period_s) % period_s
+        dur_s = min(0.55 * period_s, 0.28 + 0.14 * sev)
+        if local_t >= dur_s:
+            return y, i, q, 0.0
+        u = float(local_t / max(1e-4, dur_s))
+        env = float(np.sin(np.pi * u) ** 0.75) * min(1.5, sev)
+        H, W = y.shape
+        rows = np.arange(H, dtype=np.float32)
+        yn = rows / max(1.0, H - 1.0)
+
+        # Sweeping tracking-unlock band rising from bottom head-switching region
+        band_center = 0.88 - 0.58 * u
+        band_half = 0.08 + 0.06 * env
+        band_w = np.exp(-0.5 * ((yn - band_center) / max(0.02, band_half)) ** 2)[:, None].astype(np.float32)
+
+        # Per-line horizontal shear inside the CTL hunting band
+        shear_px = (env * 28.0 * (W / 720.0) * band_w[:, 0]
+                    * np.sin(rows * 0.35 + frame_index * 1.9)).astype(np.float32)
+        y = horizontal_shift(y, shear_px)
+        i = horizontal_shift(i, shear_px)
+        q = horizontal_shift(q, shear_px)
+
+        # FM limiter snow + stationery erase-head rainbow over-modulation bar inside band
+        snow = self._luma_band_noise(rng, y.shape)
+        y = y * (1.0 - 0.65 * env * band_w) + (0.62 + 0.34 * snow) * (0.65 * env * band_w)
+
+        # Rainbow chroma phase spin in the edit transition band
+        theta = (rows * 0.28 + frame_index * 1.3)[:, None].astype(np.float32) * env
+        c_th, s_th = np.cos(theta), np.sin(theta)
+        i_rot = i * c_th - q * s_th
+        q_rot = i * s_th + q * c_th
+        i = i * (1.0 - band_w) + i_rot * band_w * 0.45
+        q = q * (1.0 - band_w) + q_rot * band_w * 0.45
+        return y.astype(np.float32), i.astype(np.float32), q.astype(np.float32), float(env)
 
     def _apply_tracking_noise(self, y: np.ndarray, i: np.ndarray, q: np.ndarray,
                               frame_index: int, rng: np.random.Generator
@@ -1819,7 +2004,7 @@ class TapeStage(Stage):
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Physical helical-scan Cue/Review (multispeed shuttle search) guard-band &
-        azimuth-null noise bars, calibrated against Lo Ta-yu's 1992 *Capital* (《首都》) MV:
+        azimuth-null noise bars, calibrated against 1992 VHS Cue/Review search reference:
 
         1. **Helical Track-Crossing Envelope Collapse**:
            At transport speed ratio N, the rotary video head crosses |N - 1| recorded
@@ -2074,9 +2259,21 @@ class TapeStage(Stage):
                 q[y0:y1, x0:x1] = q[sy0:sy0 + (y1 - y0), x0:x1]
                 concealed += 1
 
-        out = FrameBuffer(buf.rgb, None, buf.index, buf.time, buf.std, dict(buf.meta))
-        out.meta["signal"] = SignalFrame(y.astype(np.float32), i.astype(np.float32),
-                                         q.astype(np.float32))
+        sig_dv = SignalFrame(y.astype(np.float32), i.astype(np.float32), q.astype(np.float32))
+        edit_rep = None
+        if self.edit_controller_spec.is_active():
+            from ..codecs.edit_controller_nle import apply_edit_controller
+            b_yiq = buf.meta["bus_b_yiq"] if "bus_b_yiq" in buf.meta else None
+            ed_rgb, edit_rep = apply_edit_controller(
+                sig_dv.to_rgb(), self.edit_controller_spec, std=buf.std,
+                frame_index=frame_index, fps=self.ctx.fps, seed=self.ctx.seed,
+                bus_b_yiq=b_yiq,
+            )
+            sig_dv = SignalFrame.from_rgb(ed_rgb, buf.std)
+        out = FrameBuffer(sig_dv.to_rgb() if edit_rep is not None else buf.rgb, None, buf.index, buf.time, buf.std, dict(buf.meta))
+        out.meta["signal"] = sig_dv
+        if edit_rep is not None:
+            out.meta["edit_controller"] = edit_rep
         out.meta["format"] = "dv"
         out.meta["concealed_blocks"] = concealed
         out.meta["line_phase"] = phase
@@ -2446,7 +2643,7 @@ class TapeStage(Stage):
         # frame is captured *after* the format and encoder stages have band-limited
         # it, which is what a deck's frame buffer actually holds and what stops the
         # substituted patches from being sharper than their surroundings.
-        if self.shuttle_speed > 0.0 and self.shuttle_fraction > 1e-4:
+        if (self.shuttle_speed > 0.0 and self.shuttle_fraction > 1e-4) or self.transport_servo_spec.is_active():
             self._remember_frame(frame_index, y, i, q)
 
         # 1. time-base error: per-line sampling phase, luma and chroma together
@@ -2516,6 +2713,9 @@ class TapeStage(Stage):
         # 4d. tracking error: rows lose lock from some point downwards
         y, i, q = self._apply_tracking_noise(y, i, q, frame_index, rng)
 
+        # 4e. Pause/record edit transition & CTL servo hunting glitch
+        y, i, q, edit_env = self._apply_edit_glitch(y, i, q, frame_index, rng)
+
         # 5. particle noise floor
         y = self._apply_noise_floor(y, frame_index)
 
@@ -2528,8 +2728,57 @@ class TapeStage(Stage):
             q = vertical_shift(q, dy)
 
 
+        # 6b. Shared Power & Electrical Bus coupling on Capstan & Drum Servo:
+        #     100/120 Hz rectifier ripple produces S-curved "hum snake" horizontal modulation,
+        #     while battery load sag droops capstan/drum torque and injects brush-motor EMI hash.
+        from ..codecs.power_bus import evaluate_power_bus
+        pstate = buf.meta["power_bus"] if "power_bus" in buf.meta else None
+        if pstate is None:
+            pstate = evaluate_power_bus(
+                self.ctx.params, frame_index, self.ctx.fps,
+                y.shape[0], y.shape[1], self.ctx.seed,
+                row_luma=np.clip(y, 0.0, 1.0).mean(axis=1),
+            )
+        if pstate is not None and pstate.active:
+            if len(pstate.servo_line_shift) == y.shape[0] and np.any(np.abs(pstate.servo_line_shift) > 1e-4):
+                y = horizontal_shift(y, pstate.servo_line_shift)
+                i = horizontal_shift(i, pstate.servo_line_shift)
+                q = horizontal_shift(q, pstate.servo_line_shift)
+            if len(pstate.ripple_row) == y.shape[0]:
+                y = (y + 0.055 * pstate.ripple_row[:, None]).astype(np.float32)
+
+        # 6c. Module 4 (Candidate B): Mechanical Transport & Servo State Machine
+        #     (Supply/take-up reel radius & tension evolution, Play/Pause/Rec-Pause/Stop state machine,
+        #      rubber belt slip, pinch-roller eccentricity & capstan/drum servo hunting)
+        ts_diag = None
+        if self.transport_servo_spec.is_active():
+            from ..codecs.transport_servo import apply_transport_servo
+            donor_yiq = None
+            if self.transport_servo_spec.transport_state in (1, 2, 3):
+                donor_sf = self._shuttle_donor(frame_index, current_sig=SignalFrame(y, i, q))
+                if donor_sf is not None and donor_sf.y.shape == y.shape:
+                    donor_yiq = (donor_sf.y, donor_sf.i, donor_sf.q)
+            y, i, q, ts_diag = apply_transport_servo(
+                y, i, q, self.transport_servo_spec, frame_index,
+                self.ctx.fps, self.ctx.std, seed=self.ctx.seed,
+                donor_yiq=donor_yiq,
+            )
+
         # 7. multi-generation VHS iterative dubbing loss (colour-under shift, ringing, sync collapse)
         y, i, q = self._apply_generation_loss(y, i, q, frame_index, rng)
+
+        # 7b. Candidate K: Linear Tape Edit Controller (Assemble / Insert Edit) & Early NLE Timeline
+        edit_rep = None
+        if self.edit_controller_spec.is_active():
+            from ..codecs.edit_controller_nle import apply_edit_controller
+            b_yiq = buf.meta["bus_b_yiq"] if "bus_b_yiq" in buf.meta else None
+            ed_rgb, edit_rep = apply_edit_controller(
+                SignalFrame(y.astype(np.float32), i.astype(np.float32), q.astype(np.float32)).to_rgb(),
+                self.edit_controller_spec, std=buf.std, frame_index=frame_index,
+                fps=self.ctx.fps, seed=self.ctx.seed, bus_b_yiq=b_yiq,
+            )
+            ed_sig = SignalFrame.from_rgb(ed_rgb, buf.std)
+            y, i, q = ed_sig.y, ed_sig.i, ed_sig.q
 
         comp_out = self._recompose(y, i, q)
         out = FrameBuffer(buf.rgb, comp_out, buf.index, buf.time, buf.std, dict(buf.meta))
@@ -2537,10 +2786,63 @@ class TapeStage(Stage):
             _s_out = SignalFrame(y.astype(np.float32), i.astype(np.float32), q.astype(np.float32))
             _s_out._rf_direct = _rf_dir
             out.meta["signal"] = _s_out
+        out.meta["tap_tape_rgb"] = SignalFrame(y.astype(np.float32), i.astype(np.float32), q.astype(np.float32)).to_rgb()
         out.meta["dropout_mask"] = dropout_mask
+        if ts_diag is not None:
+            out.meta["transport_servo"] = ts_diag
+        if edit_rep is not None:
+            out.meta["edit_controller"] = edit_rep
+        out.meta["edit_glitch_env"] = edit_env
         out.meta["crease_mask"] = crease_mask
         out.meta["line_phase"] = self._line_phase_for(frame_index)
         if getattr(self, "_last_hs_in_band", None) is not None:
             out.meta["hs_in_band"] = self._last_hs_in_band
             out.meta["hs_active_end"] = self._last_hs_active_end
         return out
+
+
+class TransportServoStage(Stage):
+    """
+    Standalone node-graph stage (`transport_servo` / `机械走带与伺服`) for Module 4:
+    Mechanical Transport & Servo State Machine.
+    """
+    name = "transport_servo"
+    layers = ("tape",)
+
+    def __init__(self, ctx: RenderContext):
+        super().__init__(ctx)
+        self._donor_yiq: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._read_params()
+
+    def _read_params(self) -> None:
+        from ..codecs.transport_servo import TransportServoSpec
+        self.spec = TransportServoSpec.from_params(self.ctx.params)
+
+    def on_params_changed(self) -> None:
+        self._read_params()
+
+    def apply(self, buf: FrameBuffer) -> FrameBuffer:
+        from ..codecs.transport_servo import apply_transport_servo
+        self._read_params()
+        sig = buf.meta.get("signal")
+        if sig is None:
+            sig = SignalFrame.from_rgb(buf.rgb, buf.std)
+        y, i, q = sig.y.copy(), sig.i.copy(), sig.q.copy()
+        donor = self._donor_yiq
+        if donor is None or donor[0].shape != y.shape:
+            donor = (y.copy(), i.copy(), q.copy())
+        if self.spec.transport_state != 1 or self._donor_yiq is None:
+            self._donor_yiq = (y.copy(), i.copy(), q.copy())
+        y_out, i_out, q_out, diag = apply_transport_servo(
+            y, i, q, self.spec, int(buf.index),
+            self.ctx.fps, buf.std, seed=self.ctx.seed,
+            donor_yiq=donor,
+        )
+        sig_out = SignalFrame(y_out, i_out, q_out)
+        rgb_out = sig_out.to_rgb()
+        from ..core.signal import composite_encode
+        comp_out = composite_encode(y_out, i_out, q_out, buf.std, chroma_gain=CHROMA_CARRIER_GAIN)
+        meta = dict(buf.meta)
+        meta["signal"] = sig_out
+        meta["transport_servo"] = diag
+        return FrameBuffer(rgb_out, comp_out, buf.index, buf.time, buf.std, meta)
