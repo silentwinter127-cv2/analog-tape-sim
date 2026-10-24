@@ -80,7 +80,7 @@ from scipy.signal import butter, sosfilt
 class AudioSpec:
     """Resolved parameters of the `audio` layer."""
     enabled: bool = True
-    mode: int = 0                       # 0=Auto, 1=Linear, 2=Hi-Fi, 3=8mm AFM, 4=MiniDV PCM, 5=VCD MP2, 6=PAL-D RF Mono
+    mode: int = 0                       # 0=Auto, 1=Linear, 2=Hi-Fi, 3=8mm AFM, 4=MiniDV PCM, 5=VCD MP2, 6=PAL-D RF Mono, 7=TV-DX, 8=Film Optical, 9=Streaming Low-Bitrate, 10=Broadcast Studio
     synth_type: int = 0                 # 0=Retro Synth Chord+Beat, 1=1kHz+400Hz Reference Tone, 2=Voice+Percussion
     hifi_unlock_thresh: float = 0.32    # Dropout/tracking severity that forces Hi-Fi -> Linear fallback
     linear_bandwidth: float = 7500.0    # Nominal SP linear track bandwidth (Hz)
@@ -96,6 +96,17 @@ class AudioSpec:
     speaker_sim: float = 0.35           # CRT TV small cabinet speaker bandpass resonance (0..1)
     flyback_whine: float = 0.15         # 15.734 kHz / 15.625 kHz CRT horizontal flyback whine (0..1)
     master_gain: float = 1.0            # Output master gain (0..2)
+    # Microphone Recording System & Acoustic Space
+    mic_type: int = 0                   # 0=Direct, 1=Dynamic, 2=Condenser, 3=Ribbon, 4=Electret Webcam (2000s PC/Webcam), 5=Carbon
+    proximity_effect: float = 0.0       # Proximity bass boost <200 Hz (0..1)
+    plosive_pop: float = 0.0            # Pop/plosive wind blasts on vocal attacks (0..1)
+    mic_overdrive: float = 0.0          # Diaphragm & preamp overload saturation/clipping (0..1)
+    broadcast_agc: float = 0.0          # Broadcast limiter/compressor with pumping dynamics (0..1)
+    studio_room_reverb: float = 0.0     # Studio console / bedroom anchor room acoustics (0..1)
+    # Film Optical Soundtrack
+    film_optical_scratches: float = 0.20# Optical soundtrack dust pops & scratch clicks (0..1)
+    film_exciter_hum: float = 0.15      # Exciter lamp AC ripple hum (50/100 Hz or 60/120 Hz) (0..1)
+    film_slit_loss: float = 0.40        # Optical reading slit aperture HF rolloff (~6.8 kHz 35mm / ~4.8 kHz 16mm)
 
     @classmethod
     def from_params(cls, params: dict) -> "AudioSpec":
@@ -123,6 +134,15 @@ class AudioSpec:
             speaker_sim=float(np.clip(cfg.get("speaker_sim", 0.35), 0.0, 1.0)),
             flyback_whine=float(np.clip(cfg.get("flyback_whine", 0.15), 0.0, 1.0)),
             master_gain=float(np.clip(cfg.get("master_gain", 1.0), 0.0, 2.0)),
+            mic_type=int(round(float(cfg.get("mic_type", 0.0)))),
+            proximity_effect=float(np.clip(cfg.get("proximity_effect", 0.0), 0.0, 1.0)),
+            plosive_pop=float(np.clip(cfg.get("plosive_pop", 0.0), 0.0, 1.0)),
+            mic_overdrive=float(np.clip(cfg.get("mic_overdrive", 0.0), 0.0, 1.0)),
+            broadcast_agc=float(np.clip(cfg.get("broadcast_agc", 0.0), 0.0, 1.0)),
+            studio_room_reverb=float(np.clip(cfg.get("studio_room_reverb", 0.0), 0.0, 1.0)),
+            film_optical_scratches=float(np.clip(cfg.get("film_optical_scratches", 0.20), 0.0, 1.0)),
+            film_exciter_hum=float(np.clip(cfg.get("film_exciter_hum", 0.15), 0.0, 1.0)),
+            film_slit_loss=float(np.clip(cfg.get("film_slit_loss", 0.40), 0.0, 1.0)),
         )
 
 
@@ -368,6 +388,9 @@ class AudioSimulator:
         5: "vcd_mp2",
         6: "rf_pal_d_mono",
         7: "rf_tv_dx_tuner",
+        8: "film_optical",
+        9: "streaming_lowbitrate",
+        10: "broadcast_studio",
     }
 
     def __init__(self, params_or_renderer: Any, fps: float = 29.97, seed: int = 20240101,
@@ -400,10 +423,18 @@ class AudioSimulator:
 
     def resolve_mode_name(self) -> str:
         m = int(self.spec.mode)
-        if m in (1, 2, 3, 4, 5, 6, 7):
+        if m in self.MODE_NAMES and m > 0:
             return self.MODE_NAMES[m]
-        # Auto-resolve from codec, connector & tape layers
+        # Auto-resolve from film, mobile/streaming, codec, connector & tape layers
+        film_cfg = self.params.get("film") or {}
+        cam_cfg = self.params.get("camera") or {}
+        if float(film_cfg.get("enabled", 0.0)) > 0.5 or float(cam_cfg.get("film_enabled", 0.0)) > 0.5:
+            return "film_optical"
         codec_cfg = self.params.get("codec") or {}
+        if (float(codec_cfg.get("stream_enabled", 0.0)) > 0.5
+                or float(cam_cfg.get("ldme_mobile_enabled", 0.0)) > 0.5
+                or float(codec_cfg.get("ldme_transfer_enabled", 0.0)) > 0.5):
+            return "streaming_lowbitrate"
         if int(round(float(codec_cfg.get("kind", 0.0)))) == 2:
             return "vcd_mp2"
         if float(codec_cfg.get("dv_enabled", 0.0)) > 0.5:
@@ -858,6 +889,13 @@ class AudioSimulator:
 
             frame_faults.append(ff)
 
+        rng = np.random.default_rng((self.seed * 2654435761 + int(round(start_s * 1000))) & 0xFFFFFFFF)
+        # ------------------------------------------------------------------
+        # Step 0: Electroacoustic Front-End (Microphone Recording & Broadcast Console)
+        # ------------------------------------------------------------------
+        clean, _ = self._apply_microphone_recording_system(clean, sr, rng, aud_spec)
+        clean, _ = self._apply_broadcast_console(clean, sr, rng, aud_spec)
+
         # ------------------------------------------------------------------
         # Step 1: Time-Domain Varispeed Resampling (Wow & Flutter + Stiction + Shuttle)
         # ------------------------------------------------------------------
@@ -1019,6 +1057,19 @@ class AudioSimulator:
                 w_norm[p0 : p0 + win_len] += win * win
             valid = w_norm[:, 0] > 1e-4
             sig[valid] = out_mp2[valid] / w_norm[valid]
+
+        elif mode_name == "film_optical":
+            # 8. Photographic Optical Soundtrack (Slit Loss + AC Exciter Lamp Hum + Grain Hiss + Scratches)
+            sig = self._build_film_optical_track(sig, sr, rng, t_arr)
+
+        elif mode_name == "streaming_lowbitrate":
+            # 9. Low-Bitrate Web Streaming Codec (32-48kbps AAC/MP3 Watery Warble & Metallic Resonance)
+            sig = self._build_streaming_lowbitrate_track(sig, sr, rng, t_arr)
+
+        elif mode_name == "broadcast_studio":
+            # 10. Broadcast Studio PGM Link (processed by pre-stage AGC & Reverb)
+            sig = _highpass_audio(sig, 35.0, sr, order=2)
+            sig = _lowpass_audio(sig, 15000.0, sr, order=4)
 
         elif mode_name == "rf_tv_dx_tuner":
             # 7. Taobao Cheap TV Capture Card (SAA7130 / TDA9887) FM Intercarrier Demodulator
@@ -1285,6 +1336,240 @@ class AudioSimulator:
             frame_faults=frame_faults,
             summary=summary,
         )
+
+
+    # ------------------------------------------------------------------
+    # Acoustic & Electroacoustic Front-End Subsystems
+    # ------------------------------------------------------------------
+    def _apply_microphone_recording_system(
+        self, sig: np.ndarray, sr: int, rng: np.random.Generator, spec: AudioSpec
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Microphone Recording System (换能器类型、近讲效应、防喷罩缺失破音与振膜/前级削顶失真).
+        """
+        m_type = int(spec.mic_type)
+        if m_type == 0 and spec.proximity_effect <= 1e-4 and spec.plosive_pop <= 1e-4 and spec.mic_overdrive <= 1e-4:
+            return sig, {"active": False}
+
+        out = sig.copy()
+        n_samples = len(out)
+
+        # 1. Transducer Frequency Response Profile
+        if m_type == 1:
+            # Dynamic Mic (e.g. Shure SM58): 55 Hz HPF, +2.8 dB presence bump around 4.2 kHz, gentle 13.5 kHz roll-off
+            out = _highpass_audio(out, 55.0, sr, order=2)
+            pres = _bandpass_audio(out, 2800.0, 5800.0, sr, order=2)
+            out = out + 0.38 * pres
+            out = _lowpass_audio(out, 13800.0, sr, order=3)
+        elif m_type == 2:
+            # Large-Diaphragm Condenser: fast transients, flat 25 Hz - 18.5 kHz
+            out = _highpass_audio(out, 25.0, sr, order=1)
+            air = _highpass_audio(out, 9000.0, sr, order=1)
+            out = out + 0.15 * air
+            out = _lowpass_audio(out, 19500.0, sr, order=3)
+        elif m_type == 3:
+            # Ribbon Mic: smooth top-end roll-off above 10.5 kHz, warm low-mid presence
+            out = _lowpass_audio(out, 10500.0, sr, order=3)
+            warm = _bandpass_audio(out, 180.0, 650.0, sr, order=2)
+            out = out + 0.25 * warm
+        elif m_type == 4:
+            # 2000s PC USB Webcam / Electret Mic (优酷女主播《稍息立正站好》同款):
+            # Severe bass cut (<200 Hz), harsh plastic cavity resonance at 3.8 kHz (+6.5 dB), high preamp hiss
+            out = _highpass_audio(out, 210.0, sr, order=3)
+            res = _bandpass_audio(out, 3200.0, 4800.0, sr, order=3)
+            out = out + 0.85 * res  # harsh piercing vocal resonance
+            out = _lowpass_audio(out, 9200.0, sr, order=4)
+            # Electret capsule thermal hiss floor
+            capsule_hiss = rng.standard_normal(out.shape).astype(np.float32)
+            out += 0.0055 * _highpass_audio(capsule_hiss, 1500.0, sr, order=2)
+        elif m_type == 5:
+            # Carbon Mic (Early Intercom / Telephone): 350 Hz - 3200 Hz steep bandpass
+            out = _bandpass_audio(out, 340.0, 3250.0, sr, order=4)
+            # Carbon granule granular noise
+            out += 0.009 * rng.standard_normal(out.shape).astype(np.float32)
+
+        # 2. Proximity Effect (近讲效应: 声源贴近定向话筒时 <180 Hz 显著提升 +3..+10 dB)
+        prox = float(spec.proximity_effect)
+        if prox > 1e-4 and m_type in (1, 2, 3, 4):
+            bass = _lowpass_audio(out, 185.0, sr, order=2)
+            out = out + (0.95 * prox) * bass
+
+        # 3. Plosive Pop (防喷罩缺失引起的 P/B/T 爆破音低频风噪冲击)
+        pop_amt = float(spec.plosive_pop)
+        if pop_amt > 1e-4:
+            # Detect sharp energy attack transients in vocal band
+            env_fast = gaussian_filter1d(np.mean(np.abs(out), axis=1), sigma=max(2, int(0.004 * sr)))
+            d_env = np.diff(env_fast, prepend=env_fast[0]) * sr
+            pop_triggers = np.where((d_env > 18.0) & (env_fast > 0.08))[0]
+            if len(pop_triggers) > 0:
+                pop_wave = np.zeros(n_samples, dtype=np.float32)
+                t_idx = 0
+                while t_idx < len(pop_triggers):
+                    pos = pop_triggers[t_idx]
+                    dur = int(rng.uniform(0.065, 0.130) * sr)
+                    end_p = min(n_samples, pos + dur)
+                    t_pop = np.linspace(0.0, float(end_p - pos) / sr, end_p - pos, dtype=np.float32)
+                    freq_pop = rng.uniform(42.0, 68.0)
+                    decay = np.exp(-t_pop * rng.uniform(18.0, 32.0))
+                    thump = pop_amt * rng.uniform(0.28, 0.65) * np.sin(2.0 * np.pi * freq_pop * t_pop) * decay
+                    pop_wave[pos:end_p] += thump
+                    t_idx += max(1, int(0.12 * sr))  # refractory interval
+                out += pop_wave[:, None]
+
+        # 4. Diaphragm & Preamp Overload (唱腔高亢或大声压导致的不对称谐波削顶破音)
+        od = float(spec.mic_overdrive)
+        if od > 1e-4:
+            drive = 1.0 + 3.8 * od
+            asym = 0.16 * od
+            driven = out * drive + asym * (out * out)
+            out = (np.tanh(driven) - np.tanh(asym)).astype(np.float32)
+
+        return out, {"active": True, "mic_type": m_type}
+
+    def _apply_broadcast_console(
+        self, sig: np.ndarray, sr: int, rng: np.random.Generator, spec: AudioSpec
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Broadcast Audio Console & Room Reverb (演播室播出级压缩限幅器/抽吸效应与房间混响).
+        """
+        out = sig.copy()
+        n_samples = len(out)
+        agc_amt = float(spec.broadcast_agc)
+        rev_amt = float(spec.studio_room_reverb)
+
+        # 1. Broadcast AGC / Compressor (CBS Audimax / Volumax / Orban Optimod style)
+        if agc_amt > 1e-4:
+            # Fast peak detection (tau ~ 2.5 ms), adaptive release (tau ~ 320 ms)
+            sig_mag = np.mean(np.abs(out), axis=1)
+            sig_peak = gaussian_filter1d(sig_mag, sigma=max(2, int(0.0025 * sr)))
+            sig_slow = gaussian_filter1d(sig_mag, sigma=max(10, int(0.32 * sr)))
+            env = np.maximum(sig_peak * 0.75, sig_slow)
+            thresh = 0.22
+            gain_reduction = np.ones(n_samples, dtype=np.float32)
+            over = env > thresh
+            if np.any(over):
+                # Pumping compression curve
+                ratio = 4.5 * agc_amt
+                gr = (thresh / np.maximum(1e-4, env)) ** (1.0 - 1.0 / (1.0 + ratio))
+                gain_reduction = np.where(over, gr, 1.0).astype(np.float32)
+                # Apply make-up gain so compressed audio sounds dynamically pumped and punchy
+                makeup = 1.0 + 0.85 * agc_amt
+                out = out * (gain_reduction[:, None] * makeup)
+
+        # 2. Studio / Bedroom Livestreamer Room Reverb (早期反射梳状滤波器 + 漫射衰减)
+        if rev_amt > 1e-4:
+            delays_ms = [14.0, 26.5, 41.0]
+            gains = [0.38, 0.26, 0.18]
+            rev_accum = np.zeros_like(out)
+            for d_ms, g_val in zip(delays_ms, gains):
+                d_samp = int(round((d_ms / 1000.0) * sr))
+                if d_samp < n_samples:
+                    rev_accum[d_samp:] += out[:-d_samp] * (g_val * rev_amt)
+            # Lowpass filtered room dampening
+            rev_accum = _lowpass_audio(rev_accum, 4500.0, sr, order=2)
+            out = out * (1.0 - 0.22 * rev_amt) + rev_accum
+
+        return out, {"active": (agc_amt > 1e-4 or rev_amt > 1e-4)}
+
+    # ------------------------------------------------------------------
+    # Medium-Specific Soundtracks: Optical Film & Low-Bitrate Web
+    # ------------------------------------------------------------------
+    def _build_film_optical_track(
+        self, inp: np.ndarray, sr: int, rng: np.random.Generator, t_arr: np.ndarray
+    ) -> np.ndarray:
+        """
+        Film Optical Soundtrack (感光胶片光学音轨物理仿真: 缝隙孔径损耗、励磁灯交流声、银盐颗粒底噪与划痕爆音).
+        """
+        n_samples = len(inp)
+        slit = float(self.spec.film_slit_loss)
+        hum_amt = float(self.spec.film_exciter_hum)
+        scr_amt = float(self.spec.film_optical_scratches)
+
+        # 1. Optical Slit Aperture Loss (12.5 um slit): 35mm cutoff ~6.8 kHz; 16mm cutoff ~4.8 kHz
+        fc_slit = 6800.0 * (1.0 - 0.32 * slit)
+        mono = 0.5 * (inp[:, 0] + inp[:, 1])
+        mono = _highpass_audio(mono[:, None], 42.0, sr, order=2)[:, 0]
+        mono = _lowpass_audio(mono[:, None], fc_slit, sr, order=5)[:, 0]
+
+        # 2. Optical Track Overmodulation Hard Clipping (双边可变面积音轨边界物理截断)
+        track_drive = 1.15
+        mono = np.clip(mono * track_drive, -0.86, 0.86)
+
+        # 3. Exciter Lamp 50 Hz/100 Hz (PAL) or 60 Hz/120 Hz (NTSC) AC Filament Ripple Hum
+        mains_hz = 50.0 if "pal" in self.std_name else 60.0
+        if hum_amt > 1e-4:
+            hum_wave = (
+                0.012 * hum_amt * (
+                    0.65 * np.sin(2.0 * np.pi * mains_hz * t_arr)
+                    + 0.35 * np.sin(4.0 * np.pi * mains_hz * t_arr + 0.4)
+                )
+            ).astype(np.float32)
+            mono += hum_wave
+
+        # 4. Silver Halide Grain Transmittance Hiss (透过光学声带透光面积的光电管颗粒噪底)
+        grain_noise = rng.standard_normal((n_samples,)).astype(np.float32)
+        grain_hiss = _bandpass_audio(grain_noise[:, None], 850.0, min(fc_slit * 0.95, 0.46 * sr), sr, order=2)[:, 0]
+        # Noise level is higher in quiet passages (clear base transmittance)
+        amp_mod = 0.5 + 0.5 * np.clip(1.0 - np.abs(mono), 0.2, 1.0)
+        mono += grain_hiss * (0.018 * self.spec.hiss_floor * amp_mod)
+
+        # 5. Optical Dust & Scratch Clicks/Pops (灰尘阻挡光缝负脉冲与乳剂划破强光正脉冲)
+        if scr_amt > 1e-4:
+            n_pops = int(rng.poisson(scr_amt * 18.0 * (n_samples / float(sr))))
+            if n_pops > 0:
+                pop_positions = rng.integers(0, max(1, n_samples - 24), size=n_pops)
+                for pos in pop_positions:
+                    p_len = rng.integers(4, 20)
+                    pol = 1.0 if rng.random() < 0.55 else -0.75
+                    amp = float(pol * rng.uniform(0.18, 0.55) * scr_amt)
+                    decay = np.exp(-np.arange(p_len) / 3.0).astype(np.float32)
+                    mono[pos : pos + p_len] += amp * decay
+
+        out = np.stack([mono, mono], axis=-1)
+        return out
+
+    def _build_streaming_lowbitrate_track(
+        self, inp: np.ndarray, sr: int, rng: np.random.Generator, t_arr: np.ndarray
+    ) -> np.ndarray:
+        """
+        Streaming Low-Bitrate Codec Artifacts (优酷/土豆/3GP 32-48kbps AAC/MP3 心理声学量化水下水花声与金属共鸣).
+        Calibrated against: 2008 年优酷主播演唱《稍息立正站好》实测特征 (352x264, 15fps, 32kbps AAC).
+        """
+        n_samples = len(inp)
+        # 1. Steep brickwall low-pass cutoff at 6.2 kHz (32kbps AAC/MP3 standard cutoff)
+        out = _highpass_audio(inp, 75.0, sr, order=2)
+        out = _lowpass_audio(out, 6200.0, sr, order=8)
+
+        # 2. Perceptual Subband Quantization Warble (Birdies 水声水花杂音)
+        win_len = 512
+        hop = 256
+        win = np.hanning(win_len).astype(np.float32)[:, None]
+        out_str = np.zeros_like(out)
+        w_norm = np.zeros((n_samples, 1), dtype=np.float32)
+        for p0 in range(0, n_samples - win_len, hop):
+            seg = out[p0 : p0 + win_len] * win
+            spec_f = np.fft.rfft(seg, axis=0)
+            mag = np.abs(spec_f)
+            # High threshold in mid-high frequencies produces authentic watery chirping
+            freqs = np.fft.rfftfreq(win_len, 1.0 / sr)[:, None]
+            mask_curve = 0.025 + 0.065 * np.clip((freqs - 1800.0) / 3500.0, 0.0, 1.0)
+            thresh = np.max(mag, axis=0, keepdims=True) * mask_curve
+            keep = np.clip((mag - thresh) / np.maximum(thresh * 0.4, 1e-6), 0.0, 1.0)
+            # Coarse quantization steps
+            q_step = 0.035
+            spec_q = np.round(spec_f * keep / q_step) * q_step
+            rec = np.fft.irfft(spec_q, n=win_len, axis=0).astype(np.float32)
+            out_str[p0 : p0 + win_len] += rec * win
+            w_norm[p0 : p0 + win_len] += win * win
+        valid = w_norm[:, 0] > 1e-4
+        out[valid] = out_str[valid] / w_norm[valid]
+
+        # 3. Metallic Hollow Resonant Chamber (32kbps starved bitpool phase dispersion)
+        comb_delay = int(round(sr / 2150.0))  # 2.15 kHz metallic comb tone
+        if comb_delay < n_samples:
+            out[comb_delay:] += out[:-comb_delay] * 0.22
+
+        return out
 
     def _apply_rf_broadcast_tuner_prestage(
         self, sig: np.ndarray, t_arr: np.ndarray, sr: int, n_samples: int,

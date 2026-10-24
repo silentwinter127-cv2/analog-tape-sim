@@ -458,6 +458,30 @@ CATALOG: tuple[NodeSpec, ...] = (
         params_layer="display",
     ),
     NodeSpec(
+        kind="mobile_camera_isp", label="早期手机与 iPhone 成像系统", group="设备",
+        inputs=(_p("in", "rgb", "光学场景输入"),),
+        outputs=(_p("out", "rgb", "手机 ISP 编码输出"),),
+        device="Nokia 6600 / N73 / N95 / 5800 & iPhone 2007 / 3G / 3GS / 4S 六步成像管线",
+        note="独立早期手机与早期 iPhone 摄像成像模块：1.微型镜头光学 → 2.传感器泊松-高斯采样与饱和 → 3.Bayer去马赛克 → 4.白平衡与色彩矩阵 → 5.双边降噪涂抹与USM锐化光晕 → 6.JPEG/3GP/MOV编码 (区分 capture 拍照与 record 视频管线)",
+        params_layer="camera",
+    ),
+    NodeSpec(
+        kind="file_transfer_node", label="文件传输与多代重编码节点", group="转换",
+        inputs=(_p("in", "rgb", "源文件输入"),),
+        outputs=(_p("out", "rgb", "传输/重编码输出"),),
+        device="蓝牙 OBEX / USB 导入 / 彩信与早期社交软件压缩 / 桌面剪辑导出多代级联",
+        note="严格区分无损文件复制（蓝牙/USB 仅按策略保留或更新时间戳，绝不凭空添加图像压缩）与有损应用处理（彩信/社交软件缩放重编码剥离EXIF、桌面剪辑导出多代有损压缩 V0→V1→V2→V3）",
+        params_layer="codec",
+    ),
+    NodeSpec(
+        kind="lcd_flash_player", label="早期 LCD 显示器与 Flash 播放器", group="设备",
+        inputs=(_p("in", "rgb", "解码视频/图像输入"),),
+        outputs=(_p("out", "rgb", "LCD/播放器显示输出"),),
+        device="功能机 RGB565 TFT 液晶 / 2007 桌面 6-bit TN 液晶显示器 + Flash Player 窗口缩放与缓冲系统",
+        note="严格区分 LCD 与 CRT 物理机制：建模 6-bit+FRC 灰阶量化、液晶分子响应时间保持拖影、TN 垂直视角伽马偏移、CCFL 冷白背光与 RGB 竖条子像素晶格，以及 Flash 播放器非整数倍窗口缩放与网络缓冲卡顿",
+        params_layer="display",
+    ),
+    NodeSpec(
         kind="node_group", label="节点组", group="节点组",
         inputs=(_p("in", "rgb", "输入"),),
         outputs=(_p("out", "yiq", "输出"),),
@@ -2411,6 +2435,135 @@ GRAPH_PRESETS["sony_trinitron_kv1214_showa"] = {
             "kv1214_moire_amount": 0.62, "kv1214_moire_freq": 0.052, "kv1214_moire_tilt_deg": 1.8,
             "kv1214_cylindrical_bow": 0.34, "kv1214_ntscj_9300k": 0.78,
             "kv1214_single_damper": 0.65, "kv1214_bezel_frame": 0.45,
+        },
+    },
+}
+
+
+def ldme_full_archaeology_chain_graph() -> Graph:
+    """第九节完整数字媒介考古链路：场景 → Nokia N73 拍摄 → USB 导入与桌面剪辑导出 → 优酷式 FLV 转码 → Flash 播放器缩放与 2007 旧 LCD 显示。"""
+    g = Graph()
+    g.add("source", "source", position=(0, 0))
+    g.add("mobile_camera_isp", "mobile_camera_isp", params={
+        "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0,
+    }, position=(1, 0))
+    g.add("file_transfer_node", "file_transfer_node", params={
+        "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 4.0, "ldme_transfer_generations": 2.0,
+        "ldme_nle_bitrate_kbps": 420.0,
+    }, position=(2, 0))
+    g.add("stream_cdn_client", "stream_cdn_client", params={
+        "stream_enabled": 1.0, "stream_mode": 6.0, "stream_bitrate_kbps": 350.0,
+        "stream_gop_len": 15.0, "ldme_source_origin": 1.0,
+    }, position=(3, 0))
+    g.add("lcd_flash_player", "lcd_flash_player", params={
+        "ldme_display_enabled": 1.0, "ldme_display_device": 2.0,
+        "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 16.0,
+        "ldme_lcd_view_angle": 12.0, "ldme_lcd_subpixel": 0.35,
+        "ldme_flash_scale_mode": 1.0,
+    }, position=(4, 0))
+    g.connect("source", "out", "mobile_camera_isp", "in")
+    g.connect("mobile_camera_isp", "out", "file_transfer_node", "in")
+    g.connect("file_transfer_node", "out", "stream_cdn_client", "in")
+    g.connect("stream_cdn_client", "out", "lcd_flash_player", "in")
+    return g
+
+
+def ldme_test1_mobile_camera_graph() -> Graph:
+    """LDME 测试一：同一场景，不同手机（独立手机成像节点 -> 零失真直出监看）。"""
+    g = Graph()
+    g.add("source", "source", position=(0, 0))
+    g.add("mobile_camera_isp", "mobile_camera_isp", params={
+        "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0,
+    }, position=(1, 0))
+    g.add("display", "display", params={"enabled": 0.0}, position=(2, 0))
+    g.connect("source", "out", "mobile_camera_isp", "in")
+    g.connect("mobile_camera_isp", "out", "display", "in")
+    return g
+
+
+def ldme_test2_transcode_cascade_graph() -> Graph:
+    """LDME 测试二：同一视频，不同转码链（文件传输与多代重编码 -> 优酷/土豆流媒体转码）。"""
+    g = Graph()
+    g.add("source", "source", position=(0, 0))
+    g.add("file_transfer_node", "file_transfer_node", params={
+        "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 4.0, "ldme_transfer_generations": 2.0,
+    }, position=(1, 0))
+    g.add("stream_cdn_client", "stream_cdn_client", params={
+        "stream_enabled": 1.0, "stream_mode": 6.0, "stream_bitrate_kbps": 350.0,
+        "stream_gop_len": 15.0,
+    }, position=(2, 0))
+    g.add("display", "display", params={"enabled": 0.0}, position=(3, 0))
+    g.connect("source", "out", "file_transfer_node", "in")
+    g.connect("file_transfer_node", "out", "stream_cdn_client", "in")
+    g.connect("stream_cdn_client", "out", "display", "in")
+    return g
+
+
+def ldme_test3_display_comparison_graph() -> Graph:
+    """LDME 测试三：同一文件，不同播放设备（固定标清 H.264 流媒体源 -> 早期 LCD 与 Flash 播放器）。"""
+    g = Graph()
+    g.add("source", "source", position=(0, 0))
+    g.add("stream_cdn_client", "stream_cdn_client", params={
+        "stream_enabled": 1.0, "stream_mode": 7.0, "stream_bitrate_kbps": 700.0,
+    }, position=(1, 0))
+    g.add("lcd_flash_player", "lcd_flash_player", params={
+        "ldme_display_enabled": 1.0, "ldme_display_device": 2.0,
+        "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 16.0, "ldme_flash_scale_mode": 1.0,
+    }, position=(2, 0))
+    g.connect("source", "out", "stream_cdn_client", "in")
+    g.connect("stream_cdn_client", "out", "lcd_flash_player", "in")
+    return g
+
+
+GRAPH_PRESETS["ldme_n73_youku_flash_lcd_chain"] = {
+    "label": "诺基亚拍摄经剪辑上传优酷全链路",
+    "note": "串联完整古早数字媒介管线：场景 → Nokia N73 拍摄 (`mobile_camera_isp`) → USB 导入与桌面剪辑导出 (`file_transfer_node`) → 优酷式 FLV 转码 (`stream_cdn_client`) → Flash 播放器缩放与 2007 桌面 TN 液晶显示 (`lcd_flash_player`)",
+    "build": ldme_full_archaeology_chain_graph,
+    "params": {
+        "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0},
+        "codec": {
+            "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 4.0, "ldme_transfer_generations": 2.0,
+            "stream_enabled": 1.0, "stream_mode": 6.0, "stream_bitrate_kbps": 350.0, "ldme_source_origin": 1.0,
+        },
+        "display": {
+            "enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0,
+            "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 16.0, "ldme_flash_scale_mode": 1.0,
+        },
+    },
+}
+
+GRAPH_PRESETS["ldme_bench1_mobile_cameras"] = {
+    "label": "测试一 同场景不同手机摄影",
+    "note": "基准测试一（同一场景，不同手机）：通过 `ldme_mobile_profile` 切换比较 Nokia 6600、Nokia N73、Nokia N95、Nokia 5800、iPhone 2007、iPhone 3G、iPhone 3GS 与 iPhone 4S 的传感器、镜头、白平衡、降噪涂抹与锐化光晕差异",
+    "build": ldme_test1_mobile_camera_graph,
+    "params": {
+        "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0},
+        "display": {"enabled": 0.0},
+    },
+}
+
+GRAPH_PRESETS["ldme_bench2_transcode_chains"] = {
+    "label": "测试二 同视频不同转码与传输链",
+    "note": "基准测试二（同一视频，不同转码链）：对比单次 FLV 320×240 转码、多代桌面剪辑重编码级联 (V0→V1→V2→V3)、标清 H.264 480×360 以及低帧率 3GP 上传转码",
+    "build": ldme_test2_transcode_cascade_graph,
+    "params": {
+        "codec": {
+            "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 4.0, "ldme_transfer_generations": 2.0,
+            "stream_enabled": 1.0, "stream_mode": 6.0, "stream_bitrate_kbps": 350.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+GRAPH_PRESETS["ldme_bench3_display_devices"] = {
+    "label": "测试三 同文件不同播放与显示设备",
+    "note": "基准测试三（同一文件，不同播放设备）：固定解码后的流媒体画面，切换比较早期手机 RGB565 TFT 液晶屏、2007 桌面 6-bit TN 液晶显示器 (含 Flash 窗口缩放) 与经典 CRT 监视器",
+    "build": ldme_test3_display_comparison_graph,
+    "params": {
+        "codec": {"stream_enabled": 1.0, "stream_mode": 7.0, "stream_bitrate_kbps": 700.0},
+        "display": {
+            "enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0,
+            "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 16.0, "ldme_flash_scale_mode": 1.0,
         },
     },
 }

@@ -1086,20 +1086,29 @@ def simulate_film_aging_and_projector(
             out[..., ch] = horizontal_shift(out[..., ch], uniform_row_shift)
         out = vertical_shift(out, dy_px)
 
-    # 24fps 电影放映机多叶片快门闪烁：双叶片 (48Hz) 可见闪烁明显，三叶片 (72Hz) 超过临界融合频率闪烁大幅降低 (README 第五节)
+    # 24fps 电影放映机多叶片快门闪烁与旋转遮光扫光（README 第五节）：
+    # 双叶片 (48Hz) 每帧遮光两次产生显著频闪与轻微旋转遮光梯度；三叶片 (72Hz) 超过临界融合频率闪烁平缓
     flick = float(getattr(spec, "shutter_flicker", 0.0))
     blades = int(np.clip(getattr(spec, "shutter_blades", 2), 2, 3))
     blade_atten = 1.0 if blades == 2 else 0.38
+    pulse_hz = 24.0 * blades
     flick_gain = 1.0
     if flick > 1e-4:
-        pulse_hz = 24.0 * blades
+        yy_frac = np.linspace(-1.0, 1.0, h, dtype=np.float32)[:, None, None]
+        sweep = 0.5 + 0.5 * np.sin(frame_index * (np.pi * blades / 12.0) + yy_frac * 0.75)
         flick_gain = 1.0 + (flick * blade_atten) * (
             0.065 * float(np.sin(frame_index * 1.37 * (blades / 2.0)))
             + 0.035 * float(np.cos(frame_index * 2.83 + 0.4))
+            + 0.045 * (sweep - 0.5)
         )
-        out = out * flick_gain
-    else:
-        pulse_hz = 24.0 * blades
+        out = np.clip(out * flick_gain, 0.0, 1.0)
+
+    # 片门受热焦点热膨胀微动 (Film Gate Thermal Breathing / Pop)
+    focal_pop = float(getattr(spec, "focal_breathing", 0.15))
+    if focal_pop > 1e-4:
+        pop_sigma = focal_pop * (0.22 + 0.22 * float(np.sin(frame_index * 0.52 + 1.1)))
+        if pop_sigma > 0.12:
+            out = gaussian_filter(out, (pop_sigma, pop_sigma, 0.0))
 
     # 6. Disney Research / FIAF 可逆数字修复链与四层数字证据分离 (`restoration_strength`, README 第八节)
     restore = float(np.clip(getattr(spec, "restoration_strength", 0.0), 0.0, 1.0))
@@ -1140,7 +1149,7 @@ def simulate_film_aging_and_projector(
         "gate_weave_dy_px": round(dy_px, 4),
         "shutter_blades": blades,
         "shutter_light_pulses_hz": round(pulse_hz, 1),
-        "shutter_gain": round(flick_gain, 4),
+        "shutter_gain": round(float(np.mean(flick_gain)), 4),
         "dye_fade": round(fade, 3),
         "wet_gate": round(wet_gate, 3),
         "scanner_diffuse": round(scan_diff, 3),

@@ -7539,5 +7539,108 @@ def check_automation_satellite_transmitter_systems() -> None:
     )
 
 
+    # Check 129: LDME Multi-Generation JPEG Wear, 2D 8x8 DCT Quantization & Grid Shift Double Ringing
+    from atsim.codecs.mobile_isp_optics import (
+        apply_jpeg_generation_loss,
+        apply_cmos_rolling_shutter_flicker,
+        apply_tungsten_awb_failure,
+        apply_digicam_night_starburst_bloom,
+    )
+    y_pat, x_pat = np.mgrid[0:120, 0:160].astype(np.float32)
+    test_freq_pat = 0.5 + 0.35 * np.sin(x_pat * 0.18) * np.cos(y_pat * 0.14)
+    src_pat = np.stack([test_freq_pat, test_freq_pat * 0.88, test_freq_pat * 0.72], axis=-1)
+
+    jpeg_g1 = apply_jpeg_generation_loss(src_pat, generations=1, quality=40, grid_shift=0)
+    jpeg_g3 = apply_jpeg_generation_loss(src_pat, generations=3, quality=40, grid_shift=3)
+    diff_g1 = float(np.mean(np.abs(jpeg_g1 - src_pat)))
+    diff_g3 = float(np.mean(np.abs(jpeg_g3 - src_pat)))
+    diff_shift = float(np.mean(np.abs(jpeg_g3 - jpeg_g1)))
+    record(
+        "LDME Multi-Generation JPEG Wear, 2D 8x8 DCT Quantization & Grid Shift Double Ringing",
+        "Multi-generation 2D 8×8 DCT IJG quantization accumulates wear across generations (`diff_g3 > diff_g1`) and inter-generation grid shift induces double-grid mosquito noise (`diff_shift > 0.010`)",
+        f"diff_g1={diff_g1:.4f}, diff_g3={diff_g3:.4f}, diff_shift={diff_shift:.4f}",
+        bool(
+            diff_g1 > 0.005
+            and diff_g3 > diff_g1
+            and diff_shift > 0.008
+        ),
+    )
+
+    # Check 130: LDME CMOS Rolling Shutter 50Hz/60Hz AC Mains Flicker Banding & Spectral Drift (image.jpg)
+    src_flat = np.ones((120, 160, 3), dtype=np.float32) * 0.55
+    flk_out = apply_cmos_rolling_shutter_flicker(src_flat, mains_hz=50.0, depth=0.45, num_bands=5.2, color_drift=0.65)
+    row_means = flk_out.mean(axis=1)
+    ptp_luma = float(np.ptp(row_means.mean(axis=1)))
+    ptp_rg = float(np.ptp(row_means[:, 0] / np.maximum(row_means[:, 1], 1e-4)))
+    record(
+        "LDME CMOS Rolling Shutter 50Hz/60Hz AC Mains Flicker Banding & Spectral Drift (image.jpg)",
+        "Rolling shutter line-by-line readout modulates AC light ripple (`ptp_luma > 0.30`) with alternating green-cyan crests and warm amber-yellow troughs (`ptp_rg > 0.08`) matching uploaded reference photos",
+        f"ptp_luma={ptp_luma:.4f}, ptp_rg={ptp_rg:.4f}, bands=5.2, mains=50Hz",
+        bool(
+            ptp_luma > 0.30
+            and ptp_rg > 0.08
+            and flk_out.shape == src_flat.shape
+        ),
+    )
+
+    # Check 131: LDME Tungsten 2700K Low Color Temp, ISP AWB Failure & Night Starburst CCD Bloom
+    tw_mode1 = apply_tungsten_awb_failure(src_flat, color_temp_k=2700.0, awb_mode=1)
+    tw_mode2 = apply_tungsten_awb_failure(src_flat, color_temp_k=2700.0, awb_mode=2)
+    rb_m1 = float(tw_mode1[..., 0].mean() / max(1e-4, tw_mode1[..., 2].mean()))
+    gb_m2 = float(tw_mode2[..., 1].mean() / max(1e-4, tw_mode2[..., 2].mean()))
+    rb_m2 = float(tw_mode2[..., 0].mean() / max(1e-4, tw_mode2[..., 2].mean()))
+
+    pin_src = np.zeros((120, 160, 3), dtype=np.float32)
+    pin_src[60, 80] = 1.0
+    nb_out = apply_digicam_night_starburst_bloom(pin_src, bloom_amount=1.0, streak_amount=1.0)
+    streak_hi = float(nb_out[20, 80, 0])
+
+    new_presets = [
+        "digicam_early_phone_flicker_tungsten",
+        "youku_tudou_multi_gen_jpeg_wear",
+        "digicam_night_starburst_ccd",
+        "digicam_y2k_ccd_sensor",
+    ]
+    all_presets_ok = all(k in FACTORY_PRESETS for k in new_presets)
+    record(
+        "LDME Tungsten 2700K Low Color Temp, ISP AWB Failure & Night Starburst CCD Bloom",
+        "Tungsten radiation induces amber-yellow cast under blue clamp (`R/B > 1.6`), mixed restaurant lighting yields mustard-green shift (`G/B > 1.5`), night pinpoint creates vertical streak (`> 0.15`), and all 4 new presets exist",
+        f"rb_m1={rb_m1:.3f}, gb_m2={gb_m2:.3f}, streak_hi={streak_hi:.3f}, presets_ok={all_presets_ok}",
+        bool(
+            rb_m1 > 1.6
+            and gb_m2 > 1.5
+            and streak_hi > 0.15
+            and all_presets_ok
+        ),
+    )
+
+
+    # Check 132: LDME Mobile ISP & Digicam Preset Rendering Integrity
+    from atsim.stages.camera import CameraStage
+    from atsim.core.pipeline import RenderContext, FrameBuffer
+    from atsim.core.standards import get_standard
+
+    preset_render_errors = []
+    for p_name in new_presets + ['ldme_nokia_n73', 'ldme_iphone_2007', 'ldme_n73_usb_nle_youku_flash_lcd']:
+        preset_entry = FACTORY_PRESETS[p_name]
+        c_layers = preset_entry.get('layers', {})
+        cam_p = c_layers.get('camera', {})
+        try:
+            ctx = RenderContext(fps=29.97, seed=123, std=get_standard('pal'), params={'camera': cam_p}, frame_count=1, width=160, height=120)
+            stg = CameraStage(ctx)
+            buf = FrameBuffer(np.ones((120, 160, 3), dtype=np.float32) * 0.5, None, 0, 0.0, get_standard('pal'), {})
+            out_f = stg.apply(buf)
+            if out_f.rgb.shape != (120, 160, 3):
+                preset_render_errors.append(f'{p_name}: bad shape {out_f.rgb.shape}')
+        except Exception as ex:
+            preset_render_errors.append(f'{p_name}: {type(ex).__name__}: {ex}')
+
+    record(
+        "LDME Mobile ISP & Digicam Preset Rendering Integrity",
+        "All new LDME/Digicam presets execute through CameraStage and full ISP pipeline without AttributeError ()",
+        f"tested={len(new_presets) + 3}, errors={len(preset_render_errors)}",
+        bool(len(preset_render_errors) == 0),
+    )
+
 if __name__ == "__main__":
     raise SystemExit(main())

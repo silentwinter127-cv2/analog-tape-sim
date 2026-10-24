@@ -127,6 +127,9 @@ def compute_cable_genlock_timing(
     and horizontal line timing shift (px) relative to House Blackburst (SPG).
     """
     # Propagation delay in RG-59 / Studio Triax cable (v_p = 0.66c -> 5.05 ns/m)
+    if isinstance(std, str):
+        from ..core.standards import get_standard
+        std = get_standard(std)
     tau_cable_ns = float(spec.cable_len_m) * 5.05
     f_sc_hz = float(std.subcarrier_hz)
     # Uncompensated cable subcarrier phase lag (deg): 360 * f_sc * tau

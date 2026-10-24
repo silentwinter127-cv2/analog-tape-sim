@@ -270,6 +270,13 @@ def decode_image_bytes(buf: bytes) -> np.ndarray:
     these bytes may be PNG, JPEG, BMP or WebP.  Declaring an input format made
     FFmpeg skip the probe and then reject perfectly valid data.
     """
+    Image = _pillow()
+    if Image is not None:
+        try:
+            with Image.open(io.BytesIO(buf)) as im:
+                return np.ascontiguousarray(np.asarray(im.convert("RGB"), dtype=np.uint8))
+        except Exception:
+            pass
     import subprocess
     from ..io.ffmpeg import _creationflags, _tool_error
     cmd = [_ffmpeg(), "-v", "error", "-nostdin", "-i", "-",
@@ -465,6 +472,13 @@ def load_image(path: str | os.PathLike) -> np.ndarray:
     image would be the actual bug.
     """
     p = str(path)
+    Image = _pillow()
+    if Image is not None:
+        try:
+            with Image.open(p) as im:
+                return np.asarray(im.convert("RGB"), dtype=np.float32) / 255.0
+        except Exception:
+            pass
     try:
         with open(p, "rb") as fh:
             head = fh.read(8)

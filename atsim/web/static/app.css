@@ -1,35 +1,35 @@
 /* ==========================================================================
- * Virtual Media Lab (虚拟媒介实验室) — Dark-Cool Neomorphism Design System
+ * Virtual Media Lab (虚拟媒介实验室) — The Matrix Cyberpunk Green-Black Design System
  * ========================================================================== */
 :root {
-  --bg: #111622;
-  --bg-deep: #0b0f18;
-  --panel: #161d2b;
-  --panel2: #1c2536;
-  --panel-hi: #232f46;
-  --line: rgba(148, 179, 218, 0.12);
-  --line-strong: rgba(148, 179, 218, 0.22);
-  --ink: #e2ecf8;
-  --ink-dim: #8b9eb7;
-  --ink-muted: #5e728d;
-  --accent: #38bdf8;
-  --accent-hi: #7dd3fc;
-  --accent2: #60a5fa;
-  --indigo: #818cf8;
+  --bg: #060a06;
+  --bg-deep: #020402;
+  --panel: #0a110a;
+  --panel2: #0e180e;
+  --panel-hi: #142414;
+  --line: rgba(0, 255, 102, 0.12);
+  --line-strong: rgba(0, 255, 102, 0.28);
+  --ink: #e0ffe4;
+  --ink-dim: #82d88e;
+  --ink-muted: #3b7045;
+  --accent: #00ff66;
+  --accent-hi: #66ff99;
+  --accent2: #10b981;
+  --indigo: #22c55e;
   --good: #34d399;
   --bad: #f87171;
   --warn: #fbbf24;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* Dark-Cool Neomorphism Dual Shadows */
-  --neo-raised: 5px 5px 12px #090c13, -4px -4px 10px rgba(44, 60, 90, 0.42);
-  --neo-raised-sm: 3px 3px 7px #090c13, -2px -2px 6px rgba(44, 60, 90, 0.36);
-  --neo-raised-hover: 6px 6px 14px #080b11, -4px -4px 12px rgba(56, 78, 116, 0.52);
-  --neo-inset: inset 4px 4px 8px #090c13, inset -3px -3px 7px rgba(44, 60, 90, 0.35);
-  --neo-inset-sm: inset 2px 2px 5px #090c13, inset -2px -2px 5px rgba(44, 60, 90, 0.32);
-  --neo-surface: linear-gradient(145deg, #1f283b, #151b28);
-  --neo-surface-pressed: linear-gradient(145deg, #121722, #1a2232);
-  --neo-primary: linear-gradient(135deg, #0ea5e9, #3b82f6);
+  --neo-raised: 5px 5px 12px #020502, -4px -4px 10px rgba(16, 45, 20, 0.42);
+  --neo-raised-sm: 3px 3px 7px #020502, -2px -2px 6px rgba(16, 45, 20, 0.36);
+  --neo-raised-hover: 6px 6px 14px #010401, -4px -4px 12px rgba(0, 255, 102, 0.25);
+  --neo-inset: inset 4px 4px 8px #020502, inset -3px -3px 7px rgba(16, 45, 20, 0.35);
+  --neo-inset-sm: inset 2px 2px 5px #020502, inset -2px -2px 5px rgba(16, 45, 20, 0.32);
+  --neo-surface: linear-gradient(145deg, #111c12, #081009);
+  --neo-surface-pressed: linear-gradient(145deg, #050a05, #0d170e);
+  --neo-primary: linear-gradient(135deg, #00ff66, #059669);
 }
 
 * { box-sizing: border-box; }
@@ -48,9 +48,9 @@ html, body {
 
 /* Custom dark-cool scrollbar */
 ::-webkit-scrollbar { width: 7px; height: 7px; }
-::-webkit-scrollbar-track { background: #101520; box-shadow: var(--neo-inset-sm); }
-::-webkit-scrollbar-thumb { background: #26334d; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #354769; }
+::-webkit-scrollbar-track { background: #050a05; box-shadow: var(--neo-inset-sm); }
+::-webkit-scrollbar-thumb { background: #132a16; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #1e4523; }
 
 /* ---- Header Bar (Neomorphic Command Deck) ---- */
 header {
@@ -59,9 +59,9 @@ header {
   justify-content: space-between;
   gap: 16px;
   padding: 10px 18px;
-  background: linear-gradient(180deg, #1a2233 0%, #141a27 100%);
+  background: linear-gradient(180deg, #0e180f 0%, #070e08 100%);
   border-bottom: 1px solid var(--line);
-  box-shadow: 0 4px 16px rgba(6, 9, 15, 0.6);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.8), 0 1px 0 rgba(0, 255, 102, 0.15);
   position: relative;
   z-index: 10;
 }
@@ -76,8 +76,8 @@ header {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: radial-gradient(circle at 30% 30%, #bae6fd, var(--accent));
-  box-shadow: 0 0 12px rgba(56, 189, 248, 0.8), 0 0 4px rgba(125, 211, 252, 0.9);
+  background: radial-gradient(circle at 30% 30%, #a7f3d0, var(--accent));
+  box-shadow: 0 0 12px rgba(0, 255, 102, 0.8), 0 0 4px rgba(102, 255, 153, 0.9);
   flex-shrink: 0;
 }
 
@@ -86,7 +86,7 @@ header {
   margin: 0;
   font-weight: 700;
   letter-spacing: 0.4px;
-  background: linear-gradient(90deg, #f0f7ff, #93c5fd);
+  background: linear-gradient(90deg, #f0fff4, #4ade80);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -97,9 +97,9 @@ header {
   font-family: var(--mono);
   padding: 2px 8px;
   border-radius: 999px;
-  background: #121723;
+  background: #060d07;
   box-shadow: var(--neo-inset-sm);
-  border: 1px solid rgba(148, 179, 218, 0.08);
+  border: 1px solid rgba(0, 255, 102, 0.08);
 }
 
 .actions {
@@ -113,7 +113,7 @@ header {
 button {
   background: var(--neo-surface);
   color: var(--ink);
-  border: 1px solid rgba(160, 195, 240, 0.1);
+  border: 1px solid rgba(0, 255, 102, 0.14);
   border-radius: 10px;
   padding: 6px 12px;
   cursor: pointer;
@@ -124,9 +124,9 @@ button {
 }
 
 button:hover {
-  border-color: rgba(56, 189, 248, 0.42);
+  border-color: rgba(0, 255, 102, 0.5);
   color: var(--accent-hi);
-  background: linear-gradient(145deg, #243047, #182030);
+  background: linear-gradient(145deg, #162618, #0b140c);
   box-shadow: var(--neo-raised-hover);
   transform: translateY(-1px);
 }
@@ -140,33 +140,33 @@ button:active {
 
 button.primary {
   background: var(--neo-primary);
-  border-color: rgba(125, 211, 252, 0.48);
-  color: #06101e;
+  border-color: rgba(102, 255, 153, 0.5);
+  color: #021404;
   font-weight: 600;
-  box-shadow: 4px 4px 12px rgba(8, 12, 20, 0.75), -2px -2px 8px rgba(56, 189, 248, 0.22);
+  box-shadow: 4px 4px 12px rgba(0, 0, 0, 0.85), 0 0 10px rgba(0, 255, 102, 0.25);
 }
 
 button.primary:hover {
-  background: linear-gradient(135deg, #38bdf8, #60a5fa);
-  color: #040b16;
-  border-color: #bae6fd;
-  box-shadow: 0 0 16px rgba(56, 189, 248, 0.45), 4px 4px 12px rgba(8, 12, 20, 0.8);
+  background: linear-gradient(135deg, #34d399, #00ff66);
+  color: #011103;
+  border-color: #86efac;
+  box-shadow: 0 0 16px rgba(0, 255, 102, 0.55), 4px 4px 12px rgba(0, 0, 0, 0.85);
 }
 
 button.primary:active {
-  background: linear-gradient(135deg, #0284c7, #2563eb);
-  box-shadow: inset 3px 3px 6px rgba(4, 12, 28, 0.65);
+  background: linear-gradient(135deg, #059669, #10b981);
+  box-shadow: inset 3px 3px 6px rgba(2, 20, 6, 0.75);
 }
 
 button.ghost {
-  background: linear-gradient(145deg, #1b2334, #141a27);
+  background: linear-gradient(145deg, #0f1a10, #081009);
   box-shadow: var(--neo-raised-sm);
-  border-color: rgba(148, 179, 218, 0.09);
+  border-color: rgba(0, 255, 102, 0.09);
 }
 
 input[type=number], input[type=text] {
-  background: #101520;
-  border: 1px solid rgba(148, 179, 218, 0.12);
+  background: #060a06;
+  border: 1px solid rgba(0, 255, 102, 0.12);
   color: var(--ink);
   border-radius: 9px;
   padding: 6px 10px;
@@ -178,8 +178,8 @@ input[type=number], input[type=text] {
 
 input[type=number]:focus, input[type=text]:focus {
   outline: none;
-  border-color: rgba(56, 189, 248, 0.55);
-  box-shadow: var(--neo-inset), 0 0 8px rgba(56, 189, 248, 0.2);
+  border-color: rgba(0, 255, 102, 0.6);
+  box-shadow: var(--neo-inset), 0 0 8px rgba(0, 255, 102, 0.25);
 }
 
 /* ---- Signal Chain Bar ---- */
@@ -188,7 +188,7 @@ input[type=number]:focus, input[type=text]:focus {
   gap: 0;
   align-items: stretch;
   padding: 9px 18px;
-  background: #121723;
+  background: #060d07;
   border-bottom: 1px solid var(--line);
   box-shadow: var(--neo-inset-sm);
   overflow-x: auto;
@@ -199,7 +199,7 @@ input[type=number]:focus, input[type=text]:focus {
   align-items: center;
   gap: 8px;
   padding: 6px 14px;
-  border: 1px solid rgba(160, 195, 240, 0.09);
+  border: 1px solid rgba(0, 255, 102, 0.12);
   border-radius: 10px;
   margin-right: 26px;
   position: relative;
@@ -212,7 +212,7 @@ input[type=number]:focus, input[type=text]:focus {
   content: "→";
   position: absolute;
   right: -20px;
-  color: #496080;
+  color: #27522d;
   font-size: 14px;
 }
 
@@ -220,9 +220,9 @@ input[type=number]:focus, input[type=text]:focus {
 .chainnode .nm { font-size: 12px; font-weight: 500; }
 .chainnode .cnt { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
 .chainnode.dirty {
-  border-color: rgba(56, 189, 248, 0.42);
-  background: linear-gradient(145deg, #192940, #131e30);
-  box-shadow: inset 2px 2px 5px #090d16, 0 0 10px rgba(56, 189, 248, 0.15);
+  border-color: rgba(0, 255, 102, 0.5);
+  background: linear-gradient(145deg, #102413, #0a160c);
+  box-shadow: inset 2px 2px 5px #040905, 0 0 10px rgba(0, 255, 102, 0.2);
 }
 .chainnode.cached .nm { color: var(--good); }
 
@@ -263,7 +263,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  background: radial-gradient(circle at 50% 25%, #161f30 0%, #0e131d 80%);
+  background: radial-gradient(circle at 50% 25%, #0d180e 0%, #040804 80%);
 }
 
 /* ---- Neomorphic Tabs ---- */
@@ -289,7 +289,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
 .tabs button.on {
   background: var(--neo-surface-pressed);
   color: var(--accent);
-  border-color: rgba(56, 189, 248, 0.45);
+  border-color: rgba(0, 255, 102, 0.45);
   box-shadow: var(--neo-inset-sm);
   font-weight: 600;
 }
@@ -299,7 +299,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
 
 .card {
   padding: 10px 12px;
-  border: 1px solid rgba(160, 195, 240, 0.08);
+  border: 1px solid rgba(0, 255, 102, 0.08);
   border-radius: 12px;
   margin-bottom: 10px;
   background: var(--neo-surface);
@@ -309,15 +309,15 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
 }
 
 .card:hover {
-  border-color: rgba(56, 189, 248, 0.35);
+  border-color: rgba(0, 255, 102, 0.35);
   box-shadow: var(--neo-raised-hover);
   transform: translateY(-1px);
 }
 
 .card.on {
   background: var(--neo-surface-pressed);
-  border-color: rgba(56, 189, 248, 0.55);
-  box-shadow: var(--neo-inset), 0 0 12px rgba(56, 189, 248, 0.12);
+  border-color: rgba(0, 255, 102, 0.6);
+  box-shadow: var(--neo-inset), 0 0 12px rgba(0, 255, 102, 0.12);
 }
 
 .card .t {
@@ -343,7 +343,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   flex: 1 1 260px;
   margin: 12px 16px 8px;
   background: #080b12;
-  border: 1px solid rgba(148, 179, 218, 0.14);
+  border: 1px solid rgba(0, 255, 102, 0.14);
   border-radius: 14px;
   box-shadow: inset 6px 6px 14px #05070c, inset -5px -5px 12px rgba(38, 52, 78, 0.32), 0 4px 16px rgba(0, 0, 0, 0.45);
   overflow: hidden;
@@ -370,7 +370,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   left: 50%;
   width: 2px;
   background: var(--accent);
-  box-shadow: 0 0 12px rgba(56, 189, 248, 0.9);
+  box-shadow: 0 0 12px rgba(0, 255, 102, 0.9);
   cursor: ew-resize;
 }
 
@@ -380,8 +380,8 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  background: linear-gradient(135deg, #38bdf8, #3b82f6);
-  color: #06101e;
+  background: linear-gradient(135deg, #00ff66, #10b981);
+  color: #021404;
   border-radius: 50%;
   width: 24px;
   height: 24px;
@@ -390,7 +390,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   justify-content: center;
   font-size: 12px;
   font-weight: 700;
-  box-shadow: 0 0 12px rgba(56, 189, 248, 0.75);
+  box-shadow: 0 0 12px rgba(0, 255, 102, 0.75);
 }
 
 .badge {
@@ -399,7 +399,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   bottom: 12px;
   background: rgba(14, 20, 32, 0.82);
   backdrop-filter: blur(8px);
-  border: 1px solid rgba(148, 179, 218, 0.18);
+  border: 1px solid rgba(0, 255, 102, 0.18);
   border-radius: 8px;
   padding: 4px 10px;
   font-family: var(--mono);
@@ -414,7 +414,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   top: 12px;
   background: rgba(14, 20, 32, 0.76);
   backdrop-filter: blur(8px);
-  border: 1px solid rgba(148, 179, 218, 0.14);
+  border: 1px solid rgba(0, 255, 102, 0.14);
   border-radius: 8px;
   padding: 4px 10px;
   font-size: 11px;
@@ -464,8 +464,8 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
 
 .tl-track {
   height: 18px;
-  background: #101520;
-  border: 1px solid rgba(148, 179, 218, 0.1);
+  background: #060a06;
+  border: 1px solid rgba(0, 255, 102, 0.1);
   border-radius: 7px;
   box-shadow: var(--neo-inset-sm);
   position: relative;
@@ -483,9 +483,9 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   margin-bottom: 16px;
   padding: 10px 12px;
   border-radius: 12px;
-  background: linear-gradient(145deg, #182030, #131926);
+  background: linear-gradient(145deg, #0f1910, #081009);
   box-shadow: var(--neo-raised-sm);
-  border: 1px solid rgba(148, 179, 218, 0.07);
+  border: 1px solid rgba(0, 255, 102, 0.07);
 }
 
 .pgroup h3 {
@@ -495,7 +495,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   color: var(--accent);
   margin: 2px 0 10px;
   font-weight: 700;
-  border-bottom: 1px solid rgba(148, 179, 218, 0.1);
+  border-bottom: 1px solid rgba(0, 255, 102, 0.1);
   padding-bottom: 5px;
 }
 
@@ -514,7 +514,7 @@ main.wsGrid > #panelRight { border-right: none; border-left: 1px solid var(--lin
   font-family: var(--mono);
   font-size: 11px;
   color: var(--accent-hi);
-  background: #101520;
+  background: #060a06;
   padding: 1px 6px;
   border-radius: 5px;
   box-shadow: var(--neo-inset-sm);
@@ -547,9 +547,9 @@ input[type=range]::-webkit-slider-thumb {
   width: 15px;
   height: 15px;
   border-radius: 50%;
-  background: radial-gradient(circle at 35% 35%, #bae6fd, #38bdf8 65%, #0284c7 100%);
+  background: radial-gradient(circle at 35% 35%, #a7f3d0, #00ff66 65%, #059669 100%);
   border: 1.5px solid #e0f2fe;
-  box-shadow: 2px 2px 6px #070a10, 0 0 8px rgba(56, 189, 248, 0.55);
+  box-shadow: 2px 2px 6px #020502, 0 0 8px rgba(0, 255, 102, 0.55);
   cursor: pointer;
   transition: transform 0.12s ease;
 }
@@ -568,9 +568,9 @@ input[type=range]::-webkit-slider-thumb:hover {
 select.psel {
   width: 100%;
   box-sizing: border-box;
-  background: #101520;
+  background: #060a06;
   color: var(--ink);
-  border: 1px solid rgba(148, 179, 218, 0.14);
+  border: 1px solid rgba(0, 255, 102, 0.14);
   border-radius: 8px;
   padding: 5px 8px;
   margin-top: 4px;
@@ -607,7 +607,7 @@ select.psel:focus {
   background: #0f141f;
   border-radius: 6px;
   overflow: hidden;
-  border: 1px solid rgba(148, 179, 218, 0.1);
+  border: 1px solid rgba(0, 255, 102, 0.1);
   box-shadow: var(--neo-inset-sm);
 }
 
@@ -633,7 +633,7 @@ select.psel:focus {
 }
 
 .sheet {
-  background: linear-gradient(145deg, #1b2436, #141a28);
+  background: linear-gradient(145deg, #0f1a10, #081009);
   border: 1px solid var(--line-strong);
   border-radius: 16px;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), var(--neo-raised);
@@ -666,7 +666,7 @@ select.psel:focus {
   align-items: center;
   gap: 10px;
   padding: 9px 16px;
-  background: linear-gradient(180deg, #1a2234, #141b29);
+  background: linear-gradient(180deg, #0e180f, #070e08);
   border-bottom: 1px solid var(--line);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
   flex: 0 0 auto;
@@ -692,7 +692,7 @@ select.psel:focus {
   width: 100%;
   height: 100%;
   display: block;
-  background: radial-gradient(circle at 25% 20%, #182236 0%, #0c1018 85%);
+  background: radial-gradient(circle at 25% 20%, #0d180e 0%, #030603 85%);
   box-shadow: var(--neo-inset);
   cursor: grab;
 }
@@ -732,7 +732,7 @@ select.psel:focus {
   align-items: center;
   gap: 8px;
   padding: 6px 9px;
-  border: 1px solid rgba(160, 195, 240, 0.08);
+  border: 1px solid rgba(0, 255, 102, 0.08);
   border-radius: 9px;
   background: var(--neo-surface);
   box-shadow: var(--neo-raised-sm);
@@ -742,7 +742,7 @@ select.psel:focus {
 }
 
 .palItem:hover {
-  border-color: rgba(56, 189, 248, 0.4);
+  border-color: rgba(0, 255, 102, 0.4);
   color: var(--accent-hi);
   transform: translateY(-1px);
 }
@@ -776,7 +776,7 @@ button.wide { width: 100%; margin-top: 8px; }
   border: 1px solid var(--line);
   border-radius: 10px;
   box-shadow: var(--neo-inset);
-  background: #101520;
+  background: #060a06;
 }
 .ftable { width: 100%; border-collapse: collapse; font-size: 12px; }
 .ftable th {
@@ -790,9 +790,9 @@ button.wide { width: 100%; margin-top: 8px; }
   white-space: nowrap;
   z-index: 1;
 }
-.ftable td { padding: 8px 10px; border-bottom: 1px solid rgba(148, 179, 218, 0.06); vertical-align: top; line-height: 1.5; }
+.ftable td { padding: 8px 10px; border-bottom: 1px solid rgba(0, 255, 102, 0.06); vertical-align: top; line-height: 1.5; }
 .ftable tr[data-layer] { cursor: pointer; }
-.ftable tr[data-layer]:hover { background: rgba(56, 189, 248, 0.08); }
+.ftable tr[data-layer]:hover { background: rgba(0, 255, 102, 0.08); }
 .ftable tr.row-missing { opacity: 0.62; }
 .ftable td.stage { color: var(--accent); font-weight: 600; white-space: nowrap; }
 .ftable td.sym { min-width: 170px; }
@@ -801,13 +801,13 @@ button.wide { width: 100%; margin-top: 8px; }
 .ftable td.model { min-width: 240px; }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px; white-space: nowrap; }
 .pill.ok { background: rgba(52, 211, 153, 0.16); color: #6ee7b7; border: 1px solid rgba(52, 211, 153, 0.35); }
-.pill.warn { background: rgba(56, 189, 248, 0.14); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.35); }
+.pill.warn { background: rgba(0, 255, 102, 0.14); color: var(--accent); border: 1px solid rgba(0, 255, 102, 0.35); }
 .pill.bad { background: rgba(248, 113, 113, 0.14); color: #fca5a5; border: 1px solid rgba(248, 113, 113, 0.35); }
 
 /* ---- Effect Matrix ---- */
 .mxbar { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
 .mxbar select {
-  background: #101520;
+  background: #060a06;
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -835,7 +835,7 @@ button.wide { width: 100%; margin-top: 8px; }
   flex-direction: column;
   gap: 5px;
   cursor: pointer;
-  border: 1px solid rgba(160, 195, 240, 0.08);
+  border: 1px solid rgba(0, 255, 102, 0.08);
   border-radius: 10px;
   padding: 6px;
   background: var(--neo-surface);
@@ -863,7 +863,7 @@ button.wide { width: 100%; margin-top: 8px; }
 }
 .ssNote b { color: var(--ink); }
 .ssNote code {
-  background: #101520;
+  background: #060a06;
   padding: 1px 5px;
   border-radius: 4px;
   font-family: var(--mono);
@@ -878,8 +878,8 @@ button.wide { width: 100%; margin-top: 8px; }
 .ssRow input[type=range] { flex: 1 1 auto; min-width: 60px; }
 .ssText {
   flex: 1 1 auto;
-  background: #101520;
-  border: 1px solid rgba(148, 179, 218, 0.14);
+  background: #060a06;
+  border: 1px solid rgba(0, 255, 102, 0.14);
   color: var(--ink);
   border-radius: 8px;
   padding: 5px 8px;
@@ -906,8 +906,8 @@ button.wide { width: 100%; margin-top: 8px; }
 .ssDev .ssPct { color: var(--accent-hi); min-width: 48px; text-align: right; }
 .ssTiny { font-size: 11px; padding: 3px 8px; }
 .ssSel, .ssSelMini {
-  background: #101520;
-  border: 1px solid rgba(148, 179, 218, 0.14);
+  background: #060a06;
+  border: 1px solid rgba(0, 255, 102, 0.14);
   color: var(--ink);
   border-radius: 7px;
   font-size: 11.5px;
@@ -920,7 +920,7 @@ button.wide { width: 100%; margin-top: 8px; }
 .tlTracks { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
 .tlCard {
   background: var(--neo-surface);
-  border: 1px solid rgba(160, 195, 240, 0.08);
+  border: 1px solid rgba(0, 255, 102, 0.08);
   border-radius: 11px;
   padding: 9px;
   box-shadow: var(--neo-raised-sm);
@@ -931,7 +931,7 @@ button.wide { width: 100%; margin-top: 8px; }
   height: 130px;
   display: block;
   border-radius: 8px;
-  border: 1px solid rgba(148, 179, 218, 0.1);
+  border: 1px solid rgba(0, 255, 102, 0.1);
   background: #0d121c;
   box-shadow: var(--neo-inset-sm);
   cursor: crosshair;
@@ -941,8 +941,8 @@ button.wide { width: 100%; margin-top: 8px; }
 .tlPt { display: flex; align-items: center; gap: 7px; }
 .tlPt input {
   width: 58px;
-  background: #101520;
-  border: 1px solid rgba(148, 179, 218, 0.14);
+  background: #060a06;
+  border: 1px solid rgba(0, 255, 102, 0.14);
   color: var(--ink);
   border-radius: 6px;
   font-size: 11px;
@@ -954,9 +954,9 @@ button.wide { width: 100%; margin-top: 8px; }
 .ssTextArea {
   width: 100%;
   box-sizing: border-box;
-  background: #101520;
+  background: #060a06;
   color: var(--ink);
-  border: 1px solid rgba(148, 179, 218, 0.14);
+  border: 1px solid rgba(0, 255, 102, 0.14);
   border-radius: 9px;
   padding: 7px 9px;
   font-family: var(--mono);
@@ -977,7 +977,7 @@ button.wide { width: 100%; margin-top: 8px; }
   padding: 0;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  background: #101520;
+  background: #060a06;
   vertical-align: middle;
   cursor: pointer;
 }
@@ -989,7 +989,7 @@ button.wide { width: 100%; margin-top: 8px; }
   gap: 8px;
   padding: 6px 0 7px;
   margin: -4px 0 6px;
-  background: linear-gradient(#161d2b, #161d2b 78%, rgba(22, 29, 43, 0));
+  background: linear-gradient(#0a110a, #0a110a 78%, rgba(10, 17, 10, 0));
   border-bottom: 1px solid var(--line);
 }
 .osdSticky .osdApply { margin-left: auto; }
@@ -1019,7 +1019,7 @@ button.wide { width: 100%; margin-top: 8px; }
 
 .wsTab:hover {
   color: var(--ink);
-  background: rgba(56, 189, 248, 0.08);
+  background: rgba(0, 255, 102, 0.08);
   box-shadow: none;
   transform: none;
 }
@@ -1027,7 +1027,7 @@ button.wide { width: 100%; margin-top: 8px; }
 .wsTab.on {
   color: var(--accent-hi);
   background: var(--neo-surface);
-  border-color: rgba(56, 189, 248, 0.38);
+  border-color: rgba(0, 255, 102, 0.38);
   box-shadow: var(--neo-raised-sm);
   font-weight: 600;
 }
@@ -1064,7 +1064,7 @@ body.wsDragging img { pointer-events: none; }
 select.qsel {
   background: #111723;
   color: var(--ink);
-  border: 1px solid rgba(148, 179, 218, 0.14);
+  border: 1px solid rgba(0, 255, 102, 0.14);
   border-radius: 9px;
   padding: 5px 9px;
   font-size: 12px;
@@ -1072,7 +1072,7 @@ select.qsel {
   box-shadow: var(--neo-inset-sm);
 }
 select.qsel:hover {
-  border-color: rgba(56, 189, 248, 0.4);
+  border-color: rgba(0, 255, 102, 0.4);
   background: #151d2c;
 }
 select.qsel:focus {
@@ -1096,7 +1096,7 @@ button.kfBtn {
 }
 button.kfBtn:hover { color: var(--ink); border-color: var(--line-strong); background: #1a2334; transform: none; }
 button.kfBtn.on { color: var(--good); border-color: rgba(52, 211, 153, 0.35); background: rgba(52, 211, 153, 0.1); }
-button.kfBtn.on.at { color: var(--accent-hi); border-color: rgba(56, 189, 248, 0.55); background: rgba(56, 189, 248, 0.16); }
+button.kfBtn.on.at { color: var(--accent-hi); border-color: rgba(0, 255, 102, 0.6); background: rgba(0, 255, 102, 0.16); }
 button.kfNav {
   background: #121824;
   border: 1px solid var(--line);
@@ -1125,7 +1125,7 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
   flex: 1;
   height: 34px;
   background: #0d121c;
-  border: 1px solid rgba(148, 179, 218, 0.12);
+  border: 1px solid rgba(0, 255, 102, 0.12);
   border-radius: 8px;
   box-shadow: var(--neo-inset-sm);
   cursor: pointer;
@@ -1146,7 +1146,7 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
   gap: 10px;
   padding: 7px 14px;
   border-top: 1px solid var(--line);
-  background: linear-gradient(90deg, #151c2b 0%, #121824 100%);
+  background: linear-gradient(90deg, #0a120b 0%, #060c07 100%);
   font-size: 12px;
 }
 
@@ -1179,9 +1179,9 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
 .wtBar .wt-badge {
   padding: 3px 9px;
   border-radius: 7px;
-  background: #101520;
+  background: #060a06;
   box-shadow: var(--neo-inset-sm);
-  border: 1px solid rgba(148, 179, 218, 0.12);
+  border: 1px solid rgba(0, 255, 102, 0.12);
   color: var(--accent-hi);
   font-size: 11px;
   white-space: nowrap;
@@ -1198,9 +1198,9 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
 
 .custom-preset-bar input {
   flex: 1;
-  background: #101520;
+  background: #060a06;
   color: var(--ink);
-  border: 1px solid rgba(148, 179, 218, 0.14);
+  border: 1px solid rgba(0, 255, 102, 0.14);
   border-radius: 9px;
   padding: 5px 10px;
   font-size: 12px;
@@ -1242,15 +1242,15 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
   align-items: center;
   gap: 10px;
   padding: 7px 16px;
-  background: linear-gradient(90deg, #162438, #121a28);
-  border-bottom: 1px solid rgba(56, 189, 248, 0.28);
+  background: linear-gradient(90deg, #0d1b0f, #071008);
+  border-bottom: 1px solid rgba(0, 255, 102, 0.28);
   font-size: 12px;
 }
 
 .canvasBreadcrumb .bc-btn {
   padding: 4px 10px;
   font-size: 12px;
-  border-color: rgba(56, 189, 248, 0.35);
+  border-color: rgba(0, 255, 102, 0.35);
 }
 
 .canvasBreadcrumb .bc-sep {
@@ -1264,7 +1264,7 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
 
 .ngBanner {
   background: var(--neo-surface);
-  border: 1px solid rgba(56, 189, 248, 0.24);
+  border: 1px solid rgba(0, 255, 102, 0.24);
   box-shadow: var(--neo-raised-sm);
   border-radius: 10px;
   padding: 9px 11px;
@@ -1289,7 +1289,7 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
 }
 
 .ngTab:hover {
-  border-color: rgba(56, 189, 248, 0.4);
+  border-color: rgba(0, 255, 102, 0.4);
   color: var(--ink);
 }
 
@@ -1314,7 +1314,7 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
 }
 
 .ngQuickBox {
-  border: 1px dashed rgba(148, 179, 218, 0.22);
+  border: 1px dashed rgba(0, 255, 102, 0.22);
   border-radius: 9px;
   padding: 8px 10px;
   margin-top: 8px;
@@ -1369,8 +1369,8 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
 }
 
 .scopeCard {
-  background: linear-gradient(145deg, #161e2e, #101622);
-  border: 1px solid rgba(148, 179, 218, 0.12);
+  background: linear-gradient(145deg, #0c140d, #060a06);
+  border: 1px solid rgba(0, 255, 102, 0.12);
   border-radius: 12px;
   padding: 7px 9px;
   box-shadow: var(--neo-raised-sm);
@@ -1406,7 +1406,7 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
   height: 142px;
   display: block;
   border-radius: 8px;
-  border: 1px solid rgba(148, 179, 218, 0.1);
+  border: 1px solid rgba(0, 255, 102, 0.1);
   background: #080c14;
   box-shadow: var(--neo-inset-sm);
   cursor: crosshair;
@@ -1414,7 +1414,7 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
 
 /* ---- Quad View, Corner Selector & 4-Shot Burst Toolbar ---- */
 .quadCtrlBar {
-  background: linear-gradient(90deg, #161e2f 0%, #121826 100%);
+  background: linear-gradient(90deg, #0c150d 0%, #060c07 100%);
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   padding: 7px 14px;
@@ -1435,7 +1435,7 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
   background: #0e131e;
   padding: 3px 5px;
   border-radius: 10px;
-  border: 1px solid rgba(148, 179, 218, 0.1);
+  border: 1px solid rgba(0, 255, 102, 0.1);
   box-shadow: var(--neo-inset-sm);
 }
 
@@ -1449,13 +1449,13 @@ button.kfNav:hover { color: var(--accent); border-color: var(--accent); transfor
 .qcorner-btn.on {
   background: var(--neo-primary) !important;
   color: #050d1a !important;
-  border-color: rgba(125, 211, 252, 0.6) !important;
-  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.35) !important;
+  border-color: rgba(102, 255, 153, 0.6) !important;
+  box-shadow: 0 2px 8px rgba(0, 255, 102, 0.35) !important;
   font-weight: 700 !important;
 }
 
 .quad-sel {
-  border-color: rgba(148, 179, 218, 0.18) !important;
+  border-color: rgba(0, 255, 102, 0.18) !important;
   background: #101622 !important;
   color: var(--ink) !important;
   font-weight: 600;

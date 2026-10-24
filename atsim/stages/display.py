@@ -34,7 +34,7 @@ LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 
 
 def _resample_to(img: np.ndarray, height: int, width: int) -> np.ndarray:
-    """Bilinear resample to an exact size."""
+    """Bilinear resample to an exact size (separable Y-first then X)."""
     h, w = img.shape[:2]
     if (h, w) == (height, width):
         return img
@@ -48,9 +48,38 @@ def _resample_to(img: np.ndarray, height: int, width: int) -> np.ndarray:
     x1 = np.clip(x0 + 1, 0, w - 1)
     fy = (sy - y0)[:, None, None]
     fx = (sx - x0)[None, :, None]
-    top = img[y0][:, x0] * (1.0 - fx) + img[y0][:, x1] * fx
-    bot = img[y1][:, x0] * (1.0 - fx) + img[y1][:, x1] * fx
-    return (top * (1.0 - fy) + bot * fy).astype(np.float32)
+    row_y = img[y0] + (img[y1] - img[y0]) * fy
+    c0 = row_y[:, x0]
+    c1 = row_y[:, x1]
+    c1 -= c0
+    c1 *= fx
+    c1 += c0
+    return c1.astype(np.float32, copy=False)
+
+
+def _overscan_crop(img: np.ndarray, big_h: int, big_w: int, y_off: int, x_off: int) -> np.ndarray:
+    """Separable bilinear overscan crop directly onto the target (h, w) window without allocating (big_h, big_w)."""
+    h, w = img.shape[:2]
+    sy = np.clip((np.arange(y_off, y_off + h, dtype=np.float32) + 0.5) * (h / big_h) - 0.5,
+                 0.0, h - 1.0)
+    sx = np.clip((np.arange(x_off, x_off + w, dtype=np.float32) + 0.5) * (w / big_w) - 0.5,
+                 0.0, w - 1.0)
+    y0 = np.floor(sy).astype(np.int32)
+    x0 = np.floor(sx).astype(np.int32)
+    y1 = np.clip(y0 + 1, 0, h - 1)
+    x1 = np.clip(x0 + 1, 0, w - 1)
+    fy = (sy - y0)[:, None, None]
+    fx = (sx - x0)[None, :, None]
+    row_y = img[y0] + (img[y1] - img[y0]) * fy
+    c0 = row_y[:, x0]
+    c1 = row_y[:, x1]
+    c1 -= c0
+    c1 *= fx
+    c1 += c0
+    return c1.astype(np.float32, copy=False)
+
+
+_DISPLAY_STATIC_CACHE: dict[tuple, np.ndarray | tuple] = {}
 
 
 class DisplayStage(Stage):
@@ -59,7 +88,7 @@ class DisplayStage(Stage):
 
     def __init__(self, ctx: RenderContext):
         super().__init__(ctx)
-        self._cache: dict[tuple, np.ndarray | tuple] = {}
+        self._cache = _DISPLAY_STATIC_CACHE
         self._prev_phosphor: np.ndarray | None = None
         self._prev_index: int = -999
         self._read_params()
@@ -104,7 +133,9 @@ class DisplayStage(Stage):
         self.bezel = float(d.get("bezel", 0.0))
         self.mv_spec = MultiviewWallSpec.from_params(d)
         from ..codecs.perception_and_operator import PerceptionOperatorSpec
+        from ..codecs.legacy_digital_media import EarlyLCDFlashSpec
         self.percept_spec = PerceptionOperatorSpec.from_params(d)
+        self.lcd_spec = EarlyLCDFlashSpec.from_params(d)
         self.magnet_spec = CRTMagneticEnvSpec.from_params(d)
         self.kv1214_spec = TrinitronKV1214Spec.from_params(d)
         # High-voltage breathing
@@ -327,7 +358,21 @@ class DisplayStage(Stage):
             self.mv_spec.is_active()
             or self.magnet_spec.is_active()
             or self.kv1214_spec.is_active()
+            or self.lcd_spec.is_active()
         )
+        if self.lcd_spec.is_active() and int(self.lcd_spec.display_device) in (1, 2):
+            from ..codecs.legacy_digital_media import MediaState, apply_early_lcd_and_flash_player
+            rgb_in = np.clip(buf.rgb if sig is None else sig.to_rgb(), 0.0, 1.0).astype(np.float32)
+            st = MediaState.from_rgb(rgb_in, fps=float(self.ctx.fps))
+            rgb_lcd, lcd_info = apply_early_lcd_and_flash_player(
+                st, self.lcd_spec, frame_index=int(buf.index), prev_rgb=self._prev_phosphor
+            )
+            self._prev_phosphor = rgb_in.copy()
+            self._prev_index = int(buf.index)
+            meta_lcd = dict(buf.meta)
+            meta_lcd["ldme_lcd_flash"] = lcd_info
+            meta_lcd["signal"] = SignalFrame.from_rgb(rgb_lcd, buf.std)
+            return FrameBuffer(rgb_lcd, buf.composite, buf.index, buf.time, buf.std, meta_lcd)
         if not self.enabled and not sub_active:
             if sig is None:
                 return buf
@@ -426,10 +471,9 @@ class DisplayStage(Stage):
             scale_up = 1.0 / max(0.5, 1.0 - 2.0 * self.overscan)
             big_h = max(h, int(round(h * scale_up)))
             big_w = max(w, int(round(w * scale_up)))
-            enlarged = _resample_to(rgb, big_h, big_w)
             y0 = (big_h - h) // 2
             x0 = (big_w - w) // 2
-            rgb = enlarged[y0:y0 + h, x0:x0 + w]
+            rgb = _overscan_crop(rgb, big_h, big_w, y0, x0)
 
         # 6. Curved CRT glass reflection & physical tube bezel
         if self.reflection > 1e-3 or self.bezel > 1e-4:

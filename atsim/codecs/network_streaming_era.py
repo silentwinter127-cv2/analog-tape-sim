@@ -1,8 +1,9 @@
 """
-网络视听传播、平台转码与流媒体协议系统 (`network_streaming_era`)
+网络视听传播、平台转码与古早数字媒介流媒体系统 (`network_streaming_era`)
 ==========================================================================
 
-实现《完整的视听媒介生态模拟器》第四节（方向 B+C：从模拟广播进入互联网视频时代）：
+实现《完整的视听媒介生态模拟器》第四节（方向 B+C：从模拟广播进入互联网视频时代）与
+《古早数字媒介系统：从优酷土豆到诺基亚与早期 iPhone》（LDME 子系统 C、D、F）：
 
 1. **早期互联网流媒体与现代自适应流媒体编解码器 (`simulate_streaming_codec_era`)**：
    - **Era 1 (`mode = 1`, 1999 RealVideo G2 / Windows Media Video 拨号窄带流 `28.8–128 kbps`)**：
@@ -13,9 +14,17 @@
      - 基于分组网络吞吐量波动 (`stream_bw_fluctuation`) 与客户端播放缓冲区水位 `buffer_level_s` 状态机，动态在 `1080p -> 720p -> 480p -> 240p` 阶梯间触发 **ABR 自适应分辨率阶跃切换 (ABR Resolution Step)**；当缓冲区耗尽 (`buffer_level_s <= 0`) 时触发 **TCP/HLS 预缓冲卡顿转圈 (Rebuffering Stall)** 画面冻结与恢复后的音画同步追赶；
    - **Era 4 (`mode = 4`, UDP / RTP 实时流媒体丢包切片撕裂与参考帧误差扩散)**：
      - 在无重传的 UDP/RTP 实时传输中，分组丢包 (`stream_packet_loss`) 表现为水平宏块条带切片丢失 (**Slice Tear / Green-Magenta Macroblock Corruption**)，并在下一个 I 帧到来前沿运动矢量向后续 P 帧持续扩散 (**Inter-Frame Error Propagation**)。
+   - **Era 6–12 (LDME 古早数字媒介与优酷/土豆历史阶段、文件传输与三组标准基准实验)**：
+     - `mode = 6`: 优酷/土豆 2006–2009 早期 Flash 视频 (`FLV + Sorenson Spark flv1, 320×240 @ 25fps, 350kbps`)
+     - `mode = 7`: 优酷/土豆 2009–2012 标清多档 H.264 (`MP4/FLV + H.264, 480×360 @ 25fps, 700kbps`)
+     - `mode = 8`: 移动互联网 2012–2015 多屏自适应 H.264 (`640×360 MP4/HLS, 600kbps`)
+     - `mode = 9`: 旧手机→蓝牙/USB/彩信/桌面剪辑导出→视频网站多代有损压缩链 ($V_0 \\to V_1 \\to V_2 \\to V_3$)
+     - `mode = 10`: LDME 基准测试一（同一场景，不同手机）
+     - `mode = 11`: LDME 基准测试二（同一视频，不同转码链）
+     - `mode = 12`: LDME 基准测试三（同一文件，不同播放设备）
 
-2. **`2×2` 跨时代网络视听传播与多平台重编码对照实验室 (`stream_mode = 5`)**：
-   - 同屏实时对比 `1. 1999 RealVideo 拨号窄带流 (关键帧呼吸脉冲)`、`2. 2006 视频平台多代转码与叠加水印`、`3. HLS/DASH ABR 自适应分辨率阶跃与缓冲卡顿`、`4. UDP/RTP 分组丢包切片撕裂与误差扩散`，完整支持 `stream_quad_corner = 0..4`、`stream_show_border = 0..2` 与 `stream_show_text = 0..2`。
+2. **默认单画面全幅输出，按需可选 `2×2` 对照实验室 (`stream_mode = 5`)**：
+   - 所有常规模式 (`mode = 1..4, 6..12`) 默认直接输出纯净的单画面全幅帧，不强制切分四分屏。
 """
 from __future__ import annotations
 
@@ -27,6 +36,32 @@ import numpy as np
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
 from ..core.signal import SignalFrame, horizontal_shift, lowpass
 from ..stages.display import _resample_to
+try:
+    from .legacy_digital_media import (
+        FileTransferSpec,
+        MediaState,
+        apply_file_transfer_node,
+        apply_platform_transcode,
+        run_ldme_benchmark_experiment,
+        run_ldme_full_chain,
+    )
+except ImportError:
+    try:
+        from atsim.codecs.legacy_digital_media import (
+            FileTransferSpec,
+            MediaState,
+            apply_file_transfer_node,
+            apply_platform_transcode,
+            run_ldme_benchmark_experiment,
+            run_ldme_full_chain,
+        )
+    except ImportError:
+        FileTransferSpec = None
+        MediaState = None
+        apply_file_transfer_node = None
+        apply_platform_transcode = None
+        run_ldme_benchmark_experiment = None
+        run_ldme_full_chain = None
 from .multiview_wall import _draw_bitmap_text
 
 
@@ -54,6 +89,11 @@ class NetworkStreamingSpec:
     quad_corner: int = 0
     show_border: int = 2
     show_text: int = 0
+    # LDME 扩展参数
+    ldme_source_origin: int = 0       # 0=高清源文件被平台下采样转码, 1=上传时原本就是低清源文件
+    ldme_transfer_method: int = 0     # 0=无额外传输处理, 1=蓝牙无损复制, 2=USB导入, 3=彩信/社交压缩, 4=桌面NLE导出+多代压缩
+    ldme_benchmark_variant: int = 1   # 基准测试子项序号 (1..6)
+    ldme_use_real_ffmpeg: bool = False
 
     def is_active(self) -> bool:
         return bool(self.enabled and self.mode > 0)
@@ -62,13 +102,17 @@ class NetworkStreamingSpec:
     def from_params(cls, cfg: dict[str, Any]) -> "NetworkStreamingSpec":
         en = float(cfg.get("stream_enabled", 0.0)) > 0.5
         md = int(round(float(cfg.get("stream_mode", 0.0))))
+        tr_m = int(round(float(cfg.get("ldme_transfer_method", 0.0))))
         if md > 0:
             en = True
+        elif tr_m > 0:
+            en = True
+            md = 9
         elif en and md == 0:
-            md = 5
+            md = 2  # 默认单画面平台转码而非四分屏
         return cls(
             enabled=en,
-            mode=int(np.clip(md, 0, 5)),
+            mode=int(np.clip(md, 0, 12)),
             bitrate_kbps=float(np.clip(cfg.get("stream_bitrate_kbps", 380.0), 16.0, 8000.0)),
             bw_fluctuation=float(np.clip(cfg.get("stream_bw_fluctuation", 0.45), 0.0, 1.0)),
             rtt_ms=float(np.clip(cfg.get("stream_rtt_ms", 85.0), 5.0, 800.0)),
@@ -78,6 +122,10 @@ class NetworkStreamingSpec:
             quad_corner=int(np.clip(round(float(cfg.get("stream_quad_corner", 0.0))), 0, 4)),
             show_border=int(np.clip(round(float(cfg.get("stream_show_border", 2.0))), 0, 2)),
             show_text=int(np.clip(round(float(cfg.get("stream_show_text", 0.0))), 0, 2)),
+            ldme_source_origin=int(np.clip(round(float(cfg.get("ldme_source_origin", 0.0))), 0, 1)),
+            ldme_transfer_method=int(np.clip(tr_m, 0, 5)),
+            ldme_benchmark_variant=int(np.clip(round(float(cfg.get("ldme_benchmark_variant", 1.0))), 1, 6)),
+            ldme_use_real_ffmpeg=bool(float(cfg.get("ldme_use_real_ffmpeg", 0.0)) > 0.5),
         )
 
 
@@ -94,13 +142,10 @@ def simulate_network_transport_and_abr(
     gop = max(4, int(spec.gop_len))
     gop_pos = int(frame_index) % gop
     is_keyframe = (gop_pos == 0)
-    # Keyframe quality decay across the GOP: 1.0 at I-frame, decaying toward P-frames before next I-frame
     gop_decay = float(np.exp(-1.35 * (gop_pos / max(1.0, float(gop - 1)))))
 
-    # Instantaneous available network bandwidth (kbps) with sinusoidal + burst congestion drops
     fluct = float(np.clip(spec.bw_fluctuation, 0.0, 1.0))
     wave = 0.55 * np.sin(2.0 * np.pi * 0.22 * t_sec + 0.4) + 0.45 * np.cos(2.0 * np.pi * 0.47 * t_sec)
-    # TCP Mathis throughput reduction under RTT and packet loss
     loss = float(np.clip(spec.packet_loss, 0.0, 0.50))
     rtt = float(np.clip(spec.rtt_ms, 5.0, 800.0))
     tcp_penalty = 1.0 / (1.0 + 3.2 * np.sqrt(loss) * (rtt / 80.0))
@@ -113,7 +158,6 @@ def simulate_network_transport_and_abr(
         )
     )
 
-    # ABR resolution ladder selection
     if inst_bw_kbps >= 1800.0:
         abr_profile = "1080p_HIGH"
         abr_scale = 1.00
@@ -127,13 +171,10 @@ def simulate_network_transport_and_abr(
         abr_profile = "240p_EMERGENCY"
         abr_scale = 0.24
 
-    # Client playback buffer level (seconds) & Rebuffering Stall state
-    # Drain rate exceeds fill rate when inst_bw_kbps < target bitrate or loss/fluctuation is high
     fill_ratio = inst_bw_kbps / max(32.0, float(spec.bitrate_kbps))
     buffer_level_s = float(np.clip(2.4 * fill_ratio - 1.8 * fluct - 3.5 * loss + 0.45 * np.sin(t_sec * 1.7), 0.0, 4.0))
     rebuffering_stall = bool(buffer_level_s < 0.38 and (fluct > 0.55 or loss > 0.14))
 
-    # A/V sync drift & catch-up speed multiplier after stall/jitter
     av_sync_offset_ms = float(round((rtt * 0.35 + loss * 420.0) * (1.2 if rebuffering_stall else 0.4), 2))
     catchup_speed = 1.08 if (not rebuffering_stall and av_sync_offset_ms > 45.0) else (0.0 if rebuffering_stall else 1.0)
 
@@ -165,12 +206,10 @@ def _quantize_macroblocks(
     """Fast block-grid DCT/spatial quantization + 4:2:0 chroma subsampling."""
     h, w = rgb.shape[:2]
     bs = max(2, int(block_size))
-    # Luma/Chroma split
     y = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
     cb = rgb[..., 2] - y
     cr = rgb[..., 0] - y
 
-    # Chroma subsampling (4:2:0 or 4:1:0)
     cs = max(1, int(chroma_subsample))
     if cs > 1 and h >= cs * 2 and w >= cs * 2:
         cb_small = _resample_to(cb[..., None], max(2, h // cs), max(2, w // cs))[..., 0]
@@ -178,7 +217,6 @@ def _quantize_macroblocks(
         cb = _resample_to(cb_small[..., None], h, w)[..., 0]
         cr = _resample_to(cr_small[..., None], h, w)[..., 0]
 
-    # Block average + quantized AC residual
     gh = max(2, h // bs)
     gw = max(2, w // bs)
     y_blk = _resample_to(_resample_to(y[..., None], gh, gw), h, w)[..., 0]
@@ -203,9 +241,8 @@ def _render_branch_1_realvideo_1999(
 ) -> np.ndarray:
     """Era 1: 1999 RealVideo G2 / WMV dial-up stream with heavy loop filter & keyframe breathing."""
     h, w = rgb.shape[:2]
-    pulse = float(net["keyframe_quality_pulse"])  # 1.0 at I-frame, ~0.26 at end of GOP
+    pulse = float(net["keyframe_quality_pulse"])
     bitrate_factor = float(np.clip(spec.bitrate_kbps / 450.0, 0.12, 1.0))
-    # Spatial resolution and block quantization breathe with the GOP keyframe pulse
     eff_scale = float(np.clip(0.24 + 0.22 * bitrate_factor + 0.22 * pulse, 0.18, 0.72))
     sh = max(16, int(round(h * eff_scale)))
     sw = max(16, int(round(w * eff_scale)))
@@ -213,11 +250,9 @@ def _render_branch_1_realvideo_1999(
     q_step = float(np.clip((0.11 - 0.06 * pulse) * (1.15 - 0.55 * bitrate_factor), 0.015, 0.16))
     blk = _quantize_macroblocks(small, block_size=4, q_step=q_step, chroma_subsample=3)
     up = _resample_to(blk, h, w)
-    # RealVideo G2 heavy in-loop smoothing between keyframes (waxy/watercolor look on P-frames)
     blur_sigma = float(np.clip((1.85 - 1.35 * pulse) * (1.2 - 0.5 * bitrate_factor), 0.2, 2.8))
     smoothed = lowpass(up, blur_sigma, axis=1)
     smoothed = lowpass(smoothed, blur_sigma * 0.7, axis=0)
-    # Dial-up color saturation loss
     luma = (0.299 * smoothed[..., 0] + 0.587 * smoothed[..., 1] + 0.114 * smoothed[..., 2])[..., None]
     out = luma + (smoothed - luma) * (0.62 + 0.25 * pulse)
     return np.clip(out, 0.0, 1.0).astype(np.float32)
@@ -239,13 +274,11 @@ def _render_branch_2_platform_retranscode(
             h,
             w,
         )
-        # Subtle BT.601 -> BT.709 matrix mismatch & platform unsharp halo per generation
         hp = out - lowpass(out, 1.1, axis=1)
         out = np.clip(out + 0.18 * hp, 0.0, 1.0)
         out[..., 0] = np.clip(out[..., 0] * 1.02 - 0.008, 0.0, 1.0)
         out[..., 1] = np.clip(out[..., 1] * 0.985 + 0.006, 0.0, 1.0)
 
-        # Stacked semi-transparent platform corner watermarks from successive uploads
         wm_h = max(10, int(h * 0.065))
         wm_w = max(36, int(w * 0.22))
         if g_idx % 2 == 0:
@@ -275,7 +308,6 @@ def _render_branch_3_abr_and_stall(
     out = _resample_to(_quantize_macroblocks(sub, block_size=8, q_step=q_step, chroma_subsample=2), h, w)
 
     if net["rebuffering_stall"]:
-        # Dim frozen frame and draw TCP/HLS buffering ring in the center
         out = out * 0.48
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
         cy, cx = h * 0.5, w * 0.5
@@ -304,7 +336,6 @@ def _render_branch_4_udp_packet_loss(
         return out
 
     gop_pos = int(net["gop_pos"])
-    # Packet loss errors accumulate across P-frames until the next I-frame clears the reference buffer
     accum_factor = 1.0 + 0.18 * float(gop_pos)
     rng = np.random.default_rng((int(seed) * 1664525 + int(net["frame_index"]) * 1013904223) & 0xFFFFFFFF)
     slice_h = max(8, h // 15)
@@ -315,7 +346,6 @@ def _render_branch_4_udp_packet_loss(
             y1 = min(h, (s_idx + 1) * slice_h)
             x_tear = int(rng.integers(0, max(1, w // 2)))
             dx = float(rng.integers(-28, 29))
-            # Displaced P-frame motion vector tear + corrupted chroma macroblocks (green/magenta block flash)
             shifted = horizontal_shift(out[y0:y1], np.full(y1 - y0, dx, dtype=np.float32))
             out[y0:y1, x_tear:] = shifted[:, x_tear:]
             if rng.random() < 0.55:
@@ -331,18 +361,69 @@ def apply_network_streaming_era(
     fps: float = 29.97,
     seed: int = 20240101,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """Apply Option S Network Streaming & Multi-Platform Transcode Pipeline."""
+    """Apply Network Streaming, Platform Transcoding & LDME Pipeline."""
     src = np.clip(np.asarray(rgb, dtype=np.float32), 0.0, 1.0)
     net = simulate_network_transport_and_abr(spec, frame_index=frame_index, fps=fps)
     if not spec.enabled or spec.mode <= 0:
         return src, {"active": False, "network": net}
 
+    # --- LDME 新增模式 (mode = 6..12)：全部单画面全幅输出，绝不强制四分屏 ---
+    if spec.mode in (6, 7, 8, 9):
+        state = MediaState.from_rgb(src, fps=fps)
+        if spec.ldme_transfer_method > 0 or spec.mode == 9:
+            eff_tr = spec.ldme_transfer_method if spec.ldme_transfer_method > 0 else 4
+            tr_spec = FileTransferSpec(
+                enabled=True,
+                method=eff_tr,
+                generations=max(1, int(spec.platform_generations)),
+                nle_bitrate_kbps=float(spec.bitrate_kbps),
+            )
+            state = apply_file_transfer_node(state, tr_spec, frame_index=frame_index)
+
+        if spec.mode in (6, 7, 8) or (spec.mode == 9 and spec.platform_generations >= 2):
+            tier_map = {6: 1, 7: 2, 8: 4, 9: 1}
+            state = apply_platform_transcode(
+                state,
+                tier_id=tier_map[spec.mode],
+                source_origin=spec.ldme_source_origin,
+                bitrate_override_kbps=spec.bitrate_kbps if spec.bitrate_kbps != 380.0 else 0.0,
+                gop_override=spec.gop_len,
+                platform_watermark=bool(spec.show_text >= 1),
+                use_real_ffmpeg=spec.ldme_use_real_ffmpeg,
+                frame_index=frame_index,
+            )
+
+        return np.clip(state.pixels, 0.0, 1.0).astype(np.float32), {
+            "active": True,
+            "mode": int(spec.mode),
+            "network": net,
+            "ldme_media_state": state.summary_dict(),
+        }
+
+    if spec.mode in (10, 11, 12):
+        bench_id = spec.mode - 9  # 10->1, 11->2, 12->3
+        out_rgb, bench_rep = run_ldme_benchmark_experiment(
+            src,
+            benchmark_id=bench_id,
+            variant_id=spec.ldme_benchmark_variant,
+            split_view=False,
+            frame_index=frame_index,
+            fps=fps,
+            seed=seed,
+        )
+        return out_rgb, {
+            "active": True,
+            "mode": int(spec.mode),
+            "network": net,
+            "ldme_benchmark": bench_rep,
+        }
+
+    # --- 原有 Era 1..5 模式 ---
     b1 = _render_branch_1_realvideo_1999(src, spec, net)
     b2 = _render_branch_2_platform_retranscode(src, spec)
     b3 = _render_branch_3_abr_and_stall(src, spec, net)
     b4 = _render_branch_4_udp_packet_loss(src, spec, net, seed=seed)
 
-    # Measure keyframe vs non-keyframe sharpness on Branch 1 for telemetry
     hf_b1 = float(np.mean(np.abs(np.diff(b1, axis=1))))
     hf_src = float(np.mean(np.abs(np.diff(src, axis=1))))
 
@@ -371,7 +452,6 @@ def apply_network_streaming_era(
     elif spec.mode == 4:
         out = b4
     else:
-        # Mode 5: 2x2 Quad Lab (or full-frame single corner when quad_corner in 1..4)
         h, w = src.shape[:2]
         c_sel = int(spec.quad_corner)
         if c_sel in (1, 2, 3, 4):
@@ -421,7 +501,7 @@ def compute_streaming_audio_effect(
     start_s: float = 0.0,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """
-    Simulate low-bitrate streaming audio (RealAudio / MP3 / HE-AAC spectral quantization,
+    Simulate low-bitrate streaming audio (RealAudio / MP3 / HE-AAC / AMR-NB spectral quantization,
     rebuffering silence gap, and UDP packet-loss concealment chirps).
     """
     arr = np.asarray(stereo_in, dtype=np.float32)
@@ -432,7 +512,6 @@ def compute_streaming_audio_effect(
     net = simulate_network_transport_and_abr(spec, frame_index=int(round(start_s * 30.0)), fps=30.0)
     out = arr.copy()
 
-    # Low-bitrate MDCT subband quantization + HF cutoff ("swirly" MP3/RealAudio effect)
     bw_ratio = float(np.clip(spec.bitrate_kbps / 640.0, 0.08, 1.0))
     decim = max(1, int(round(6.0 * (1.0 - 0.82 * bw_ratio))))
     if decim > 1 and n_samples > decim * 2:
@@ -446,7 +525,6 @@ def compute_streaming_audio_effect(
     q_levels = max(12.0, 180.0 * bw_ratio)
     out = np.round(out * q_levels) / q_levels
 
-    # Rebuffering stall mutes segment in middle of window
     if net["rebuffering_stall"] and spec.mode in (3, 5):
         s0 = int(n_samples * 0.30)
         s1 = int(n_samples * 0.65)
@@ -461,7 +539,7 @@ def compute_streaming_audio_effect(
 
 
 class StreamCDNClientStage(Stage):
-    """Node-graph stage for `stream_cdn_client` (**模块**)."""
+    """Node-graph stage for `stream_cdn_client`."""
     name = "stream_cdn_client"
     layers = ("codec",)
 
@@ -475,7 +553,7 @@ class StreamCDNClientStage(Stage):
         if not self.spec.enabled:
             self.spec.enabled = True
             if self.spec.mode <= 0:
-                self.spec.mode = 5
+                self.spec.mode = 6  # 默认单画面早期 Flash FLV 平台转码，而非 2x2 四分屏
 
     def on_params_changed(self) -> None:
         self._read_params()

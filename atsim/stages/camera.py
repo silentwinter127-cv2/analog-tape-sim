@@ -18,6 +18,7 @@ import numpy as np
 
 from ..codecs.operator import HAND
 from ..codecs.studio_ccu_genlock import StudioCCUSpec, apply_studio_ccu
+from ..codecs.mobile_isp_optics import MobileISPOpticsSpec, resolve_mobile_profile, run_mobile_isp_pipeline
 from ..codecs.autocontrol import (ExposureLoop, FocusLoop, WhiteBalanceLoop,
                                   centre_weights)
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
@@ -310,6 +311,7 @@ class CameraStage(Stage):
         self.sensor_type = str(cfg.get("sensor_type", 0.0))
         self.is_3ccd = self.sensor_type in ("1", "1.0", "3ccd", "3CCD")
         self.ccu_spec = StudioCCUSpec.from_params(cfg)
+        self.mobile_isp_spec = MobileISPOpticsSpec.from_params(cfg)
 
 
     # ------------------------------------------------------------------
@@ -982,53 +984,53 @@ class CameraStage(Stage):
             (0.0, 0.88, 0.86),
         )
 
-        def _shift2d_scalar(plane2d: np.ndarray, dy_f: float, dx_f: float) -> np.ndarray:
-            iy = int(round(dy_f))
-            ix = int(round(dx_f))
-            if iy == 0 and ix == 0:
-                return plane2d
-            res = np.empty_like(plane2d)
-            if iy >= 0:
-                sy0, sy1, dy0, dy1 = 0, max(0, h - iy), iy, h
-                ry = 0
-            else:
-                sy0, sy1, dy0, dy1 = min(h, -iy), h, 0, max(0, h + iy)
-                ry = h - 1
-            if ix >= 0:
-                sx0, sx1, dx0, dx1 = 0, max(0, w - ix), ix, w
-                rx = 0
-            else:
-                sx0, sx1, dx0, dx1 = min(w, -ix), w, 0, max(0, w + ix)
-                rx = w - 1
-            res[:] = plane2d[ry, rx]
-            if dy1 > dy0 and dx1 > dx0:
-                res[dy0:dy1, dx0:dx1] = plane2d[sy0:sy1, sx0:sx1]
-            return res
-
-        petal_skirt = np.zeros_like(hot)
+        shift_weights: dict[tuple[int, int], float] = {}
         for p_deg, p_w, p_rscale in petal_defs:
             p_rad = np.deg2rad(p_deg)
             ux, uy = float(np.cos(p_rad)), float(np.sin(p_rad))
             for frac in (0.28, 0.56, 0.86, 1.16):
                 dist = petal_reach * p_rscale * frac
                 w_step = p_w * float(np.exp(-1.95 * frac)) * 0.22
-                petal_skirt += _shift2d_scalar(petal_src, -uy * dist, -ux * dist) * w_step
+                iy = int(round(-uy * dist))
+                ix = int(round(-ux * dist))
+                shift_weights[(iy, ix)] = shift_weights.get((iy, ix), 0.0) + w_step
+
+        petal_skirt = np.zeros_like(hot)
+        for (iy, ix), w_step in shift_weights.items():
+            ws = np.float32(w_step)
+            if iy == 0 and ix == 0:
+                petal_skirt += petal_src * ws
+                continue
+            if iy >= 0:
+                sy0, sy1, dy0, dy1, ry = 0, max(0, h - iy), iy, h, 0
+            else:
+                sy0, sy1, dy0, dy1, ry = min(h, -iy), h, 0, max(0, h + iy), h - 1
+            if ix >= 0:
+                sx0, sx1, dx0, dx1, rx = 0, max(0, w - ix), ix, w, 0
+            else:
+                sx0, sx1, dx0, dx1, rx = min(w, -ix), w, 0, max(0, w + ix), w - 1
+            c_val = float(petal_src[ry, rx])
+            if c_val != 0.0:
+                petal_skirt += np.float32(c_val * w_step)
+            if dy1 > dy0 and dx1 > dx0:
+                if c_val != 0.0:
+                    petal_skirt[dy0:dy1, dx0:dx1] += (petal_src[sy0:sy1, sx0:sx1] - np.float32(c_val)) * ws
+                else:
+                    petal_skirt[dy0:dy1, dx0:dx1] += petal_src[sy0:sy1, sx0:sx1] * ws
 
         veil = lowpass(hot, (11.0 + 18.0 * a) * max(0.65, sc))
         peak = float(core.max())
         if peak > 1e-6:
-            core = (core / peak) * broad_damp + core * (1.0 - broad_damp)
+            core = core * np.float32(broad_damp / peak + (1.0 - broad_damp))
         p_peak = float(petal_skirt.max())
         if p_peak > 1e-6:
-            petal_skirt = (petal_skirt / p_peak) * broad_damp + petal_skirt * (1.0 - broad_damp)
+            petal_skirt = petal_skirt * np.float32(broad_damp / p_peak + (1.0 - broad_damp))
 
         coverage = float(np.clip(hot.mean() * 14.0, 0.0, 1.0)) * broad_damp
-        halo = np.clip(0.64 * core + 0.42 * petal_skirt + 0.24 * coverage * veil, 0.0, 1.75)
 
-        blown = rgb * hot[..., None]
         mass = float(hot.sum())
         if mass > 1e-6:
-            mean_rgb = blown.reshape(-1, 3).sum(axis=0) / mass
+            mean_rgb = (hot.ravel() @ rgb.reshape(-1, 3)) / mass
             g = float(mean_rgb[1])
             if g > 1e-4:
                 src_tint = np.clip(mean_rgb / g, 0.55, 1.75).astype(np.float32)
@@ -1534,7 +1536,7 @@ class CameraStage(Stage):
         out[..., 1] = (y - 0.299 * out[..., 0] - 0.114 * out[..., 2]) / 0.587
         return out.astype(np.float32)
 
-    def _signal_noise_envelope(self, rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _signal_noise_envelope(self, rgb: np.ndarray, need_chroma: bool = True) -> tuple[np.ndarray, np.ndarray]:
         """
         Physical SONY DCR-TRV310E Non-Uniform Signal-Dependent Noise Envelope (`env_luma`, `env_chroma`).
 
@@ -1558,10 +1560,13 @@ class CameraStage(Stage):
         sat_level = np.maximum(lum, peak_ch * 0.95)
         sat_clamp = 1.0 - 0.95 * (np.clip((sat_level - 0.84) / 0.13, 0.0, 1.0) ** 1.25)
 
-        env_luma = (dark_core * shot_agc * sat_clamp).astype(np.float32)
+        base_gate = (dark_core * sat_clamp).astype(np.float32, copy=False)
+        env_luma = (base_gate * shot_agc).astype(np.float32, copy=False)
+        if not need_chroma:
+            return env_luma, env_luma
         # Chroma mottle peaks in dark-to-midtone surfaces & inner halo skirts (L = 0.06..0.65)
-        chroma_bell = 0.65 + 0.78 * np.sin(np.clip((lum - 0.025) / 0.72, 0.0, 1.0) * np.pi)
-        env_chroma = (dark_core * chroma_bell * sat_clamp).astype(np.float32)
+        chroma_bell = np.float32(0.65) + np.float32(0.78) * np.sin(np.clip((lum - np.float32(0.025)) * np.float32(1.0 / 0.72), 0.0, 1.0) * np.float32(np.pi))
+        env_chroma = (base_gate * chroma_bell).astype(np.float32, copy=False)
         return env_luma, env_chroma
 
     def _gain_noise(self, rgb: np.ndarray, frame_index: int, scale_mult: float = 1.0) -> np.ndarray:
@@ -1954,11 +1959,11 @@ class CameraStage(Stage):
 
         if self.sensor_noise > 1e-4:
             n = self._noise_field(rgb.shape[:2]).sample(buf.index)
-            env_sn, _ = self._signal_noise_envelope(rgb)
+            env_sn, _ = self._signal_noise_envelope(rgb, need_chroma=False)
             rgb = rgb + (self.sensor_noise * 0.35) * (n * env_sn)[..., None]
 
         if self.fixed_pattern > 1e-4:
-            env_fp, _ = self._signal_noise_envelope(rgb)
+            env_fp, _ = self._signal_noise_envelope(rgb, need_chroma=False)
             rgb = rgb + (self.fixed_pattern * 0.06) * self._fixed_pattern(rgb.shape[:2]) * (0.25 + 0.75 * env_fp[..., None])
 
         # Pre-halo sensor readout fraction (30%); the remaining 70% CDS/AGC + CFA mottle runs after
@@ -2120,6 +2125,17 @@ class CameraStage(Stage):
                 frame_index=int(buf.index), fps=self.ctx.fps, seed=int(self.ctx.seed) + 101,
             )
             out_meta["ccu_genlock"] = ccu_info
+        if self.mobile_isp_spec.is_active():
+            m_prof = resolve_mobile_profile(self.mobile_isp_spec.profile_id)
+            rgb, m_info = run_mobile_isp_pipeline(
+                np.clip(rgb, 0.0, 1.0).astype(np.float32),
+                m_prof,
+                self.mobile_isp_spec,
+                is_video=bool(self.mobile_isp_spec.capture_mode == 1),
+                frame_index=int(buf.index),
+                seed=int(self.ctx.seed) + 307,
+            )
+            out_meta["mobile_camera_isp"] = m_info
         out_clipped = np.clip(rgb, 0.0, 1.0).astype(np.float32)
         out_meta["tap_camera_rgb"] = out_clipped
         return FrameBuffer(np.clip(rgb, 0.0, 2.0).astype(np.float32), None,

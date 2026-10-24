@@ -307,7 +307,9 @@ class SessionStore:
         params = project.resolved_params()
         w = int(getattr(src, "width", 720))
         h = int(getattr(src, "height", 480))
-        if r is None:
+        from ..core.standards import get_standard
+        want_std = get_standard(project.standard)
+        if r is None or r.seed != int(project.seed) or r.std.name != want_std.name or r.width != w or r.height != h:
             r = Renderer(src, w, h, project.fps, params, seed=project.seed,
                          std_key=project.standard, preview=preview, scale=scale)
             self._renderers[key] = r
@@ -392,6 +394,8 @@ class SessionStore:
             return FACTORY_PRESETS[key], True
         if key in CAMCORDER_PRESETS:
             return CAMCORDER_PRESETS[key], True
+        if key in PROFILE_LIBRARY.get("digital", {}):
+            return PROFILE_LIBRARY["digital"][key], True
         for group in PROFILE_LIBRARY.values():
             if key in group:
                 return group[key], False

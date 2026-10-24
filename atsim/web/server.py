@@ -296,8 +296,15 @@ class App:
                                 for k, v in touched_layers[sub_lay].items():
                                     if k in sub["params"]:
                                         sub["params"][k] = v
+            structural_change = (
+                "source" in payload
+                or payload.get("seed") is not None
+                or payload.get("standard") is not None
+                or bool(payload.get("reset_params"))
+            )
+            if structural_change:
                 self._graph_execs.clear()
-            self.store.drop(p.id)
+                self.store.drop(p.id)
             self.store.save(p)
             self._revision += 1
         return self.project_dict()
@@ -607,7 +614,7 @@ class App:
                 3: ("3_bottom_left_optical_acoustic", "左下3 · 光学与声学空间场耦合"),
                 4: ("4_bottom_right_device_telemetry", "右下4 · 设备局域坐标物理遥测"),
             }
-        elif float(cod.get("stream_enabled", 0.0)) >= 0.5 or float(cod.get("stream_mode", 0.0)) >= 0.5 or g_has("stream_cdn_client"):
+        elif float(cod.get("stream_enabled", 0.0)) >= 0.5 and (int(round(float(cod.get("stream_mode", 0.0)))) == 5 or float(cod.get("stream_quad_corner", 0.0)) > 0 or g_has("stream_cdn_client")):
             lab = "streaming"
             c_map = {
                 0: ("0_quad_2x2", "2×2 四分屏对照"),
@@ -1287,9 +1294,7 @@ class App:
                             self.current.params or {},
                             {layer: clean_p},
                         )
-                        self.store.drop(self.current.id)
                         self.store.save(self.current)
-            self._graph_execs.clear()
         return self.graph_state()
 
     def graph_group_nodes(self, payload: dict) -> dict:
@@ -1756,12 +1761,23 @@ def make_handler(app: App):
             print(f"  {self.address_string()} {fmt % args}")
 
         # -- helpers ---------------------------------------------------
+        def do_OPTIONS(self) -> None:
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def _send(self, code: int, body: bytes, ctype: str,
                   extra: dict | None = None) -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "*")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.end_headers()
@@ -1860,18 +1876,43 @@ def make_handler(app: App):
                 if path == "/api/still":
                     # Export one frame as a full-resolution still, optionally overriding
                     # `corner` (0=2x2 quad, 1..4=individual corner), `border` (0..2), and `text` (0..2).
-                    t = float((q.get("t") or ["0"])[0])
+                    try:
+                        t = float((q.get("t") or ["0"])[0])
+                    except (ValueError, TypeError):
+                        t = 0.0
                     want = (q.get("mode") or ["sim"])[0]
                     fmt = (q.get("format") or ["png"])[0].lower()
                     scale = app.resolve_scale((q.get("scale") or ["1.0"])[0], default=1.0)
-                    corner_q = int(float(q["corner"][0])) if "corner" in q and q["corner"] else None
-                    border_q = int(float(q["border"][0])) if "border" in q and q["border"] else None
-                    text_q = int(float(q["text"][0])) if "text" in q and q["text"] else None
+                    corner_q = None
+                    if "corner" in q and q["corner"] and q["corner"][0] not in ("", "null", "undefined"):
+                        try:
+                            corner_q = int(float(q["corner"][0]))
+                        except (ValueError, TypeError):
+                            corner_q = None
+                    border_q = None
+                    if "border" in q and q["border"] and q["border"][0] not in ("", "null", "undefined"):
+                        try:
+                            border_q = int(float(q["border"][0]))
+                        except (ValueError, TypeError):
+                            border_q = None
+                    text_q = None
+                    if "text" in q and q["text"] and q["text"][0] not in ("", "null", "undefined"):
+                        try:
+                            text_q = int(float(q["text"][0]))
+                        except (ValueError, TypeError):
+                            text_q = None
                     use_graph = (q.get("engine") or ["chain"])[0] == "graph"
-                    frame, slug, _lbl = app.render_still_with_quad(
-                        t, scale, want=want, corner=corner_q, border=border_q, text=text_q,
-                        use_graph=use_graph,
-                    )
+                    try:
+                        frame, slug, _lbl = app.render_still_with_quad(
+                            t, scale, want=want, corner=corner_q, border=border_q, text=text_q,
+                            use_graph=use_graph,
+                        )
+                    except Exception:
+                        r, src = app.renderer(True, scale)
+                        idx = int(round(t * app.current.fps))
+                        idx = max(0, min(idx, max(0, getattr(src, "frame_count", 1) - 1)))
+                        frame = np.clip(r.render_frame(idx), 0.0, 1.0).astype(np.float32)
+                        slug, _lbl = "still", "静帧" 
                     if fmt in ("jpg", "jpeg"):
                         data = _jpeg(frame, int((q.get("q") or ["92"])[0]))
                         ctype, ext = "image/jpeg", "jpg"

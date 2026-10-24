@@ -415,10 +415,11 @@ def chromatic_aberration(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
     a = float(spec.chroma_aberration)
     h, w = rgb.shape[:2]
     dx, dy = spec.axis_shift()
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    yy = np.arange(h, dtype=np.float32)
+    xx = np.arange(w, dtype=np.float32)
     cx = (w - 1) * 0.5 * (1.0 + dx)
     cy = (h - 1) * 0.5 * (1.0 + dy)
-    out = rgb
+    warped: dict[int, np.ndarray] = {}
     for ch, scale in ((0, 1.0 + 0.012 * a), (2, 1.0 - 0.012 * a)):
         sx = np.clip(cx + (xx - cx) / scale, 0, w - 1)
         sy = np.clip(cy + (yy - cy) / scale, 0, h - 1)
@@ -426,17 +427,20 @@ def chromatic_aberration(rgb: np.ndarray, spec: LensSpec) -> np.ndarray:
         y0 = np.floor(sy).astype(np.int32)
         x1 = np.clip(x0 + 1, 0, w - 1)
         y1 = np.clip(y0 + 1, 0, h - 1)
-        fx = (sx - x0)[..., None]
-        fy = (sy - y0)[..., None]
+        fx = (sx - x0)[None, :]
+        fy = (sy - y0)[:, None]
         plane = rgb[..., ch]
-        top = plane[y0, x0] * (1.0 - fx[..., 0]) + plane[y0, x1] * fx[..., 0]
-        bot = plane[y1, x0] * (1.0 - fx[..., 0]) + plane[y1, x1] * fx[..., 0]
-        out = out.copy()
-        out[..., ch] = top * (1.0 - fy[..., 0]) + bot * fy[..., 0]
-    r = lowpass(out[..., 0], 2.2 * a)
-    b = lowpass(out[..., 2], 2.6 * a)
-    g = lowpass(out[..., 1], 0.35 * a)
-    return np.stack([r, g, b], axis=-1).astype(np.float32)
+        row_y = plane[y0] + (plane[y1] - plane[y0]) * fy
+        c0 = row_y[:, x0]
+        c1 = row_y[:, x1]
+        c1 -= c0
+        c1 *= fx
+        c1 += c0
+        warped[ch] = c1
+    r = lowpass(warped[0], 2.2 * a)
+    b = lowpass(warped[2], 2.6 * a)
+    g = lowpass(rgb[..., 1], 0.35 * a)
+    return np.stack([r, g, b], axis=-1).astype(np.float32, copy=False)
 
 
 # ====================================================================== W-T Optical Zoom & Light Streaks
@@ -634,18 +638,53 @@ def asymmetric_ccd_smear_and_trench(
     dn_sig_x   = max(0.35, (0.65 - 0.20 * z) * sc)
     up_sig_x   = max(1.15, (2.05 - 0.45 * z) * sc)
 
-    def _conv1d_axis0_fft(arr3: np.ndarray, k1d: np.ndarray) -> np.ndarray:
+    from scipy.fft import rfft as _sp_rfft, irfft as _sp_irfft
+
+    def _conv1d_axis0_fft_single(arr3: np.ndarray, k1d: np.ndarray) -> np.ndarray:
         kh = len(k1d)
         rad = kh // 2
         n_fft = int(2 ** np.ceil(np.log2(max(2, h + kh - 1))))
-        fa = np.fft.rfft(arr3, n=n_fft, axis=0)
-        fk = np.fft.rfft(k1d, n=n_fft)[:, None, None]
-        conv = np.fft.irfft(fa * fk, n=n_fft, axis=0)
-        return conv[rad:rad + h].astype(np.float32)
+        fk = _sp_rfft(k1d, n=n_fft)[:, None, None]
+        col_mask = np.any(arr3 > 0.0, axis=(0, 2))
+        if not np.all(col_mask):
+            idx = np.flatnonzero(col_mask)
+            if idx.size == 0:
+                return np.zeros_like(arr3)
+            fa = _sp_rfft(arr3[:, idx, :], n=n_fft, axis=0)
+            c_sub = _sp_irfft(fa * fk, n=n_fft, axis=0)[rad:rad + h]
+            out_c = np.zeros_like(arr3)
+            out_c[:, idx, :] = c_sub
+            return out_c
+        fa = _sp_rfft(arr3, n=n_fft, axis=0)
+        return _sp_irfft(fa * fk, n=n_fft, axis=0)[rad:rad + h].astype(np.float32, copy=False)
 
-    v_neck = lowpass(_conv1d_axis0_fft(emit_src, k_neck), neck_sig_x, axis=1)
-    v_down = lowpass(_conv1d_axis0_fft(needle_src, k_far_dn), dn_sig_x, axis=1)
-    v_up   = lowpass(_conv1d_axis0_fft(needle_src, k_far_up), up_sig_x, axis=1)
+    def _conv1d_axis0_fft_pair(arr3: np.ndarray, k1: np.ndarray, k2: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        kh = len(k1)
+        rad = kh // 2
+        n_fft = int(2 ** np.ceil(np.log2(max(2, h + kh - 1))))
+        fk1 = _sp_rfft(k1, n=n_fft)[:, None, None]
+        fk2 = _sp_rfft(k2, n=n_fft)[:, None, None]
+        col_mask = np.any(arr3 > 0.0, axis=(0, 2))
+        if not np.all(col_mask):
+            idx = np.flatnonzero(col_mask)
+            if idx.size == 0:
+                z_arr = np.zeros_like(arr3)
+                return z_arr, z_arr.copy()
+            fa = _sp_rfft(arr3[:, idx, :], n=n_fft, axis=0)
+            c1 = np.zeros_like(arr3)
+            c2 = np.zeros_like(arr3)
+            c1[:, idx, :] = _sp_irfft(fa * fk1, n=n_fft, axis=0)[rad:rad + h]
+            c2[:, idx, :] = _sp_irfft(fa * fk2, n=n_fft, axis=0)[rad:rad + h]
+            return c1, c2
+        fa = _sp_rfft(arr3, n=n_fft, axis=0)
+        c1 = _sp_irfft(fa * fk1, n=n_fft, axis=0)[rad:rad + h].astype(np.float32, copy=False)
+        c2 = _sp_irfft(fa * fk2, n=n_fft, axis=0)[rad:rad + h].astype(np.float32, copy=False)
+        return c1, c2
+
+    v_neck = lowpass(_conv1d_axis0_fft_single(emit_src, k_neck), neck_sig_x, axis=1)
+    _vd_raw, _vu_raw = _conv1d_axis0_fft_pair(needle_src, k_far_dn, k_far_up)
+    v_down = lowpass(_vd_raw, dn_sig_x, axis=1)
+    v_up   = lowpass(_vu_raw, up_sig_x, axis=1)
 
     # Interlaced 2-row readout beading on the downward vertical shift register needle
     rows_y = np.arange(h, dtype=np.float32)[:, None, None]

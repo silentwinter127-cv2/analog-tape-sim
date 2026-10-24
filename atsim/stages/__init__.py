@@ -14,5 +14,9 @@ for _mod_name in ("film",):
             if _spec and _spec.loader:
                 _m = importlib.util.module_from_spec(_spec)
                 sys.modules[_full] = _m
-                _spec.loader.exec_module(_m)
-                globals()[_mod_name] = _m
+                try:
+                    _spec.loader.exec_module(_m)
+                    globals()[_mod_name] = _m
+                except Exception as _exc:
+                    import sys as _sys
+                    print(f"[atsim.stages] Warning: failed to load {_full}: {_exc}", file=_sys.stderr)

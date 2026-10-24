@@ -55,9 +55,6 @@ class ClipSource:
                 if len(decoded) >= chunk:
                     break
         if not decoded:
-            # MP4 containers (especially AI-generated clips or VFR streams) often report
-            # slightly more frames in metadata than FFmpeg `-ss` can seek to at the tail.
-            # Gracefully clamp `frame_count` and hold the last decoded frame instead of crashing.
             with self._lock:
                 if self._cache:
                     last_idx = max(self._cache)
@@ -70,8 +67,6 @@ class ClipSource:
                     self._cache[index] = self._last_frame
                     self.frame_count = min(self.frame_count, max(1, index))
                     return self._last_frame
-            # If the user scrubbed directly to the end before any frame was cached,
-            # step back to decode the final available frame in the stream.
             for back_start in (max(0, index - 16), max(0, index - 48), 0):
                 back_frames: list[np.ndarray] = []
                 with VideoReader(self.path, self.info, self.scale, start=back_start, count=24,
@@ -121,12 +116,6 @@ class ClipSource:
 class StillSource:
     """
     A single image presented as a clip.
-
-    Imports and exports of stills are a first-class path, not a special case: a
-    photograph is simply a clip of length one, so making it look like a normal
-    source means every stage, the A/B reference, the render job and the export
-    paths all work on it unchanged.  `frame()` returns the same picture whatever
-    index is asked for, which is also what a paused deck does.
     """
 
     def __init__(self, path: str | Path, scale: float = 1.0,
@@ -173,6 +162,9 @@ class StillSource:
 
 
 # ---------------------------------------------------------------------------
+_SYNTH_CHART_CACHE: dict[tuple[int, int], np.ndarray] = {}
+
+
 class SyntheticSource:
     """
     A procedurally generated clip.  Used for the self-test and for the in-app
@@ -189,41 +181,51 @@ class SyntheticSource:
                               fps=self.fps, frame_count=self.frame_count,
                               duration=self.frame_count / self.fps, has_audio=False,
                               codec="synthetic")
+        self._base_chart: np.ndarray | None = None
+        if self.variant == "chart":
+            key = (self.height, self.width)
+            base = _SYNTH_CHART_CACHE.get(key)
+            if base is None:
+                h, w = self.height, self.width
+                yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+                nx = xx / max(1, w - 1)
+                ny = yy / max(1, h - 1)
+                img = np.zeros((h, w, 3), dtype=np.float32)
+                bars = np.array([
+                    [1.0, 1.0, 1.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0], [0.0, 1.0, 0.0],
+                    [1.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.15, 0.15, 0.15],
+                ], dtype=np.float32)
+                seg = np.clip((nx * 8).astype(np.int32), 0, 7)
+                img[: int(h * 0.45)] = bars[seg][: int(h * 0.45)]
+                step = ((nx[..., None] > 0.5) * 1.0).repeat(3, axis=2)
+                img[int(h * 0.45): int(h * 0.62)] = step[int(h * 0.45): int(h * 0.62)]
+                r = np.sqrt((nx - 0.5) ** 2 + ((ny - 0.78) * w / h) ** 2)
+                plate = 0.5 + 0.5 * np.cos(2 * np.pi * 60.0 * r ** 2)
+                zone = plate[int(h * 0.62):, :, None] * np.array([1.0, 1.0, 1.0], dtype=np.float32)
+                img[int(h * 0.62):] = zone * 0.9
+                base = np.clip(img, 0.0, 1.0).astype(np.float32)
+                _SYNTH_CHART_CACHE[key] = base
+            self._base_chart = base
 
     def frame(self, index: int) -> np.ndarray:
         t = index / max(1e-6, self.fps)
         h, w = self.height, self.width
-        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-        nx = xx / max(1, w - 1)
-        ny = yy / max(1, h - 1)
-        img = np.zeros((h, w, 3), dtype=np.float32)
-
-        if self.variant == "chart":
-            # grey staircase + colour bars + fine detail: the right test signal
-            # for bandwidth, cross-colour and chroma resolution
-            bars = np.array([
-                [1.0, 1.0, 1.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0], [0.0, 1.0, 0.0],
-                [1.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.15, 0.15, 0.15],
-            ], dtype=np.float32)
-            seg = np.clip((nx * 8).astype(np.int32), 0, 7)
-            img[: int(h * 0.45)] = bars[seg][: int(h * 0.45)]
-            step = ((nx[..., None] > 0.5) * 1.0).repeat(3, axis=2)
-            img[int(h * 0.45): int(h * 0.62)] = step[int(h * 0.45): int(h * 0.62)]
-            # zone plate: the classic way to see cross-colour and dot crawl
-            r = np.sqrt((nx - 0.5) ** 2 + ((ny - 0.78) * w / h) ** 2)
-            plate = 0.5 + 0.5 * np.cos(2 * np.pi * 60.0 * r ** 2)
-            zone = plate[int(h * 0.62):, :, None] * np.array([1.0, 1.0, 1.0], dtype=np.float32)
-            img[int(h * 0.62):] = zone * 0.9
-            # moving marker so temporal behaviour is visible
+        if self.variant == "chart" and self._base_chart is not None:
+            img = self._base_chart.copy()
             cx = int((0.1 + 0.8 * (0.5 + 0.5 * np.sin(t * 2 * np.pi))) * (w - 1))
             cy = int(0.70 * h)
             img[max(0, cy - 8):cy + 8, max(0, cx - 8):cx + 8] = np.array(
                 [0.05, 0.05, 0.05], dtype=np.float32)
-        else:
-            ramp = (0.5 + 0.5 * np.sin(2 * np.pi * (nx * 3 + t * 0.4)))
-            img[..., 0] = ramp
-            img[..., 1] = 0.5 + 0.4 * np.cos(2 * np.pi * (ny * 5 - t * 0.3))
-            img[..., 2] = 0.6 * ramp + 0.2
+            return img
+
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        nx = xx / max(1, w - 1)
+        ny = yy / max(1, h - 1)
+        img = np.zeros((h, w, 3), dtype=np.float32)
+        ramp = (0.5 + 0.5 * np.sin(2 * np.pi * (nx * 3 + t * 0.4)))
+        img[..., 0] = ramp
+        img[..., 1] = 0.5 + 0.4 * np.cos(2 * np.pi * (ny * 5 - t * 0.3))
+        img[..., 2] = 0.6 * ramp + 0.2
         return np.clip(img, 0.0, 1.0).astype(np.float32)
 
     def prefetch(self, start: int, count: int) -> None:

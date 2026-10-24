@@ -1,17 +1,9 @@
 """
-Stage 01b -- Photochemical Film & LOMO Darkroom Stage (`film`).
+Stage 01b -- Standalone Photochemical Film & LOMO Darkroom System.
 
-Decoupled from `CameraStage` (`01 成像系统`) so that photochemical silver-halide
-emulsion response, LOMO cross-processing (`E-6 in C-41` / `C-41 in E-6`),
-expired film base fog (`D_min`), Redscale reverse-loading, LOMO plastic meniscus
-vignette, shaped heart bokeh, light leaks, double exposure, projector mechanics,
-and Rank Cintel flying-spot telecine operate as a dedicated, standalone stage
-and layer (`01b 胶片光化学 (胶片/LOMO)`).
-
-Backward compatibility:
-  If `film.enabled` is off (`0`), `FilmStage` automatically checks whether the
-  legacy `camera.film_enabled` parameter is active and seamlessly runs the
-  photochemical/telecine pipeline from `camera` layer parameters.
+Placed after camera stage (01) and before format stage (02), giving photochemical film
+its own architectural stage and parameter namespace (`film`), while maintaining full
+backward-compatibility with legacy `camera.film_*` and `camera.process_mode` settings.
 """
 from __future__ import annotations
 
@@ -22,9 +14,11 @@ from ..codecs.photochemical_film import (
     apply_photochemical_film_pipeline,
 )
 from ..core.pipeline import FrameBuffer, RenderContext, Stage
+from ..core.signal import SignalFrame
 
 
 class FilmStage(Stage):
+    """01b 胶片光化学独立阶段 (FilmStage)。"""
     name = "film"
     layers = ("film", "camera")
 
@@ -33,33 +27,45 @@ class FilmStage(Stage):
         self._read_params()
 
     def _read_params(self) -> None:
-        film_cfg = self.cfg_of("film")
-        cam_cfg = self.cfg_of("camera")
-        self.spec = PhotochemicalFilmSpec.from_params(film_cfg, fallback_cam=cam_cfg)
+        cfg_film = self.cfg_of("film")
+        cfg_cam = self.cfg_of("camera")
+        self.spec = PhotochemicalFilmSpec.from_params(cfg_film, fallback_cam=cfg_cam)
 
     def on_params_changed(self) -> None:
         self._read_params()
 
     def apply(self, buf: FrameBuffer) -> FrameBuffer:
-        self._read_params()
         if not self.spec.enabled:
             return buf
-        rgb = np.clip(buf.rgb, 0.0, 1.0).astype(np.float32)
+
+        # Avoid redundant double application if already applied by a dedicated node
+        if buf.meta.get("film_applied"):
+            return buf
+
+        sig: SignalFrame | None = buf.meta.get("signal")
+        rgb_in = sig.to_rgb() if sig is not None else np.clip(buf.rgb, 0.0, 1.0).astype(np.float32)
+
         sec_rgb = None
         if getattr(self.ctx, "source", None) is not None:
             try:
                 sec_rgb = np.clip(self.ctx.source.frame(int(buf.index) + 1), 0.0, 1.0).astype(np.float32)
             except Exception:
                 sec_rgb = None
+
+        optics_done = "film_optics" in buf.meta
         out_rgb, info = apply_photochemical_film_pipeline(
-            rgb,
+            rgb_in,
             self.spec,
             frame_index=int(buf.index),
-            seed=self.ctx.seed,
+            seed=int(self.ctx.seed) + 101,
             secondary_rgb=sec_rgb,
+            optics_already_applied=optics_done,
         )
+
         meta = dict(buf.meta)
         meta["photochemical_film"] = info
-        meta["film_telecine"] = info
-        meta["tap_film_rgb"] = out_rgb
+        meta["film_applied"] = True
+        if sig is not None:
+            meta["signal"] = SignalFrame.from_rgb(out_rgb, buf.std)
+
         return FrameBuffer(out_rgb, buf.composite, buf.index, buf.time, buf.std, meta)

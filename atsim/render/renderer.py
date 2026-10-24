@@ -24,6 +24,7 @@ import numpy as np
 
 from ..core.pipeline import Chain, FrameBuffer, RenderContext, Stage
 from ..core.profiles import SCHEMA
+from ..core.signal import SignalFrame
 from ..core.standards import get_standard
 from ..stages.camera import CameraStage
 from ..stages.film import FilmStage
@@ -72,6 +73,29 @@ def _hash(obj) -> str:
     ).hexdigest()
 
 
+def _fast_clone_meta(meta: dict | None) -> dict:
+    """
+    Fast clone of FrameBuffer.meta without generic Python `copy.deepcopy`.
+    Clones mutable SignalFrame planes while keeping read-only tap RGB arrays
+    and telemetry dicts by reference.
+    """
+    if not meta:
+        return {}
+    out: dict = {}
+    for k, v in meta.items():
+        if k in ("dropout_mask", "crease_mask", "line_phase"):
+            continue
+        if isinstance(v, SignalFrame):
+            out[k] = v.copy()
+        elif k == "bus_b_yiq" and isinstance(v, tuple) and len(v) == 3:
+            out[k] = (v[0].copy(), v[1].copy(), v[2].copy())
+        elif isinstance(v, dict):
+            out[k] = dict(v)
+        else:
+            out[k] = v
+    return out
+
+
 @dataclass
 class DirtyInfo:
     first_dirty_stage: str | None = None
@@ -116,6 +140,8 @@ class Renderer:
         self.chain: Chain | None = None
         self.stage: dict[str, Stage] = {}
         self._layer_hashes: dict[str, str] = self._compute_hashes()
+        self._own_hashes: dict[str, str] = self._compute_own_hashes()
+        self._osd_at: int = int(round(float(self.params.get("overlay", {}).get("at", 0.0)) or 0.0))
         self.dirty_from = STAGE_ORDER[0]
         self.dirty_frame = 0
         self._cache: dict[str, dict[int, np.ndarray]] = {s: {} for s in STAGE_ORDER}
@@ -143,20 +169,44 @@ class Renderer:
             h[stage_name] = _hash(acc)
         return h
 
+    def _compute_own_hashes(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for stage_name in STAGE_ORDER:
+            sub = {layer: self.params.get(layer, {}) for layer in STAGE_LAYERS[stage_name]}
+            out[stage_name] = _hash(sub)
+        return out
+
     def invalidate(self, params: dict[str, dict[str, float]] | None = None) -> DirtyInfo:
         if params is not None:
             self.params = self.schema.resolve_all(params)
-            self._build_chain()
         new = self._compute_hashes()
+        new_own = self._compute_own_hashes()
         first: str | None = None
         for stage_name in STAGE_ORDER:
             if new[stage_name] != self._layer_hashes.get(stage_name):
                 first = stage_name
                 break
-        self._layer_hashes = new
         if first is None:
             return DirtyInfo(None, 0, self._cached_count())
 
+        idx = STAGE_ORDER.index(first)
+        dirty_stage_names = set(STAGE_ORDER[idx:])
+        new_osd_at = int(round(float(self.params.get("overlay", {}).get("at", 0.0)) or 0.0))
+        if self.chain is None or new_osd_at != self._osd_at:
+            self._build_chain()
+        else:
+            self.chain.ctx.params = self.params
+            for idx_s, st in enumerate(self.chain.stages):
+                if st.name in dirty_stage_names or new_own.get(st.name) != self._own_hashes.get(st.name):
+                    new_st = self._make_stage(st.name, self.chain.ctx, new_osd_at)
+                    new_st.prepare()
+                    self.chain.stages[idx_s] = new_st
+                    self.stage[st.name] = new_st
+                    if st.name == "camera":
+                        self._prev_src = None
+
+        self._layer_hashes = new
+        self._own_hashes = new_own
         idx = STAGE_ORDER.index(first)
         for stage_name in STAGE_ORDER[idx:]:
             self._cache[stage_name] = {}
@@ -180,6 +230,28 @@ class Renderer:
     # ------------------------------------------------------------------
     # chain construction
     # ------------------------------------------------------------------
+    def _make_stage(self, name: str, ctx: RenderContext, osd_at: int) -> Stage:
+        if name == "camera":
+            return CameraStage(ctx)
+        if name == "film":
+            return FilmStage(ctx)
+        if name == "format":
+            return FormatStage(ctx)
+        if name == "codec":
+            return CodecStage(ctx)
+        if name == "connector":
+            return ConnectorStage(ctx)
+        if name == "tape":
+            return TapeStage(ctx)
+        if name == "player":
+            return PlayerStage(ctx)
+        if name == "display":
+            return DisplayStage(ctx)
+        if name == "overlay":
+            slot = OverlayStage.SLOT_PRE_TAPE if osd_at == 1 else OverlayStage.SLOT_TAIL
+            return OverlayStage(ctx, slot=slot)
+        raise KeyError(name)
+
     def _build_chain(self) -> None:
         ctx = RenderContext(
             std=self.std, params=self.params, seed=self.seed,
@@ -191,6 +263,7 @@ class Renderer:
         chain.add(CameraStage(ctx)).add(FilmStage(ctx)).add(FormatStage(ctx)).add(CodecStage(ctx))
         chain.add(ConnectorStage(ctx))
         _osd_at = int(round(float(self.params.get("overlay", {}).get("at", 0.0)) or 0.0))
+        self._osd_at = _osd_at
         if _osd_at == 1:
             chain.add(OverlayStage(ctx, slot=OverlayStage.SLOT_PRE_TAPE))
         chain.add(TapeStage(ctx)).add(PlayerStage(ctx)).add(DisplayStage(ctx))
@@ -199,6 +272,7 @@ class Renderer:
         chain.prepare()
         self.chain = chain
         self.stage = {s.name: s for s in chain.stages}
+        self._own_hashes = self._compute_own_hashes()
         self._prev_src = None
 
     def plan(self) -> dict:
@@ -326,7 +400,7 @@ class Renderer:
                 if aux is not None:
                     comp_c, meta_c = aux
                     comp_copy = comp_c.copy() if comp_c is not None else None
-                    meta_copy = copy.deepcopy(meta_c)
+                    meta_copy = _fast_clone_meta(meta_c)
                 else:
                     comp_copy = None
                     meta_copy = {"field": index % 2}
@@ -363,13 +437,9 @@ class Renderer:
             dt = (time.perf_counter() - t) * 1000.0
             self.stage_ms[st.name] = self.stage_ms.get(st.name, 0.0) * 0.7 + dt * 0.3
             if not self.streaming and pos >= capture_from and pos < len(STAGE_ORDER) - 1:
-                slim_meta = {
-                    k: v for k, v in buf.meta.items()
-                    if k not in ("dropout_mask", "crease_mask", "line_phase")
-                }
                 pending.append((st.name, buf.rgb,
                                 buf.composite.copy() if buf.composite is not None else None,
-                                copy.deepcopy(slim_meta)))
+                                _fast_clone_meta(buf.meta)))
         self.last_render_ms = (time.perf_counter() - t0) * 1000.0
         if not self.streaming:
             limit_f = self.max_cache_frames
@@ -407,7 +477,7 @@ class Renderer:
 
         top = max(wanted)
         start_idx = 0
-        if self.preview and len(wanted) == 1 and not self.streaming and self._keyframes is None:
+        if self.preview and len(wanted) == 1 and not self.streaming:
             cam_p = self.params.get("camera") or {}
             fmt_p = self.params.get("format") or {}
             tpe_p = self.params.get("tape") or {}
@@ -421,11 +491,7 @@ class Renderer:
                 or float(tpe_p.get("shuttle_speed", 0.0)) > 1e-4
             )
             if not needs_multi:
-                has_persist = (
-                    float(dsp_p.get("enabled", 1.0)) > 0.5
-                    and float(dsp_p.get("phosphor_persistence", 0.0)) > 1e-4
-                )
-                start_idx = max(0, top - (1 if has_persist else 0))
+                start_idx = top
             else:
                 start_idx = max(0, top - 6)
         pumped = 0
@@ -463,8 +529,9 @@ class Renderer:
     def still(self, index: int) -> np.ndarray:
         """Render one frame without disturbing the cache (used by A/B splits)."""
         saved = {s: dict(self._cache[s]) for s in STAGE_ORDER}
+        saved_buf = {s: dict(self._cache_buf[s]) for s in STAGE_ORDER}
         try:
             return self.render_frame(index)
         finally:
             self._cache = saved
-            self._build_chain()
+            self._cache_buf = saved_buf

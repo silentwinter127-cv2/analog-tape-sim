@@ -285,7 +285,11 @@ def apply_lomo_optics_and_leaks(
         if float(hot.max()) > 1e-4:
             k_rad = max(4, int(round((8.0 + 5.0 * bokeh_amt) * scale_w)))
             kern = build_shaped_bokeh_kernel(bokeh_sh if bokeh_sh > 0 else 1, radius_px=k_rad)
-            bokeh_field = convolve(hot, kern, mode="nearest")
+            try:
+                import cv2 as _cv2
+                bokeh_field = _cv2.filter2D(hot, _cv2.CV_32F, kern[::-1, ::-1], borderType=_cv2.BORDER_REPLICATE)
+            except Exception:
+                bokeh_field = convolve(hot, kern, mode="nearest")
             b_max = max(float(bokeh_field.max()), 1e-4)
             bokeh_norm = np.clip(bokeh_field / b_max, 0.0, 1.2)
             if bokeh_sh == 1:

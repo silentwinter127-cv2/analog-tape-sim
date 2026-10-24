@@ -102,18 +102,11 @@ def apply_deflection(rgb: np.ndarray, deflection: float, frame_index: int,
     # and a slight horizontal bow, because the horizontal output stage is loaded asymmetrically
     bow = (d * 3.5) * np.sin(np.linspace(0.0, np.pi, h, dtype=np.float32))
 
-    y_idx = np.clip(np.round(yy).astype(np.int32), 0, h - 1)
-    out = np.zeros_like(rgb)
-    inside_y = (yy >= 0.0) & (yy < h)
-    for row in range(h):
-        if not inside_y[row]:
-            continue
-        x_row = xx + bow[row]
-        inside_x = (x_row >= 0.0) & (x_row < w)
-        x_idx = np.clip(np.round(x_row).astype(np.int32), 0, w - 1)
-        line = rgb[y_idx[row], x_idx]
-        line[~inside_x] = 0.0
-        out[row] = line
+    y_idx = np.clip(np.round(yy).astype(np.int32), 0, h - 1)[:, None]
+    x_2d = xx[None, :] + bow[:, None]
+    x_idx = np.clip(np.round(x_2d).astype(np.int32), 0, w - 1)
+    inside = ((yy >= 0.0) & (yy < h))[:, None] & (x_2d >= 0.0) & (x_2d < w)
+    out = np.where(inside[..., None], rgb[y_idx, x_idx], np.float32(0.0))
 
     return out, {"raster_scale": round(scale, 4)}
 
@@ -316,7 +309,6 @@ def apply_faceplate_halation(rgb: np.ndarray, glass_halation: float,
          the characteristic soft CRT halation ring/veil with a subtle warm-amber/cyan glass tint.
     """
     out = rgb.astype(np.float32, copy=True)
-    lum = np.clip(out @ LUMA, 0.0, 2.0)
 
     if bloom > 1e-3:
         # Energy-proportional highlight extraction (smooth knee above 0.65)
@@ -326,7 +318,7 @@ def apply_faceplate_halation(rgb: np.ndarray, glass_halation: float,
             mid = lowpass(hot_rgb, max(1.8, (6.0 + 11.0 * bloom) * scale_w))
             # Soft peak adaptation so genuinely bright highlights glow strongly while barely-above-threshold
             # regions glow proportionally
-            ref_scale = 1.0 / max(0.28, float(np.percentile(hot_rgb, 99.5)) + 0.12)
+            _flat_h = hot_rgb.ravel(); _k995 = int(0.995 * (_flat_h.size - 1)); ref_scale = 1.0 / max(0.28, float(np.partition(_flat_h, _k995)[_k995]) + 0.12)
             ref_scale = float(np.clip(ref_scale, 0.8, 3.2))
             out = out + (bloom * 0.42 * ref_scale) * (0.68 * tight + 0.32 * mid)
 
@@ -433,55 +425,65 @@ def apply_ehv_line_sag(rgb: np.ndarray, ehv_sag: float, scale_w: float = 1.0) ->
     return out.astype(np.float32)
 
 
+_BEZEL_GLASS_CACHE: dict[tuple, tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]] = {}
+
+
 def apply_curved_bezel_and_glass(rgb: np.ndarray, bezel: float, reflection: float,
                                  curvature: float = 0.0) -> np.ndarray:
     """
     Physical CRT curved mask bezel, corner cutoff, inner shadow rim, and 3D Fresnel glass reflection.
     """
-    out = rgb.astype(np.float32, copy=True)
-    h, w = out.shape[:2]
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    nx = (xx / max(1, w - 1)) * 2.0 - 1.0
-    ny = (yy / max(1, h - 1)) * 2.0 - 1.0
-
-    # 3D Curved Faceplate Specular & Fresnel Ambient Reflection
+    h, w = rgb.shape[:2]
     refl = float(np.clip(reflection, 0.0, 1.0))
-    if refl > 1e-3:
-        # Surface normal of the curved glass dome tilts outward with (nx, ny)
-        curv_eff = 0.35 + 0.65 * float(np.clip(curvature, 0.0, 1.2))
-        u_refl = nx * (1.0 + 0.18 * curv_eff * (nx * nx + ny * ny))
-        v_refl = ny * (1.0 + 0.18 * curv_eff * (nx * nx + ny * ny))
-        # Soft overhead/window studio light reflection on the curved glass + Fresnel edge sheen
-        spot1 = np.exp(-(((u_refl + 0.42) ** 2 + (v_refl + 0.48) ** 2) / 0.22))
-        spot2 = 0.38 * np.exp(-(((u_refl - 0.52) ** 2 + (v_refl + 0.36) ** 2) / 0.45))
-        r2 = nx * nx + ny * ny
-        fresnel = (1.0 - np.clip(1.0 - 0.42 * r2, 0.0, 1.0)) ** 2
-        sky_grad = np.clip(0.55 - 0.45 * v_refl, 0.0, 1.0) * (0.25 + 0.75 * fresnel)
-        glass_glare = (0.72 * spot1 + 0.28 * spot2 + 0.24 * sky_grad)[..., None]
-        glare_tint = np.array([0.96, 0.99, 1.04], dtype=np.float32)[None, None, :]
-        out = out + (refl * 0.20) * glass_glare * glare_tint
-
-    # Physical Curved CRT Bezel & Corner Masking (`bezel`)
     bz = float(np.clip(bezel, 0.0, 1.0))
-    if bz > 1e-3:
-        # Superellipse (squircle) tube aperture boundary: |x/a|^p + |y/b|^p = 1
-        # Higher `bezel` rounds the corners and brings the inner shadow bezel into frame
-        bow = 0.035 * bz * (1.0 + 0.8 * float(np.clip(curvature, 0.0, 1.0)))
-        ax = np.abs(nx) * (1.0 + bow * (ny * ny))
-        ay = np.abs(ny) * (1.0 + bow * (nx * nx))
-        power = max(4.0, 14.0 - 8.5 * bz)
-        dist = (ax ** power + ay ** power) ** (1.0 / power)
-        edge_limit = 1.015 - 0.035 * bz
-        # Crisp bezel cutoff + soft inner shadow rim from the recessed glass thickness
-        inside = np.clip((edge_limit - dist) / max(0.006, 0.012 * bz), 0.0, 1.0)
-        rim_shadow = np.clip((edge_limit - dist) / max(0.025, 0.065 * bz), 0.0, 1.0) ** 0.45
-        bezel_mask = (inside * (0.35 + 0.65 * rim_shadow))[..., None].astype(np.float32)
-        # Subtle dark bezel specular lip right on the boundary
-        lip = np.exp(-0.5 * ((dist - edge_limit - 0.006) / 0.005) ** 2) * (1.0 - inside)
-        lip_rgb = (0.045 * bz * lip)[..., None] * np.array([0.85, 0.88, 0.92], dtype=np.float32)
-        out = out * bezel_mask + lip_rgb
+    if refl <= 1e-3 and bz <= 1e-3:
+        return rgb
+    key = (h, w, round(bz, 4), round(refl, 4), round(float(curvature), 4))
+    hit = _BEZEL_GLASS_CACHE.get(key)
+    if hit is None:
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        nx = (xx / max(1, w - 1)) * 2.0 - 1.0
+        ny = (yy / max(1, h - 1)) * 2.0 - 1.0
+        glare_term = None
+        if refl > 1e-3:
+            curv_eff = 0.35 + 0.65 * float(np.clip(curvature, 0.0, 1.2))
+            r2 = nx * nx + ny * ny
+            u_refl = nx * (1.0 + 0.18 * curv_eff * r2)
+            v_refl = ny * (1.0 + 0.18 * curv_eff * r2)
+            spot1 = np.exp(-(((u_refl + 0.42) ** 2 + (v_refl + 0.48) ** 2) / 0.22))
+            spot2 = 0.38 * np.exp(-(((u_refl - 0.52) ** 2 + (v_refl + 0.36) ** 2) / 0.45))
+            fresnel = (1.0 - np.clip(1.0 - 0.42 * r2, 0.0, 1.0)) ** 2
+            sky_grad = np.clip(0.55 - 0.45 * v_refl, 0.0, 1.0) * (0.25 + 0.75 * fresnel)
+            glass_glare = (0.72 * spot1 + 0.28 * spot2 + 0.24 * sky_grad)[..., None]
+            glare_tint = np.array([0.96, 0.99, 1.04], dtype=np.float32)[None, None, :]
+            glare_term = ((refl * 0.20) * glass_glare * glare_tint).astype(np.float32)
+        bezel_mask = None
+        lip_rgb = None
+        if bz > 1e-3:
+            bow = 0.035 * bz * (1.0 + 0.8 * float(np.clip(curvature, 0.0, 1.0)))
+            ax = np.abs(nx) * (1.0 + bow * (ny * ny))
+            ay = np.abs(ny) * (1.0 + bow * (nx * nx))
+            power = max(4.0, 14.0 - 8.5 * bz)
+            dist = (ax ** power + ay ** power) ** (1.0 / power)
+            edge_limit = 1.015 - 0.035 * bz
+            inside = np.clip((edge_limit - dist) / max(0.006, 0.012 * bz), 0.0, 1.0)
+            rim_shadow = np.clip((edge_limit - dist) / max(0.025, 0.065 * bz), 0.0, 1.0) ** 0.45
+            bezel_mask = (inside * (0.35 + 0.65 * rim_shadow))[..., None].astype(np.float32)
+            lip = np.exp(-0.5 * ((dist - edge_limit - 0.006) / 0.005) ** 2) * (1.0 - inside)
+            lip_rgb = ((0.045 * bz * lip)[..., None] * np.array([0.85, 0.88, 0.92], dtype=np.float32)).astype(np.float32)
+        hit = (glare_term, bezel_mask, lip_rgb)
+        if len(_BEZEL_GLASS_CACHE) > 24:
+            _BEZEL_GLASS_CACHE.pop(next(iter(_BEZEL_GLASS_CACHE)), None)
+        _BEZEL_GLASS_CACHE[key] = hit
 
-    return out.astype(np.float32)
+    glare_term, bezel_mask, lip_rgb = hit
+    out = rgb.astype(np.float32, copy=True)
+    if glare_term is not None:
+        out += glare_term
+    if bezel_mask is not None and lip_rgb is not None:
+        out *= bezel_mask
+        out += lip_rgb
+    return out
 
 
 # ===========================================================================
@@ -967,80 +969,69 @@ def apply_trinitron_kv1214_optics(
         # Slight CRT gamma & black-pedestal contrast curve matching Ref
         out = np.clip(0.012 + 0.988 * (out ** 1.08), 0.0, 1.0)
 
-    # 3. 12-Inch Coarse Vertical Aperture Grille + 4K Curved Moire Interference Fringes (`每根摩尔纹都清清楚楚`)
+    # 3. 12-Inch Coarse Vertical Aperture Grille + 4K Curved Moire Interference Fringes (Cached static geometry)
     pitch = max(1.8, float(spec.grille_pitch) * scale_w)
     moire_str = float(np.clip(spec.moire_strength, 0.0, 1.5))
+    kv_key = (h, w, round(pitch, 4), round(moire_str, 4), round(float(spec.cyl_bezel), 4))
+    kv_static = _BEZEL_GLASS_CACHE.get(("kv1214",) + kv_key)  # type: ignore[arg-type]
+    if kv_static is None:
+        x_grille = xx * (1.0 + 0.045 * (nx * nx) + 0.012 * nx * ny)
+        phi_g = 2.0 * np.pi * (x_grille / pitch)
+        stripe_r = 0.5 + 0.5 * np.cos(phi_g)
+        stripe_g = 0.5 + 0.5 * np.cos(phi_g - 2.0944)
+        stripe_b = 0.5 + 0.5 * np.cos(phi_g + 2.0944)
+        bm_guard = 0.76 + 0.24 * np.cos(phi_g * 1.5) ** 2
+        grille_depth = 0.36 + 0.16 * min(1.0, moire_str)
+        g_mask = np.stack([
+            (1.0 - grille_depth) + grille_depth * stripe_r * bm_guard,
+            (1.0 - grille_depth) + grille_depth * stripe_g * bm_guard,
+            (1.0 - grille_depth) + grille_depth * stripe_b * bm_guard,
+        ], axis=-1).astype(np.float32)
+        wy = 0.52 * h
+        damper_wire = 1.0 - 0.16 * np.exp(-0.5 * ((yy - wy) / max(0.55, 0.65 * scale_h)) ** 2)
+        g_mask *= damper_wire[..., None]
+        for ch in range(3):
+            g_mask[..., ch] /= max(1e-5, float(g_mask[..., ch].mean()))
 
-    # Continuous vertical R, G, B phosphor stripes (raise HFx strongly while keeping HFy smooth -> HFx/HFy ~ 1.45)
-    # Cylindrical foreshortening slightly compresses the apparent grille pitch toward the left/right edges
-    x_grille = xx * (1.0 + 0.045 * (nx * nx) + 0.012 * nx * ny)
-    phi_g = 2.0 * np.pi * (x_grille / pitch)
-    stripe_r = 0.5 + 0.5 * np.cos(phi_g)
-    stripe_g = 0.5 + 0.5 * np.cos(phi_g - 2.0944)
-    stripe_b = 0.5 + 0.5 * np.cos(phi_g + 2.0944)
-    # Carbon Black Matrix guard slots between triads
-    bm_guard = 0.76 + 0.24 * np.cos(phi_g * 1.5) ** 2
+        bp1_spatial = (2.0 * np.pi * (nx * 6.8 + 1.85 * (nx ** 3) + 0.95 * nx * (ny ** 2) + 0.42 * ny)).astype(np.float32)
+        cos_bp1 = (0.68 * np.cos(bp1_spatial)).astype(np.float32)
+        sin_bp1 = (0.68 * np.sin(bp1_spatial)).astype(np.float32)
+        bp2 = (2.0 * np.pi * (nx * 14.5 + 2.4 * (nx ** 2) * ny - 0.65 * ny)).astype(np.float32)
+        m_wave_2 = (0.32 * np.cos(bp2)).astype(np.float32)
+        mr_b2 = (0.32 * np.cos(bp2 - 0.30)).astype(np.float32)
+        mb_b2 = (0.32 * np.cos(bp2 + 0.30)).astype(np.float32)
+        scan_p = max(1.8, 2.0 * scale_h)
+        scan_wave = (1.0 - 0.12 * (0.5 - 0.5 * np.cos(2.0 * np.pi * (yy / scan_p)))).astype(np.float32)
+        cyl_mask = None
+        if spec.cyl_bezel > 1e-3:
+            bz = float(spec.cyl_bezel)
+            dist_cyl = (np.abs(nx) ** 8.0 + (np.abs(ny) * (1.0 + 0.025 * bz * (nx * nx))) ** 10.0) ** 0.11
+            inside = np.clip((1.008 - 0.022 * bz - dist_cyl) / 0.008, 0.0, 1.0)
+            rim = np.clip((1.008 - 0.022 * bz - dist_cyl) / 0.042, 0.0, 1.0) ** 0.40
+            cyl_mask = (inside * (0.42 + 0.58 * rim))[..., None].astype(np.float32)
+        kv_static = (g_mask, cos_bp1, sin_bp1, m_wave_2, mr_b2, mb_b2, scan_wave, cyl_mask)
+        _BEZEL_GLASS_CACHE[("kv1214",) + kv_key] = kv_static  # type: ignore[index]
 
-    grille_depth = 0.36 + 0.16 * min(1.0, moire_str)
-    g_mask = np.stack([
-        (1.0 - grille_depth) + grille_depth * stripe_r * bm_guard,
-        (1.0 - grille_depth) + grille_depth * stripe_g * bm_guard,
-        (1.0 - grille_depth) + grille_depth * stripe_b * bm_guard,
-    ], axis=-1).astype(np.float32)
-
-    # Single horizontal tungsten tension damper wire at y = 0.52 H (12-inch KV-1214 signature)
-    wy = 0.52 * h
-    damper_wire = 1.0 - 0.16 * np.exp(-0.5 * ((yy - wy) / max(0.55, 0.65 * scale_h)) ** 2)
-    g_mask *= damper_wire[..., None]
-    for ch in range(3):
-        g_mask[..., ch] /= max(1e-5, float(g_mask[..., ch].mean()))
-
+    g_mask, cos_bp1, sin_bp1, m_wave_2, mr_b2, mb_b2, scan_wave, cyl_mask = kv_static  # type: ignore[misc]
     out = out * g_mask
 
-    # 4K Camera-to-Grille Macro + Meso Curved Moire Interference Fringes
-    # Beating between the cylindrical CRT's spatially varying grille frequency and the 4K Bayer CFA grid:
-    # Produces the unmistakable curved vertical/hyperbolic rainbow & luminance Moire fringes of Ref!
     if moire_str > 1e-4:
-        # Spatial beat phase: cylindrical quadratic term in nx + off-axis camera tilt/perspective term in (nx, ny)
-        # Beat period is ~52-95 px horizontally with gentle hyperbolic curvature vertically
-        beat_phase_1 = (
-            2.0 * np.pi * (nx * 6.8 + 1.85 * (nx ** 3) + 0.95 * nx * (ny ** 2) + 0.42 * ny)
-            + 0.15 * float(np.sin(frame_index * 0.2))
-        )
-        beat_phase_2 = (
-            2.0 * np.pi * (nx * 14.5 + 2.4 * (nx ** 2) * ny - 0.65 * ny)
-        )
-        m_wave_1 = np.cos(beat_phase_1)
-        m_wave_2 = np.cos(beat_phase_2)
-
-        # Sub-carrier RGB phase offset across the Moire fringe (chromatic Bayer-to-phosphor beat)
-        mr_f = 0.68 * np.cos(beat_phase_1 + 0.45) + 0.32 * np.cos(beat_phase_2 - 0.30)
-        mg_f = 0.68 * m_wave_1 + 0.32 * m_wave_2
-        mb_f = 0.68 * np.cos(beat_phase_1 - 0.45) + 0.32 * np.cos(beat_phase_2 + 0.30)
-        moire_mod = np.stack([mr_f, mg_f, mb_f], axis=-1).astype(np.float32)
-
-        # Moire fringes are most vivid in mid-to-bright phosphor regions (where beam current excites the stripes)
+        ph_t = 0.15 * float(np.sin(frame_index * 0.2))
+        mg_f = cos_bp1 * np.float32(np.cos(ph_t)) - sin_bp1 * np.float32(np.sin(ph_t)) + m_wave_2
+        mr_f = cos_bp1 * np.float32(np.cos(ph_t + 0.45)) - sin_bp1 * np.float32(np.sin(ph_t + 0.45)) + mr_b2
+        mb_f = cos_bp1 * np.float32(np.cos(ph_t - 0.45)) - sin_bp1 * np.float32(np.sin(ph_t - 0.45)) + mb_b2
+        moire_mod = np.stack([mr_f, mg_f, mb_f], axis=-1).astype(np.float32, copy=False)
         lum_w = np.clip(0.25 + 0.85 * (out @ LUMA), 0.20, 1.0)[..., None]
         amp_m = 0.165 * moire_str * lum_w
         out = np.clip(out * (1.0 + amp_m * moire_mod), 0.0, 1.0)
 
-    # 4. Subtle Scanlines (weaker vertically than the vertical Aperture Grille so HFx > HFy as in Ref!)
-    scan_p = max(1.8, 2.0 * scale_h)
-    scan_wave = 1.0 - 0.12 * (0.5 - 0.5 * np.cos(2.0 * np.pi * (yy / scan_p)))
-    # Spot bloom bridges scanlines in bright areas
     lum_cur = (out @ LUMA)
     scan_eff = 1.0 - (1.0 - scan_wave) * np.clip(1.15 - 0.75 * lum_cur, 0.25, 1.0)
     scan_eff /= max(1e-5, float(scan_eff.mean()))
     out = np.clip(out * scan_eff[..., None], 0.0, 1.0)
 
-    # 5. Cylindrical Recessed Bezel & Glass Sheen (`cyl_bezel`)
-    if spec.cyl_bezel > 1e-3:
-        bz = float(spec.cyl_bezel)
-        # Cylindrical tube has straighter top/bottom edges and curved left/right edges
-        dist_cyl = (np.abs(nx) ** 8.0 + (np.abs(ny) * (1.0 + 0.025 * bz * (nx * nx))) ** 10.0) ** 0.11
-        inside = np.clip((1.008 - 0.022 * bz - dist_cyl) / 0.008, 0.0, 1.0)
-        rim = np.clip((1.008 - 0.022 * bz - dist_cyl) / 0.042, 0.0, 1.0) ** 0.40
-        out = out * (inside * (0.42 + 0.58 * rim))[..., None]
+    if cyl_mask is not None:
+        out = out * cyl_mask
 
     # Measure Ref vs Ref telemetry
     g_mean = max(1e-5, float(out[..., 1].mean()))

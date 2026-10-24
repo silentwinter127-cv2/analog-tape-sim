@@ -39,6 +39,8 @@ from ..codecs.inversion_calibration_lab import InversionAnalyzerStage
 from ..codecs.archival_archaeology import ArchivalVaultStage
 from ..codecs.spatial_environment_field import EnvChamberStage
 from ..codecs.network_streaming_era import StreamCDNClientStage
+from ..codecs.mobile_isp_optics import MobileCameraISPStage
+from ..codecs.legacy_digital_media import FileTransferStage, LCDFlashPlayerStage
 from ..codecs.perception_and_operator import HumanOperatorStage
 from ..codecs.media_ecosystem_evolution import EcosystemSimulatorStage
 from .graph import CATALOG_BY_KIND, Graph, Node
@@ -82,6 +84,9 @@ STAGE_FOR_KIND: dict[str, type[Stage] | None] = {
     "archival_vault": ArchivalVaultStage,
     "env_chamber": EnvChamberStage,
     "stream_cdn_client": StreamCDNClientStage,
+    "mobile_camera_isp": MobileCameraISPStage,
+    "file_transfer_node": FileTransferStage,
+    "lcd_flash_player": LCDFlashPlayerStage,
     "human_operator": HumanOperatorStage,
     "ecosystem_simulator": EcosystemSimulatorStage,
     "source": None,
@@ -286,7 +291,25 @@ class GraphExecutor:
             if node_enabled:
                 np_dict["codec"]["stream_enabled"] = 1.0
                 if int(round(float(np_dict["codec"].get("stream_mode", 0.0)))) <= 0:
-                    np_dict["codec"]["stream_mode"] = 5.0
+                    np_dict["codec"]["stream_mode"] = 6.0
+        if kind == "mobile_camera_isp":
+            np_dict.setdefault("camera", {})
+            if node_enabled:
+                np_dict["camera"]["ldme_mobile_enabled"] = 1.0
+                if int(round(float(np_dict["camera"].get("ldme_mobile_profile", 0.0)))) <= 0:
+                    np_dict["camera"]["ldme_mobile_profile"] = 2.0
+        if kind == "file_transfer_node":
+            np_dict.setdefault("codec", {})
+            if node_enabled:
+                np_dict["codec"]["ldme_transfer_enabled"] = 1.0
+                if int(round(float(np_dict["codec"].get("ldme_transfer_method", 0.0)))) <= 0:
+                    np_dict["codec"]["ldme_transfer_method"] = 4.0
+        if kind == "lcd_flash_player":
+            np_dict.setdefault("display", {})
+            if node_enabled:
+                np_dict["display"]["ldme_display_enabled"] = 1.0
+                if int(round(float(np_dict["display"].get("ldme_display_device", 0.0)))) <= 0:
+                    np_dict["display"]["ldme_display_device"] = 2.0
         if kind == "human_operator":
             np_dict.setdefault("display", {})
             if node_enabled:
@@ -316,12 +339,15 @@ class GraphExecutor:
         st.prepare()
         return st
 
-    def _build_node_stages(self) -> None:
+    def _build_node_stages(self, only_nodes: set[str] | None = None) -> None:
         """Create isolated Stage instance(s) per node, per subnode, and per iteration pass."""
-        self.stages = {}
-        self.group_stages = {}
+        if only_nodes is None:
+            self.stages = {}
+            self.group_stages = {}
         frame_cnt = int(getattr(self.source, "frame_count", 0) or 0)
         for name, node in self.graph.nodes.items():
+            if only_nodes is not None and name not in only_nodes:
+                continue
             if node.kind == "node_group" and isinstance(node.subgraph, dict):
                 g_iters = max(1, min(25, int(getattr(node, "iterations", 1) or 1)))
                 g_map: dict[tuple[int, str], list[Stage]] = {}
@@ -407,7 +433,8 @@ class GraphExecutor:
                 self._cache.setdefault(n, {})
                 self._buf_cache.setdefault(n, {})
                 self._cache_key.setdefault(n, {})
-            self._build_node_stages()
+            dirty_set = {n for n in self.graph.nodes if self.hashes.get(n) != new_hashes.get(n) or (n not in self.stages and n not in self.group_stages)}
+            self._build_node_stages(only_nodes=dirty_set if dirty_set else None)
             self.hashes = new_hashes
 
     # ------------------------------------------------------------------
@@ -860,7 +887,7 @@ class GraphExecutor:
                 self._cache.get(n, {}).clear()
                 self._buf_cache.get(n, {}).clear()
                 self._cache_key.get(n, {}).clear()
-            self._build_node_stages()
+            self._build_node_stages(only_nodes=set(dirty))
         return dirty
 
     def node_is_cached(self, name: str, index: int) -> bool:

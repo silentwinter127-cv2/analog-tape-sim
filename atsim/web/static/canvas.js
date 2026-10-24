@@ -56,7 +56,7 @@ function px(node) {
 }
 
 const TYPE_COLOR = {
-  rgb: "#38bdf8", composite: "#60a5fa", rf: "#c084fc", dv: "#34d399",
+  rgb: "#00ff66", composite: "#60a5fa", rf: "#c084fc", dv: "#34d399",
   yiq: "#818cf8", hdmi: "#2dd4bf", audio: "#94a3b8", "?": "#64748b",
 };
 
@@ -463,7 +463,7 @@ function renderCanvas() {
     ng.appendChild(svgEl("rect", {
       x: 0, y: 0, width: nw, height: nh, rx: isGroup ? 11 : 9,
       fill: isBoundary ? "#141e2e" : (isGroup ? "#182438" : (n.enabled ? "#1b2436" : "#121722")),
-      stroke: multiSel ? "#34d399" : (sel ? "#38bdf8" : (isGroup ? "#60a5fa" : (dirty ? "#818cf8" : "#2c3b57"))),
+      stroke: multiSel ? "#34d399" : (sel ? "#00ff66" : (isGroup ? "#60a5fa" : (dirty ? "#818cf8" : "#2c3b57"))),
       filter: "url(#neoNodeShadow)",
       "stroke-width": (sel || multiSel) ? 2.6 : (isGroup ? 1.8 : 1.2),
       "stroke-dasharray": n.enabled ? "" : "4 3",
@@ -511,7 +511,7 @@ function renderCanvas() {
 
     if (isGroup) {
       const t3 = svgEl("text", {
-        x: 10, y: 55, fill: "#38bdf8", "font-size": "9.5",
+        x: 10, y: 55, fill: "#00ff66", "font-size": "9.5",
         "font-family": "ui-monospace,monospace",
       });
       const ms = G.ms[n.name];
@@ -579,7 +579,7 @@ function renderCanvas() {
     g.appendChild(svgEl("rect", {
       x: bx, y: by, width: bw, height: bh,
       fill: "rgba(56, 189, 248, 0.12)",
-      stroke: "#38bdf8", "stroke-width": 1.5, "stroke-dasharray": "4 3",
+      stroke: "#00ff66", "stroke-width": 1.5, "stroke-dasharray": "4 3",
     }));
   }
 

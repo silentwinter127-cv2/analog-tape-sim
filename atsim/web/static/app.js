@@ -30,9 +30,15 @@ const S = {
 };
 
 const $ = (id) => document.getElementById(id);
-const fmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0)
-  : Math.abs(v) >= 10 ? v.toFixed(1)
-  : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(3));
+const fmt = (v) => {
+  if (v === null || v === undefined) return "";
+  const n = typeof v === "number" ? v : Number(v);
+  if (isNaN(n)) return String(v);
+  const a = Math.abs(n);
+  return a >= 100 ? n.toFixed(0)
+    : a >= 10 ? n.toFixed(1)
+    : a >= 1 ? n.toFixed(2) : n.toFixed(3);
+};
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -169,7 +175,7 @@ function wireChrome() {
   if (eQual) {
     eQual.onchange = () => { S.exportQuality = eQual.value || "high"; };
   }
-  $("abToggle").onchange = () => { S.ab = $("abToggle").checked; layoutAB(); };
+  $("abToggle").onchange = () => { S.ab = $("abToggle").checked; layoutAB(); if (S.ab) loadOriginal(); };
   $("autoRefresh").onchange = () => { S.auto = $("autoRefresh").checked; };
   $("btnRender").onclick = startRender;
   $("btnSave").onclick = () => api("/api/save", jsonPost({ name: S.project.name }));
@@ -391,8 +397,16 @@ function buildLayerTabs() {
 }
 
 function buildPresetTabs() {
-  const tabs = [["factory", "整套配置"], ["custom", "自定义预设"], ["film", "胶片/LOMO"], ["media", "记录媒介"],
-                ["player", "播放设备"], ["display", "显示设备"], ["camera", "摄像机"]];
+  const tabs = [
+    ["factory", "整套配置"],
+    ["digital", "古早数字/手机/流媒体"],
+    ["custom", "自定义预设"],
+    ["film", "胶片/LOMO"],
+    ["media", "记录媒介"],
+    ["player", "播放设备"],
+    ["display", "显示设备"],
+    ["camera", "摄像机"]
+  ];
   $("presetTabs").innerHTML = "";
   tabs.forEach(([k, label]) => {
     const b = document.createElement("button");
@@ -409,6 +423,14 @@ function presetEntries() {
   }
   if (S.presetTab === "custom") {
     return Object.entries(S.catalog.custom || {}).map(([k, v]) => [k, v.label, v.note || "用户自定义保存预设"]);
+  }
+  if (S.presetTab === "digital") {
+    const profs = (S.catalog.profiles || {}).digital || {};
+    const pList = Object.entries(profs).map(([k, v]) => [k, v.label, v.note || "古早数字/手机/流媒体预设"]);
+    if (pList.length > 0) return pList;
+    return Object.entries(S.catalog.factory || {})
+      .filter(([k]) => k.startsWith("ldme_"))
+      .map(([k, v]) => [k, v.label, v.note || "古早数字媒介配置"]);
   }
   const g = (S.catalog.profiles || {})[S.presetTab] || {};
   return Object.entries(g).map(([k, v]) => [k, v.label, v.note || ""]);
@@ -956,14 +978,25 @@ const SELECTORS = {
     [2, "高选择性 DX 接收机 (High-Q DX Tuner)"],
   ],
   "audio.mode": [
-    [0, "自动（跟随磁带制式）"],
-    [1, "VHS 线性磁迹"],
-    [2, "VHS Hi-Fi 调频深层记录"],
-    [3, "8mm / Hi8 AFM 调频伴音"],
-    [4, "MiniDV PCM 数字音频"],
-    [5, "机内麦克风直录"],
-    [6, "RF 射频潮湿受潮回路伴音"],
-    [7, "TV-DX 电视卡 FM 伴音解调（含静噪门限与波导呼吸）"],
+    [0, "0 · 自动（跟随媒介制式：胶片/流媒体/磁带）"],
+    [1, "1 · VHS 纵向线性磁迹"],
+    [2, "2 · VHS Hi-Fi 调频深层记录"],
+    [3, "3 · 8mm / Hi8 AFM 调频伴音"],
+    [4, "4 · MiniDV PCM 数字音频"],
+    [5, "5 · VCD MP2 子带量化伴音"],
+    [6, "6 · PAL-D RF 模拟电视射频伴音"],
+    [7, "7 · TV-DX 电视卡 FM 伴音解调"],
+    [8, "8 · 胶片感光光学音轨 (Optical Soundtrack)"],
+    [9, "9 · 网络流媒体低码率音频 (优酷/土豆/3GP)"],
+    [10, "10 · 广播电台/演播室播出前级系统"],
+  ],
+  "audio.mic_type": [
+    [0, "0 · 直通 / 线路输入 (Direct Line In)"],
+    [1, "1 · 动圈话筒 (Shure SM58 风格)"],
+    [2, "2 · 大振膜电容话筒 (演播室高灵敏度)"],
+    [3, "3 · 铝带话筒 (温暖平滑 8 字指向)"],
+    [4, "4 · 驻极体电脑摄像头麦克风 (优酷女主播同款)"],
+    [5, "5 · 碳粒话筒 (老式电话/对讲窄频)"],
   ],
   "overlay.style": [
     [0, "0 · 自定义（使用上方RGB参数）"],
@@ -990,10 +1023,55 @@ const SELECTORS = {
   "codec.stream_mode": [
     [0, "0 · 跟随总开关"],
     [1, "1 · 早期拨号/宽带流媒体 (RealVideo G2 / WMV9)"],
-    [2, "2 · Web 2.0 早期视频网站 (360p FLV/H.263 + GOP呼吸)"],
-    [3, "3 · 现代自适应流媒体 (HLS/DASH ABR 阶跃 + 丢包/缓冲)"],
-    [4, "4 · 平台多代搬运重压与二次录屏"],
+    [2, "2 · Web 2.0 早期视频网站多代转码"],
+    [3, "3 · 现代自适应流媒体 (HLS/DASH ABR + 缓冲)"],
+    [4, "4 · UDP/RTP 实时丢包切片撕裂"],
     [5, "5 · 2×2 跨时代网络流媒体对照实验室"],
+    [6, "6 · 优酷/土豆 2006–2009 早期 Flash 流畅档 (FLV 320×240)"],
+    [7, "7 · 优酷/土豆 2009–2012 标清 H.264 档 (480×360)"],
+    [8, "8 · 移动互联网 2012–2015 多屏 H.264 档 (640×360)"],
+    [9, "9 · 旧手机传输与剪辑多代压缩链 (V0→V1→V2→V3)"],
+    [10, "10 · 测试一：同一场景，不同手机"],
+    [11, "11 · 测试二：同一视频，不同转码链"],
+    [12, "12 · 测试三：同一文件，不同播放设备"],
+  ],
+  "camera.ldme_mobile_profile": [
+    [0, "0 · 关闭手机摄影管线"],
+    [1, "1 · Nokia 6600 (2003 VGA 640×480)"],
+    [2, "2 · Nokia N73 (2006 蔡司 320万像素)"],
+    [3, "3 · Nokia N95 (2007 蔡司 500万像素)"],
+    [4, "4 · Nokia 5800 XpressMusic (2008 3GP 视频)"],
+    [5, "5 · iPhone 2007 (初代 200万像素)"],
+    [6, "6 · iPhone 3G (2008 200万像素)"],
+    [7, "7 · iPhone 3GS (2009 VGA 视频管线)"],
+    [8, "8 · iPhone 4S (2011 800万 BSI CMOS)"],
+  ],
+  "camera.ldme_capture_mode": [
+    [0, "0 · 静态照片管线 capture() (JPEG 4:2:0 + EXIF)"],
+    [1, "1 · 动态视频管线 record() (3GP / MOV 帧间编码)"],
+  ],
+  "codec.ldme_transfer_method": [
+    [0, "0 · 直通无额外传输处理"],
+    [1, "1 · 蓝牙传输 (位级无损复制，不加虚假压缩)"],
+    [2, "2 · USB / 电脑导入 (无损复制，更新文件系统时间戳)"],
+    [3, "3 · 彩信 / 早期社交软件发送 (强制缩放 + 重编码 + 剥离EXIF)"],
+    [4, "4 · 电脑剪辑软件导出 + 多代有损压缩链 (V0→V1→V2→V3)"],
+  ],
+  "codec.ldme_source_origin": [
+    [0, "0 · 高清源文件被平台缩放转码为低清"],
+    [1, "1 · 上传时原本就是手机低清源文件"],
+  ],
+  "display.ldme_display_device": [
+    [0, "0 · 关闭早期 LCD 与 Flash 播放器模型"],
+    [1, "1 · 早期手机 TFT 液晶屏 (16-bit RGB565 65K色 + 28ms慢响应)"],
+    [2, "2 · 2007 桌面 6-bit TN 液晶显示器 (FRC抖动 + 视角伽马 + CCFL)"],
+    [3, "3 · 经典 CRT 监视器对照模式"],
+  ],
+  "display.ldme_flash_scale_mode": [
+    [0, "0 · 原始比例居中"],
+    [1, "1 · Flash 窗口非整数倍双线性放大"],
+    [2, "2 · Flash 最近邻像素化放大 (smoothing=false)"],
+    [3, "3 · 4:3 视频强行全屏拉伸为 16:9"],
   ],
   "codec.stream_quad_corner": [
     [0, "0 · 2×2 四分屏全览"],
@@ -1112,11 +1190,14 @@ function selectorOptionsFor(layer, sp) {
 }
 
 function formatReadout(sp, v) {
-  if (sp.kind === "text") return String(v ?? "");
+  if (v === null || v === undefined) return "";
+  if (sp.kind === "text") return String(v);
+  const n = typeof v === "number" ? v : Number(v);
+  if (isNaN(n)) return String(v);
   const isBool = sp.unit === "bool" || (sp.step === 1 && sp.min === 0 && sp.max === 1 && sp.unit === "0/1");
-  if (isBool) return v > 0.5 ? "开" : "关";
-  if (sp.step === 1) return Math.round(v).toFixed(0);
-  return fmt(v);
+  if (isBool) return n > 0.5 ? "开" : "关";
+  if (sp.step === 1) return Math.round(n).toFixed(0);
+  return fmt(n);
 }
 
 function paramRow(sp) {
@@ -1405,16 +1486,24 @@ async function exportStill() {
       extra = `&corner=${encodeURIComponent(qCorner.value)}&border=${encodeURIComponent(qBorder.value)}&text=${encodeURIComponent(qText.value)}`;
     }
     const engine = (typeof G !== "undefined" && G.perNode) ? "&engine=graph" : "";
-    const url = `/api/still?t=${S.t}&scale=${sc}&format=${prof.format}&q=${prof.q}${extra}${engine}`;
+    const tVal = typeof S.t === "number" ? S.t : (parseFloat(S.t) || 0.0);
+    const url = `/api/still?t=${tVal}&scale=${sc}&format=${prof.format}&q=${prof.q}${extra}${engine}`;
     const r = await fetch(url);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!r.ok) {
+      let errTxt = `HTTP ${r.status}`;
+      try {
+        const j = await r.json();
+        if (j.error) errTxt = j.error;
+      } catch (_) {}
+      throw new Error(errTxt);
+    }
     const disp = r.headers.get("content-disposition") || "";
     const m = disp.match(/filename="([^"]+)"/);
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     const ext = prof.format === "jpg" ? "jpg" : "png";
-    a.download = (m && m[1]) ? m[1] : `atsim_${S.t.toFixed(2).replace(".", "_")}s.${ext}`;
+    a.download = (m && m[1]) ? m[1] : `atsim_${tVal.toFixed(2).replace(".", "_")}s.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1504,6 +1593,23 @@ async function exportQuadZip() {
 }
 
 /* --------------------------------------------------------------- preview */
+let _auxRefreshTimer = null;
+function scheduleAuxRefresh() {
+  if (_auxRefreshTimer) clearTimeout(_auxRefreshTimer);
+  _auxRefreshTimer = setTimeout(async () => {
+    _auxRefreshTimer = null;
+    try {
+      const tl = await api("/api/timeline");
+      paintTimeline(tl);
+    } catch (_) {}
+    refreshAudioTimeline();
+    if (window.BroadcastScopes) BroadcastScopes.refresh();
+    if (typeof refreshGraphPerf === "function") {
+      try { await refreshGraphPerf(); } catch (_) {}
+    }
+  }, 140);
+}
+
 async function refreshPreview() {
   if (S.busy) { S.pending = true; return; }
   S.busy = true;
@@ -1512,8 +1618,11 @@ async function refreshPreview() {
   const engine = (typeof G !== "undefined" && G.perNode) ? "&engine=graph" : "";
   const pScale = encodeURIComponent(S.previewScale || "0.5");
   const pQual = S.previewQuality || 88;
+  const wantOrigKey = `${(S.project && S.project.source) || ""}|${Number(S.t || 0).toFixed(4)}|${pScale}|${pQual}`;
   try {
-    const blob = await api(`/api/frame?t=${S.t}&scale=${pScale}&q=${pQual}&_=${my}${engine}`);
+    const framePromise = api(`/api/frame?t=${S.t}&scale=${pScale}&q=${pQual}&_=${my}${engine}`);
+    const origPromise = (S.ab && S.origKey !== wantOrigKey) ? loadOriginal(wantOrigKey) : Promise.resolve();
+    const [blob] = await Promise.all([framePromise, origPromise]);
     if (my !== S.token) return;
     if (S.frameUrl) URL.revokeObjectURL(S.frameUrl);
     S.frameUrl = URL.createObjectURL(blob);
@@ -1523,25 +1632,13 @@ async function refreshPreview() {
       syncAB();
     };
     pimg.src = S.frameUrl;
-    // The A/B reference must follow the time cursor.  It used to be fetched once
-    // only (guarded by `!S.origUrl`), so after the first load the right-hand side
-    // sat frozen on an old frame while the simulation advanced -- the two sides
-    // then showed *different content*, which reads as "the comparison is broken"
-    // rather than as a stale overlay.
-    if (S.ab) await loadOriginal();
     const ms = performance.now() - started;
     const via = (typeof G !== "undefined" && G.perNode) ? "节点图" : "固定链路";
     $("badge").textContent =
       `${via} · 预览 ${S.frameW || "?"}×${S.frameH || "?"} · ` +
       `${ms.toFixed(0)} ms/帧 · t=${S.t.toFixed(2)}s`;
-    const tl = await api("/api/timeline");
-    paintTimeline(tl);
-    refreshAudioTimeline();
-    if (window.BroadcastScopes) BroadcastScopes.refresh();
-    if (typeof refreshGraphPerf === "function") await refreshGraphPerf();
+    scheduleAuxRefresh();
   } catch (e) {
-    // After the boot handler has replaced the body, `badge` no longer exists --
-    // reporting the failure must not itself throw, or the original error is lost.
     const b = $("badge");
     if (b) b.textContent = "错误：" + e.message.slice(0, 120);
     else console.error("refreshPreview failed:", e);
@@ -1551,16 +1648,16 @@ async function refreshPreview() {
   }
 }
 
-async function loadOriginal() {
-  // the original is the simulation with camera/format/tape/player neutralised,
-  // so the comparison is honest about what the chain did
+async function loadOriginal(expectedKey) {
   const pScale = encodeURIComponent(S.previewScale || "0.5");
   const pQual = S.previewQuality || 88;
+  const key = expectedKey || `${(S.project && S.project.source) || ""}|${Number(S.t || 0).toFixed(4)}|${pScale}|${pQual}`;
+  if (S.origUrl && S.origKey === key) return;
   try {
     const blob = await api(`/api/frame?t=${S.t}&scale=${pScale}&q=${pQual}&mode=source`);
-    // release the previous object URL, or every time-cursor move leaks one
     if (S.origUrl) URL.revokeObjectURL(S.origUrl);
     S.origUrl = URL.createObjectURL(blob);
+    S.origKey = key;
     const oimg = $("originalImg");
     oimg.onload = () => syncAB();
     oimg.src = S.origUrl;
@@ -1681,7 +1778,7 @@ async function showTimeline() {
 function toast(msg) {
   const b = $("badge");
   b.textContent = msg;
-  b.style.color = "#38bdf8";
+  b.style.color = "#00ff66";
   setTimeout(() => { b.style.color = ""; }, 2500);
 }
 
@@ -1894,7 +1991,7 @@ function drawAudioScope(cursorT) {
   const frac = ((tRef - _audioWinStart) / Math.max(0.001, _audioWinDur));
   if (frac >= 0 && frac <= 1) {
     const cx = frac * w;
-    ctx.strokeStyle = "#38bdf8";
+    ctx.strokeStyle = "#00ff66";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(cx, 0);
@@ -2513,6 +2610,7 @@ function wireQuadBar() {
           mv_quad_corner: cVal, mv_show_border: bVal, mv_tally_umd: Math.min(1, tVal),
           percept_quad_corner: cVal, percept_show_border: bVal, percept_show_text: tVal,
           crt_magnet_quad_corner: cVal, crt_magnet_show_border: bVal, crt_magnet_show_text: tVal,
+          ldme_flash_show_text: tVal, stream_show_text: tVal,
         },
         overlay: {
           eco_quad_corner: cVal, eco_show_border: bVal, eco_show_text: tVal,

@@ -829,6 +829,67 @@ def build_schema() -> ParamSchema:
                source="CCU 面板 H-Phase 水平行定时对齐旋钮",
                help="微调摄像机相对于演播室主同步的行触发时刻，消除多机位切换时的画面左右跳动与消隐边错位。")
 
+    g_ldme_cam = "早期手机与早期 iPhone 摄影管线 (LDME)"
+    cam.define("ldme_mobile_enabled", "启用早期手机/iPhone 成像管线", 0.0, 0.0, 1.0, unit="bool", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=1.0, source="LDME 子系统 A/B (2003–2012 诺基亚与早期 iPhone 六步成像管线)",
+               help="开启『光学成像 → 传感器采样 → Bayer去马赛克 → 白平衡与色彩矩阵 → 降噪与USM锐化 → JPEG/3GP/MOV编码』完整手机成像链。")
+    cam.define("ldme_mobile_profile", "早期手机与 iPhone 机型预设", 0.0, 0.0, 8.0, unit="机型", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=8.0, source="Nokia 6600 / N73 / N95 / 5800 & iPhone 2007 / 3G / 3GS / 4S",
+               help="0=关闭｜1=Nokia 6600 (VGA)｜2=Nokia N73 (蔡司320万)｜3=Nokia N95 (蔡司500万)｜4=Nokia 5800 (3GP视频)｜"
+                    "5=iPhone 2007 (初代200万)｜6=iPhone 3G｜7=iPhone 3GS (VGA视频管线)｜8=iPhone 4S (800万BSI)。")
+    cam.define("ldme_capture_mode", "成像工作路径 (拍照 capture / 录像 record)", 0.0, 0.0, 1.0, unit="路径", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=1.0, source="camera.capture() 静态照片 vs camera.record() 动态视频管线",
+               help="0=静态照片路径 capture()（全传感器采样 + JPEG 4:2:0 + EXIF）｜1=动态视频路径 record()（视频分辨率/帧率限制 + 卷帘快门 + 3GP/MOV 帧间编码）。")
+    cam.define("ldme_optics_blur", "微型镜头模糊与场曲缩放", 1.0, 0.0, 2.5, unit="x", group=g_ldme_cam,
+               phys_min=0.2, phys_max=2.0, source="微型塑胶/蔡司镜头中心解析力与离轴边缘软化")
+    cam.define("ldme_vignette", "手机镜头暗角强度缩放", 1.0, 0.0, 2.5, unit="x", group=g_ldme_cam,
+               phys_min=0.0, phys_max=2.0, source="微型光圈孔径 cos^4(θ) 暗角")
+    cam.define("ldme_sensor_noise", "CMOS 泊松-高斯噪声缩放", 1.0, 0.0, 3.0, unit="x", group=g_ldme_cam,
+               phys_min=0.0, phys_max=2.5, source="小尺寸传感器光子散粒噪声与读出噪声")
+    cam.define("ldme_bayer_demosaic", "Bayer 去马赛克伪影强度", 1.0, 0.0, 2.5, unit="x", group=g_ldme_cam,
+               phys_min=0.0, phys_max=2.0, source="RGGB 拜耳阵列低复杂度插值边缘拉链与伪彩")
+    cam.define("ldme_isp_denoise", "ISP 降噪涂抹强度缩放", 1.0, 0.0, 2.5, unit="x", group=g_ldme_cam,
+               phys_min=0.0, phys_max=2.0, source="早期手机 ISP 色度抹除与亮度保边涂抹")
+    cam.define("ldme_isp_sharpen", "ISP 锐化与边缘光晕缩放", 1.0, 0.0, 2.5, unit="x", group=g_ldme_cam,
+               phys_min=0.0, phys_max=2.0, source="早期手机 USM 孔径增强过冲与亮边振铃")
+    cam.define("ldme_jpeg_quality", "JPEG 量化品质覆盖 (0为机型默认)", 0.0, 0.0, 100.0, unit="Q", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=95.0, source="8×8 DCT 量化表与 4:2:0 色度子采样")
+    cam.define("ldme_use_real_jpeg", "调用真实 Pillow JPEG 编码器", 0.0, 0.0, 1.0, unit="bool", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=1.0, source="Pillow 真实 JPEG 字节流编码与解码回读")
+
+    # 物理建模：工频荧光灯频闪、低色温白平衡失效、JPEG 磨损衰减与夜景星芒 (旧手机照片实测标定)
+    cam.define("ldme_flicker_enabled", "启用 CMOS 卷帘快门工频频闪条纹", 0.0, 0.0, 1.0, unit="bool", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=1.0, source="50Hz/60Hz 工频荧光灯/交流LED卷帘快门曝光条纹 (image.jpg)",
+               help="物理建模旧手机 CMOS 卷帘快门在 50Hz/60Hz 工频荧光灯下的明暗与青绿/橙黄光谱交替条纹。")
+    cam.define("ldme_flicker_mains_hz", "工频交流电网频率", 50.0, 45.0, 65.0, unit="Hz", step=5.0, group=g_ldme_cam,
+               phys_min=45.0, phys_max=65.0, source="中国/欧洲/香港 50Hz (100Hz 纹波) vs 北美/日本 60Hz (120Hz 纹波)")
+    cam.define("ldme_flicker_depth", "工频频闪明暗条纹深度", 0.0, 0.0, 1.0, unit="0-1", group=g_ldme_cam,
+               phys_min=0.0, phys_max=1.0, source="交流电光照强度纹波调制深度")
+    cam.define("ldme_flicker_color_drift", "荧光灯波峰波谷色温漂移", 0.65, 0.0, 1.0, unit="0-1", group=g_ldme_cam,
+               phys_min=0.0, phys_max=1.0, source="荧光灯汞放电峰青绿 (546nm) 与荧光粉余辉暖橙 (611nm) 交替漂移")
+    cam.define("ldme_flicker_num_bands", "全画幅垂直频闪条纹数量", 5.2, 0.5, 20.0, unit="条", step=0.1, group=g_ldme_cam,
+               phys_min=0.5, phys_max=20.0, source="由逐行读出时间与曝光快门决定 (实拍约4-8条)")
+
+    cam.define("ldme_tungsten_enabled", "启用钨丝灯/低色温照明与白平衡失效", 0.0, 0.0, 1.0, unit="bool", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=1.0, source="普朗克黑体辐射与早期手机 ISP AWB 蓝增益钳位 (b0ae5b91...jpg)",
+               help="物理建模室内低色温钨丝灯下蓝光匮乏、ISP 蓝通道增益钳位导致的暖黄偏色与餐厅混光芥末青黄。")
+    cam.define("ldme_color_temp_k", "环境光源辐射色温", 5500.0, 1800.0, 9500.0, unit="K", step=100.0, group=g_ldme_cam,
+               phys_min=1800.0, phys_max=9500.0, source="2700K 钨丝灯/白炽灯、3200K 卤素灯、5500K 日光")
+    cam.define("ldme_awb_mode", "ISP 自动白平衡失效模式", 0.0, 0.0, 3.0, unit="模式", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=3.0, source="0=标准自动｜1=钨丝灯暖黄失效｜2=餐厅混光芥末青黄｜3=蓝通道强增益噪点")
+
+    cam.define("ldme_jpeg_decay_enabled", "启用 JPEG 磨损与多代有损压缩衰减", 0.0, 0.0, 1.0, unit="bool", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=1.0, source="早期优酷土豆平台转码与网络论坛搬运 JPEG 磨损 (digicamfx)")
+    cam.define("ldme_jpeg_decay_gens", "JPEG 重复压缩磨损代数", 1.0, 1.0, 10.0, unit="代", step=1.0, group=g_ldme_cam,
+               phys_min=1.0, phys_max=10.0, source="多代 2D 8×8 DCT 量化与色度衰减累积")
+    cam.define("ldme_jpeg_decay_quality", "JPEG 磨损基础量化品质", 75.0, 5.0, 95.0, unit="Q", step=1.0, group=g_ldme_cam,
+               phys_min=5.0, phys_max=95.0, source="标准 IJG 亮度与色度量化表品质因子 Q")
+    cam.define("ldme_jpeg_decay_grid_shift", "跨代 8×8 DCT 网格错位漂移", 2.0, 0.0, 7.0, unit="px", step=1.0, group=g_ldme_cam,
+               phys_min=0.0, phys_max=7.0, source="跨代图像裁剪/缩放诱发 8×8 网格错位与双重蚊式振铃噪点")
+
+    cam.define("ldme_night_bloom", "夜景高光漫射与星芒溢出强度", 0.0, 0.0, 2.5, unit="x", group=g_ldme_cam,
+               phys_min=0.0, phys_max=2.5, source="微型镜头车灯星芒与点光源垂直光柱溢出 (image_d61d18.png)")
+
     # ------------------------------------------------------------------ B
     fmt = s.layer("format")
     gf = "滤波器家族"
@@ -1019,8 +1080,8 @@ def build_schema() -> ParamSchema:
     cod.define("stream_enabled", "启用网络流媒体与平台转码系统", 0.0, 0.0, 1.0, unit="bool", group=g_str, step=1.0,
                phys_min=0.0, phys_max=1.0, source="RealVideo / WMV / Web 2.0 FLV / HLS DASH 自适应流媒体模型",
                help="打通『广播电视 → 录像带 → 数字采集 → 早期流媒体/平台多代上传转码 → 分组网络传输 → 客户端缓冲与二次录屏』跨时代传播链路。")
-    cod.define("stream_mode", "流媒体时代与协议模式", 0.0, 0.0, 5.0, unit="0-5", group=g_str, step=1.0,
-               phys_min=0.0, phys_max=5.0, source="1999 RealVideo .. 2020s HLS/DASH ABR",
+    cod.define("stream_mode", "流媒体时代与协议模式", 0.0, 0.0, 12.0, unit="0-12", group=g_str, step=1.0,
+               phys_min=0.0, phys_max=12.0, source="1999 RealVideo / 优酷土豆 2006–2015 / LDME 基准实验",
                help="0=跟随总开关｜1=早期拨号/宽带流媒体 (RealVideo G2 / WMV9 · 160x120~320x240 强环路滤波塑料涂抹与帧率抽帧)｜"
                     "2=Web 2.0 早期视频网站 (2006 360p FLV/H.263 · 4:2:0 粗量化 + 关键帧 GOP 呼吸脉冲 + 平台角标水印)｜"
                     "3=现代自适应流媒体 (HLS / DASH H.264 ABR · 720p↔240p↔1080p 阶跃切换与 TCP 预缓冲转圈卡顿 / UDP 丢包切片撕裂)｜"
@@ -1048,6 +1109,33 @@ def build_schema() -> ParamSchema:
                step=1.0, phys_min=0.0, phys_max=2.0, source="四分屏分框线显示控制")
     cod.define("stream_show_text", "流媒体实验室文字叠加 (0不要文字/1仅标签/2完整遥测)", 0.0, 0.0, 2.0, unit="文字", group=g_str,
                step=1.0, phys_min=0.0, phys_max=2.0, source="画面文字叠加开关（默认 0 纯净无字画面）")
+    cod.define("ldme_transfer_enabled", "启用文件传输与多代压缩节点", 0.0, 0.0, 1.0, unit="bool", group=g_str, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="LDME 子系统 D (03 · 文件与传输)",
+               help="模拟旧手机到电脑、彩信/社交软件与视频网站之间的文件传输与多代有损重编码历史。")
+    cod.define("ldme_transfer_method", "文件传输与重编码方式", 0.0, 0.0, 5.0, unit="方式", group=g_str, step=1.0,
+               phys_min=0.0, phys_max=5.0, source="蓝牙OBEX / USB导入 / 彩信社交压缩 / 桌面剪辑 / 多代JPEG磨损",
+               help="0=直通｜1=蓝牙传输 (位级无损复制)｜2=USB/电脑导入 (保留像素)｜"
+                    "3=彩信/早期社交软件发送 (强制缩放+重编码+剥离EXIF)｜4=电脑剪辑软件导出+多代视频转码 (V0→V1→V2→V3)｜"
+                    "5=早期优酷土豆/论坛搬运多代 JPEG 磨损衰减 (2D 8×8 DCT、IJG Q表、网格错位与双重蚊式振铃噪点)。")
+    cod.define("ldme_transfer_generations", "多代重编码级联次数", 2.0, 1.0, 5.0, unit="代", group=g_str, step=1.0,
+               phys_min=1.0, phys_max=4.0, source="V_0 -> V_1 -> V_2 -> V_3 多代有损编码级联")
+    cod.define("ldme_mms_width", "彩信/社交发送最大宽度", 320.0, 128.0, 1280.0, unit="px", group=g_str, step=16.0,
+               phys_min=160.0, phys_max=640.0, source="MMS 100KB/300KB 网关分辨率限制")
+    cod.define("ldme_mms_quality", "彩信/社交重编码品质", 52.0, 15.0, 95.0, unit="Q", group=g_str, step=1.0,
+               phys_min=30.0, phys_max=80.0, source="应用层二次 JPEG/3GP 压缩品质")
+    cod.define("ldme_nle_bitrate_kbps", "桌面剪辑软件导出码率", 420.0, 80.0, 4000.0, unit="kbps", group=g_str,
+               phys_min=150.0, phys_max=2000.0, source="早期桌面剪辑软件导出低码率 MP4/WMV/AVI")
+    cod.define("ldme_source_origin", "上传源文件清晰度来源", 0.0, 0.0, 1.0, unit="来源", group=g_str, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="区分『原本就是低清上传』与『高清源被平台降为低清』",
+               help="0=高清源文件被平台缩放转码为低清｜1=上传时原本就是手机低清源文件（携带前置传感器噪点与早期块伪影进入平台转码器）。")
+    cod.define("ldme_benchmark_variant", "LDME 基准实验子项选择", 1.0, 1.0, 6.0, unit="子项", group=g_str, step=1.0,
+               phys_min=1.0, phys_max=6.0, source="LDME 第七节 F1 三组标准测试子项切换")
+    cod.define("ldme_use_real_ffmpeg", "调用真实 FFmpeg 编解码器实验", 0.0, 0.0, 1.0, unit="bool", group=g_str, step=1.0,
+               phys_min=0.0, phys_max=1.0, source="FFmpeg flv1 / h263p / mpeg4 / libx264 真实容器编解码")
+    cod.define("ldme_jpeg_decay_quality", "JPEG 磨损基础量化品质", 75.0, 5.0, 95.0, unit="Q", step=1.0, group=g_str,
+               phys_min=5.0, phys_max=95.0, source="标准 IJG 亮度与色度量化表品质因子 Q")
+    cod.define("ldme_jpeg_decay_grid_shift", "跨代 8×8 DCT 网格错位漂移", 2.0, 0.0, 7.0, unit="px", step=1.0, group=g_str,
+               phys_min=0.0, phys_max=7.0, source="跨代图像裁剪/缩放诱发 8×8 网格错位与双重蚊式振铃噪点")
 
     # ------------------------------------------------------------ RF 链路（无线电系统）
     rf = s.layer("rf")
@@ -2283,6 +2371,32 @@ def build_schema() -> ParamSchema:
     dsp.define("percept_show_text", "感知实验室文字叠加 (0不要文字/1仅标签/2完整遥测)", 0.0, 0.0, 2.0, unit="文字", group=g_prc,
                step=1.0, phys_min=0.0, phys_max=2.0, source="画面文字叠加开关（默认 0 纯净无字画面）")
 
+    g_ldme_lcd = "早期 LCD 液晶面板与 Flash 播放器 (LDME)"
+    dsp.define("ldme_display_enabled", "启用早期 LCD 与 Flash 播放器模型", 0.0, 0.0, 1.0, unit="bool", step=1.0, group=g_ldme_lcd,
+               phys_min=0.0, phys_max=1.0, source="LDME 子系统 E (05 · 播放与显示，严格区分 LCD 与 CRT)",
+               help="开启早期手机 TFT 液晶或 2007 桌面 6-bit TN 液晶显示器与 Flash Player 窗口缩放/缓冲模型（不混入 CRT 扫描线）。")
+    dsp.define("ldme_display_device", "数字显示设备类型", 0.0, 0.0, 3.0, unit="设备", step=1.0, group=g_ldme_lcd,
+               phys_min=0.0, phys_max=3.0, source="手机 RGB565 TFT LCD vs 桌面 6-bit TN LCD vs CRT 对照",
+               help="0=关闭｜1=早期手机 TFT 液晶屏 (176×208 RGB565 65K色 + 28ms慢响应 + 像素晶格)｜"
+                    "2=2007 桌面 6-bit TN 液晶显示器 (64级+FRC抖动 + 液晶保持拖影 + 视角伽马偏移 + CCFL冷白背光)｜3=经典 CRT 监视器同源对照。")
+    dsp.define("ldme_lcd_bits", "LCD 面板通道位深", 6.0, 5.0, 8.0, unit="bit", step=1.0, group=g_ldme_lcd,
+               phys_min=5.0, phys_max=8.0, source="5-bit (RGB565) / 6-bit TN + Hi-FRC / 8-bit")
+    dsp.define("ldme_lcd_response_ms", "液晶分子响应时间", 16.0, 2.0, 45.0, unit="ms", group=g_ldme_lcd,
+               phys_min=5.0, phys_max=35.0, source="Sample-and-Hold 液晶上升/下降时间拖影 (区别于 CRT 荧光粉余辉)")
+    dsp.define("ldme_lcd_view_angle", "TN 面板垂直观看偏角", 12.0, -35.0, 35.0, unit="deg", group=g_ldme_lcd,
+               phys_min=-25.0, phys_max=25.0, source="早期 TN 液晶垂直视角伽马偏移与暗部反相")
+    dsp.define("ldme_lcd_subpixel", "LCD RGB 竖条子像素晶格强度", 0.35, 0.0, 1.0, unit="0-1", group=g_ldme_lcd,
+               phys_min=0.0, phys_max=0.8, source="规整矩形 RGB 子像素黑矩阵网格 (无隔行扫描线)")
+    dsp.define("ldme_lcd_ccfl", "早期 CCFL 背光冷偏与暗部漏光", 0.25, 0.0, 1.0, unit="0-1", group=g_ldme_lcd,
+               phys_min=0.0, phys_max=0.8, source="CCFL 冷阴极荧光灯管背光光谱与液晶暗态漏光")
+    dsp.define("ldme_flash_scale_mode", "Flash 播放器与浏览器缩放方式", 1.0, 0.0, 3.0, unit="缩放", step=1.0, group=g_ldme_lcd,
+               phys_min=0.0, phys_max=3.0, source="Flash Player Stage.scaleMode 与非整数窗口拉伸",
+               help="0=原始比例居中｜1=浏览器非整数倍双线性窗口放大｜2=最近邻硬像素块放大 (smoothing=false)｜3=4:3 视频强行全屏拉伸为 16:9。")
+    dsp.define("ldme_flash_chrome", "显示早期 Flash 播放器控制栏与缓冲条", 0.0, 0.0, 1.0, unit="bool", step=1.0, group=g_ldme_lcd,
+               phys_min=0.0, phys_max=1.0, source="Flash Player 9/10 底部进度条与缓冲区水位指示")
+    dsp.define("ldme_net_throughput_kbps", "客户端网络下载吞吐量", 520.0, 40.0, 5000.0, unit="kbps", group=g_ldme_lcd,
+               phys_min=64.0, phys_max=2500.0, source="当吞吐量低于视频平均码率时触发缓冲区耗尽与暂停重缓冲")
+
     # --- Ref: CRT 强磁场、铁磁荫罩剩磁、PTC 消磁线圈与特殊环境物理系统 ---
     g_mag = "CRT 强磁场与特殊环境 (强磁/剩磁/消磁线圈)"
     dsp.define("crt_magnet_mode", "CRT 强磁环境模式 (0关/1永磁体贴面/2旋转涡流/3撤磁剩磁+PTC消磁/4工频磁蛇/5四象限实验室)", 0.0, 0.0, 5.0, unit="模式", group=g_mag,
@@ -2675,6 +2789,39 @@ def build_schema() -> ParamSchema:
     aud.define("flyback_whine", "CRT 行输出高压包啸叫", 0.15, 0.0, 1.0, unit="0-1", group=g,
                phys_min=0.0, phys_max=0.50, source="CRT 行逆程变压器声学辐射",
                help="CRT 显像管开启时，15,734Hz (NTSC) / 15,625Hz (PAL) 行扫描高压包磁芯振动串入伴音的微弱高频啸叫。")
+
+    g_mic = "录音设备与麦克风 (Microphone System)"
+    aud.define("mic_type", "麦克风换能类型", 0.0, 0.0, 5.0, unit="类型", group=g_mic, step=1.0,
+               phys_min=0.0, phys_max=5.0, source="电声换能器物理声学模型",
+               help="0=直通/线路输入，1=动圈话筒(SM58高频自然滚降)，2=大振膜电容话筒(全频敏锐)，3=铝带话筒(高频平滑温暖)，4=驻极体电脑摄像头麦克风(优酷女主播同款/3.8kHz塑料腔体共振峰)，5=碳粒话筒(300-3400Hz窄带电报电话话筒)")
+    aud.define("proximity_effect", "麦克风近讲效应", 0.0, 0.0, 1.0, unit="0-1", group=g_mic,
+               phys_min=0.0, phys_max=1.0, source="近场球面波声压差模型",
+               help="主播贴近定向话筒时 180Hz 以下低频显著提升 (+9dB)。")
+    aud.define("plosive_pop", "防喷罩缺失破音", 0.0, 0.0, 1.0, unit="0-1", group=g_mic,
+               phys_min=0.0, phys_max=1.0, source="气流冲击振膜低频风噪模型",
+               help="演唱爆破音 (P/B/T) 强气流冲击振膜引起的低频风噪轰鸣与瞬态过载。")
+    aud.define("mic_overdrive", "话筒与前级过载削顶", 0.0, 0.0, 1.0, unit="0-1", group=g_mic,
+               phys_min=0.0, phys_max=1.0, source="前级放大器轨电压削顶模型",
+               help="唱腔高音或贴近喊叫超出麦克风前级线性动态产生的不对称谐波削顶破音。")
+
+    g_bcast = "广播音响与调音台 (Broadcast Console)"
+    aud.define("broadcast_agc", "广播级AGC限幅压缩器", 0.0, 0.0, 1.0, unit="0-1", group=g_bcast,
+               phys_min=0.0, phys_max=1.0, source="CBS Audimax/Volumax 广播压限器模型",
+               help="演播室播出级动态压制 (快启慢释自适应抽吸效应/Pumping Breathing)。")
+    aud.define("studio_room_reverb", "录播间/主播间空间混响", 0.0, 0.0, 1.0, unit="0-1", group=g_bcast,
+               phys_min=0.0, phys_max=1.0, source="室内声学早期反射与混响模型",
+               help="房间墙面早期反射与短RT60混响尾音。")
+
+    g_opt = "胶片感光光学声带 (Film Optical Soundtrack)"
+    aud.define("film_optical_scratches", "光学声带划痕爆音", 0.20, 0.0, 1.0, unit="0-1", group=g_opt,
+               phys_min=0.0, phys_max=1.0, source="声带物理磨损光强跃变模型",
+               help="走片磨损划伤声带或沾染尘埃通过光缝产生的瞬态光跃变爆音 (Clicks & Pops)。")
+    aud.define("film_exciter_hum", "励磁灯交流声", 0.15, 0.0, 1.0, unit="0-1", group=g_opt,
+               phys_min=0.0, phys_max=1.0, source="钨丝灯交流纹波光强调制模型",
+               help="老式放映机钨丝励磁灯交流供电引起的 50Hz/100Hz (或 60Hz/120Hz) 光强调制蜂鸣。")
+    aud.define("film_slit_loss", "光学光缝高频截止", 0.40, 0.0, 1.0, unit="0-1", group=g_opt,
+               phys_min=0.0, phys_max=1.0, source="微型狭缝孔径损耗 sinc 模型",
+               help="声头 12.5 微米微型光缝孔径效应导致的高频物理截止 (~6.8kHz 35mm / ~4.8kHz 16mm)。")
 
 
     # --- 电影胶片（16mm / 35mm）化学成像与电视胶转磁系统 ---
@@ -3666,7 +3813,237 @@ FILM_PROFILES = {
     },
 }
 
+
+# ---------------------------------------------------------------------------
+# 古早数字媒介与网络流媒体预设库 (LDME: 手机摄影、优酷土豆、文件传输与早期显示)
+# ---------------------------------------------------------------------------
+DIGITAL_PROFILES = {
+    "nokia_6600": {
+        "label": "诺基亚 6600 (2003 VGA手机摄影)",
+        "note": "2003 年 Nokia 6600 VGA 拍照管线，低像素空间采样限制、小塑料镜头边缘模糊、AWB 微漂移与有损 JPEG 4:2:0 压缩",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 1.0, "ldme_capture_mode": 0.0, "noise_grain": 0.0, "sensor_noise": 0.08},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 3.8, "chroma_bandwidth": 1.2},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 5.0, "ldme_lcd_response_ms": 28.0, "ldme_lcd_view_angle": 16.0, "ldme_lcd_subpixel": 0.50},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 4.0, "proximity_effect": 0.35, "mic_overdrive": 0.25},
+        },
+    },
+    "nokia_n73": {
+        "label": "诺基亚 N73 (2006 卡尔蔡司拍照手机)",
+        "note": "2006 年 Nokia N73 320 万像素卡尔蔡司镜头，ISP 降噪细节涂抹、USM 锐化边缘光晕与 JPEG 4:2:0 块效应",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0, "noise_grain": 0.0, "sensor_noise": 0.05},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 4.8, "chroma_bandwidth": 1.8},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 18.0, "ldme_lcd_view_angle": 12.0, "ldme_lcd_subpixel": 0.35},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 1.0, "proximity_effect": 0.20},
+        },
+    },
+    "nokia_n95": {
+        "label": "诺基亚 N95 (2007 早期智能旗舰)",
+        "note": "2007 年 Nokia N95 500 万像素卡尔蔡司管线，蔡司色彩矩阵、自动曝光微延迟与边缘过冲",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 3.0, "ldme_capture_mode": 0.0, "noise_grain": 0.0, "sensor_noise": 0.04},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 5.2, "chroma_bandwidth": 2.0},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 16.0, "ldme_lcd_view_angle": 10.0, "ldme_lcd_subpixel": 0.30},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 1.0, "proximity_effect": 0.15},
+        },
+    },
+    "nokia_5800": {
+        "label": "诺基亚 5800 XpressMusic (2008 3GP视频录制)",
+        "note": "2008 年 Nokia 5800 3GP 动态视频录制管线 (record)，640×352 H.263 视频编码与卷帘快门",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 4.0, "ldme_capture_mode": 1.0, "noise_grain": 0.0, "sensor_noise": 0.06},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 4.2, "chroma_bandwidth": 1.5},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 18.0, "ldme_lcd_view_angle": 12.0, "ldme_lcd_subpixel": 0.35},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 4.0, "proximity_effect": 0.30},
+        },
+    },
+    "iphone_2007": {
+        "label": "初代 iPhone (2007 200万定焦摄影)",
+        "note": "2007 年初代 iPhone 200 万像素定焦拍照管线 (capture)，有限动态范围高光硬削波与自然偏暖肤色",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 5.0, "ldme_capture_mode": 0.0, "noise_grain": 0.0, "sensor_noise": 0.05},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 4.5, "chroma_bandwidth": 1.6},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 16.0, "ldme_lcd_view_angle": 10.0, "ldme_lcd_subpixel": 0.30},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 1.0, "proximity_effect": 0.20},
+        },
+    },
+    "iphone_3g": {
+        "label": "iPhone 3G (2008 移动网络传播)",
+        "note": "2008 年 iPhone 3G 200 万像素拍照管线，早期小型 CMOS 暗部信噪比与定焦镜头物理特性",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 6.0, "ldme_capture_mode": 0.0, "noise_grain": 0.0, "sensor_noise": 0.05},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 4.5, "chroma_bandwidth": 1.6},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 16.0, "ldme_lcd_view_angle": 10.0, "ldme_lcd_subpixel": 0.30},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 1.0, "proximity_effect": 0.20},
+        },
+    },
+    "iphone_3gs": {
+        "label": "iPhone 3GS (2009 VGA视频录制)",
+        "note": "2009 年 iPhone 3GS 独立 VGA 视频录制管线 (record)，640×480 @ 30fps H.264 编码与连续曝光阶跃",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 7.0, "ldme_capture_mode": 1.0, "noise_grain": 0.0, "sensor_noise": 0.04},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 5.0, "chroma_bandwidth": 2.0},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 14.0, "ldme_lcd_view_angle": 8.0, "ldme_lcd_subpixel": 0.25},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 1.0, "proximity_effect": 0.15},
+        },
+    },
+    "iphone_4s": {
+        "label": "iPhone 4S (2011 1080p高清视频)",
+        "note": "2011 年 iPhone 4S 800 万像素背照式 BSI CMOS + A5 ISP 管线，边缘解析力与高光宽容度大幅提升",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 8.0, "ldme_capture_mode": 0.0, "noise_grain": 0.0, "sensor_noise": 0.02},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 6.0, "chroma_bandwidth": 2.5},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 0.0},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 2.0, "proximity_effect": 0.10},
+        },
+    },
+    "youku_2007_flv": {
+        "label": "早期优酷土豆 Flash 流畅档 (320×240 FLV)",
+        "note": "2006-2009 年中文视频网站经典转码档位，320×240 分辨率、Sorenson Spark (FLV1) 编码、350 kbps 码率与低码率音频",
+        "layers": {
+            "camera": {"noise_grain": 0.0, "sensor_noise": 0.04},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 4.0, "chroma_bandwidth": 1.4},
+            "codec": {"stream_enabled": 1.0, "stream_mode": 6.0, "stream_quad_corner": 0.0, "stream_show_border": 0.0, "stream_show_text": 0.0, "stream_bitrate_kbps": 350.0, "stream_fps": 25.0, "stream_gop_len": 15.0, "ldme_source_origin": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0, "ldme_flash_scale_mode": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_subpixel": 0.35},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 4.0, "proximity_effect": 0.25, "mic_overdrive": 0.30},
+        },
+    },
+    "youku_2010_sd": {
+        "label": "优酷标清 H.264 视频档 (480×360)",
+        "note": "2009-2012 年 Web2.0 平台标清转码档，480×360 分辨率、H.264 Baseline 编码、700 kbps 码率",
+        "layers": {
+            "camera": {"noise_grain": 0.0, "sensor_noise": 0.03},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 5.0, "chroma_bandwidth": 1.8},
+            "codec": {"stream_enabled": 1.0, "stream_mode": 7.0, "stream_quad_corner": 0.0, "stream_show_border": 0.0, "stream_show_text": 0.0, "stream_bitrate_kbps": 700.0, "stream_fps": 25.0, "stream_gop_len": 25.0, "ldme_source_origin": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0, "ldme_flash_scale_mode": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_subpixel": 0.25},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 1.0, "proximity_effect": 0.15},
+        },
+    },
+    "youku_2008_webcam_anchor": {
+        "label": "优酷 2008 网络主播视听参考款 (稍息立正站好同款)",
+        "note": "实测校准：352×264 @ 15fps、73.5kbps 极低码率宏块、廉价 USB 摄像头驻极体麦克风近讲、唱腔高音振膜与前级过载削顶、爆破音破音与 32kbps 心理声学水下金属杂音",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 1.0, "ldme_capture_mode": 1.0, "noise_grain": 0.0, "sensor_noise": 0.09, "ae_enabled": 1.0, "ae_tau_s": 2.2},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 3.6, "chroma_bandwidth": 1.2},
+            "codec": {"stream_enabled": 1.0, "stream_mode": 6.0, "stream_quad_corner": 0.0, "stream_show_border": 0.0, "stream_show_text": 0.0, "stream_bitrate_kbps": 80.0, "stream_fps": 15.0, "stream_gop_len": 12.0, "ldme_source_origin": 1.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0, "ldme_flash_scale_mode": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_subpixel": 0.40},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 4.0, "proximity_effect": 0.65, "plosive_pop": 0.55, "mic_overdrive": 0.70, "broadcast_agc": 0.45, "studio_room_reverb": 0.35},
+        },
+    },
+    "mms_compress": {
+        "label": "手机彩信与极度压缩 (MMS 160×120 30KB)",
+        "note": "早期 2G/2.5G 移动网络彩信体积硬约束 (<30KB)，160×120 极限压缩、粗糙色度块与重度量化",
+        "layers": {
+            "camera": {"ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0, "noise_grain": 0.0, "sensor_noise": 0.06},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0, "luma_bandwidth": 3.2, "chroma_bandwidth": 1.0},
+            "codec": {"stream_enabled": 0.0, "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 3.0, "ldme_mms_width": 320.0, "ldme_mms_quality": 45.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 5.0, "ldme_lcd_subpixel": 0.45},
+            "audio": {"enabled": 1.0, "mode": 9.0, "mic_type": 5.0, "proximity_effect": 0.30},
+        },
+    },
+    "phone_tft_lcd": {
+        "label": "早期手机 TFT 液晶显示 (6-bit 偏角偏色)",
+        "note": "2000年代彩色功能机 6-bit TN/STN 液晶屏，视线偏离垂直法线时反差翻转、Gamma 阶跃与分子拖尾",
+        "layers": {
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 5.0, "ldme_lcd_response_ms": 28.0, "ldme_lcd_view_angle": 16.0, "ldme_lcd_subpixel": 0.50, "ldme_flash_scale_mode": 0.0},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+        },
+    },
+    "desktop_tn_flash": {
+        "label": "早期桌面 TN 液晶显示器 (Flash 播放器缩放)",
+        "note": "2000年代初期桌面 17/19 英寸 TN 液晶显示器，6-bit+FRC 抖动灰阶、冷阴极荧光灯 (CCFL) 背光偏蓝与 Flash 全屏缩放模糊",
+        "layers": {
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0, "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 16.0, "ldme_lcd_view_angle": 12.0, "ldme_lcd_subpixel": 0.35, "ldme_lcd_ccfl": 0.28, "ldme_flash_scale_mode": 1.0},
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+        },
+    },
+    "digicam_early_phone_flicker_tungsten": {
+        "label": "旧手机荧光灯频闪与钨丝灯白平衡失效",
+        "note": "物理建模旧手机实拍图片（image.jpg、image (1).jpg 与 b0ae5b91...jpg）：CMOS 卷帘快门 50Hz 工频荧光灯水平青绿/橙黄交替条纹 + 餐厅低色温钨丝灯/混光 AWB 蓝增益硬钳位芥末青黄偏色",
+        "layers": {
+            "camera": {
+                "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0,
+                "ldme_flicker_enabled": 1.0, "ldme_flicker_mains_hz": 50.0, "ldme_flicker_depth": 0.45, "ldme_flicker_color_drift": 0.65, "ldme_flicker_num_bands": 5.2,
+                "ldme_tungsten_enabled": 1.0, "ldme_color_temp_k": 2700.0, "ldme_awb_mode": 2.0,
+                "sensor_noise": 0.04,
+            },
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0, "ldme_lcd_bits": 6.0, "ldme_lcd_subpixel": 0.35},
+        },
+    },
+    "youku_tudou_multi_gen_jpeg_wear": {
+        "label": "早期优酷土豆多代 JPEG 磨损衰减",
+        "note": "2006–2009 优酷土豆视频截图与论坛搬运多代 JPEG 有损磨损：真实 2D 8×8 DCT 量化、4:2:0 色度衰减与跨代 8×8 网格错位双重蚊式振铃噪点",
+        "layers": {
+            "camera": {
+                "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 1.0, "ldme_capture_mode": 0.0,
+                "ldme_jpeg_decay_enabled": 1.0, "ldme_jpeg_decay_gens": 4.0, "ldme_jpeg_decay_quality": 45.0, "ldme_jpeg_decay_grid_shift": 3.0,
+            },
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0},
+            "codec": {"stream_enabled": 0.0, "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 5.0, "ldme_transfer_generations": 4.0, "ldme_jpeg_decay_quality": 45.0, "ldme_jpeg_decay_grid_shift": 3.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0, "ldme_lcd_bits": 6.0, "ldme_lcd_subpixel": 0.35},
+        },
+    },
+    "digicam_night_starburst_ccd": {
+        "label": "早期数码相机夜景车灯星芒与粗糙宏块",
+        "note": "物理建模旧相机夜景实拍（image_d61d18.png）：微型镜头夜景车灯星芒溢出、点光源垂直光柱、1/4 英寸 CCD 满井饱和硬削波与暗部深空粗糙 DCT 块效应",
+        "layers": {
+            "camera": {
+                "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 1.0, "ldme_capture_mode": 0.0,
+                "ldme_night_bloom": 1.25,
+                "ldme_jpeg_decay_enabled": 1.0, "ldme_jpeg_decay_gens": 2.0, "ldme_jpeg_decay_quality": 35.0,
+                "sensor_noise": 0.05,
+            },
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0, "ldme_lcd_bits": 6.0, "ldme_lcd_subpixel": 0.35},
+        },
+    },
+    "digicam_y2k_ccd_sensor": {
+        "label": "千禧年 Y2K 卡片机 CCD 饱和与动态范围",
+        "note": "参考 digicamfx.com 经典小底数码卡片机：CCD 高饱和暖调肤色、小尺寸传感器动态范围硬截断与低像素微细节",
+        "layers": {
+            "camera": {
+                "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 3.0, "ldme_capture_mode": 0.0,
+                "ldme_night_bloom": 0.40, "ldme_jpeg_quality": 68.0, "sensor_noise": 0.035,
+            },
+            "format": {"filter_kind": 1.0, "chroma_gain": 1.0, "chroma_vertical_averaging": 0.0},
+            "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+            "tape": {"tape_stability": 1.0, "dropout_rate": 0.0, "head_switching": 0.0, "noise_floor": 0.0},
+            "display": {"enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0, "ldme_lcd_bits": 6.0, "ldme_lcd_subpixel": 0.30},
+        },
+    },
+}
+
 PROFILE_LIBRARY = {
+    "digital": DIGITAL_PROFILES,
     "film": FILM_PROFILES,
     "media": MEDIA_PROFILES,
     "player": PLAYER_PROFILES,
@@ -6021,3 +6398,352 @@ for _lay in SCHEMA.layer_names():
             _sp, _note = UNIT_SPREADS[_key]
             _spec.unit_spread = float(_sp)
             _spec.unit_note = str(_note)
+
+
+# ==================== 古早数字媒介系统 (LDME)：早期手机、iPhone、优酷土豆转码与三大基准测试（纯净命名 · 全屏单画面） ====================
+
+CAMERA_PROFILES.update({
+    "nokia_6600": {
+        "label": "Nokia 6600",
+        "note": "2003 年 VGA (640×480) 早期拍照手机：微型塑料定焦镜头边缘软化与暗角、自动白平衡微漂移、Bayer 去马赛克伪影与有损 JPEG 4:2:0 压缩",
+        "layers": {"camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 1.0, "ldme_capture_mode": 0.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        }},
+    },
+    "nokia_n73": {
+        "label": "Nokia N73",
+        "note": "2006 年 320 万像素卡尔蔡司 Tessar 镜头多媒体手机：强力色度/亮度降噪造成的细节涂抹感、USM 锐化边缘亮晕与 JPEG 4:2:0 编码",
+        "layers": {"camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        }},
+    },
+    "nokia_n95": {
+        "label": "Nokia N95",
+        "note": "2007 年 500 万像素卡尔蔡司光学机皇：鲜艳色彩矩阵、暗部泊松-高斯噪声与边缘锐化过冲",
+        "layers": {"camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 3.0, "ldme_capture_mode": 0.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        }},
+    },
+    "nokia_5800_3gp": {
+        "label": "Nokia 5800 XpressMusic",
+        "note": "2008 年过渡期多媒体手机 3GP 视频录制管线 (`record()`)：640×352 H.263/MPEG-4 视频编码、帧率受限与 CMOS 卷帘快门",
+        "layers": {"camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 4.0, "ldme_capture_mode": 1.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        }},
+    },
+    "iphone_2007": {
+        "label": "iPhone 2007",
+        "note": "2007 年初代 iPhone (200 万像素 1600×1200 定焦)：有限曝光动态范围导致亮部高光硬削波、自然偏暖自动白平衡与克制锐化",
+        "layers": {"camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 5.0, "ldme_capture_mode": 0.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        }},
+    },
+    "iphone_3g": {
+        "label": "iPhone 3G",
+        "note": "2008 年 iPhone 3G (200 万像素定焦)：延续初代小型传感器成像限制，改进镜头镀膜与自动白平衡稳定性",
+        "layers": {"camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 6.0, "ldme_capture_mode": 0.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        }},
+    },
+    "iphone_3gs": {
+        "label": "iPhone 3GS",
+        "note": "2009 年 iPhone 3GS 独立视频录制管线 (`record()`)：640×480 @ 30fps MOV/H.264 录像、连续自动曝光阶跃与 CMOS 卷帘快门",
+        "layers": {"camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 7.0, "ldme_capture_mode": 1.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        }},
+    },
+    "iphone_4s": {
+        "label": "iPhone 4S",
+        "note": "2011 年 iPhone 4S (800 万像素背照式 BSI CMOS + A5 ISP)：显著提升解析力、暗光信噪比与高光宽容度",
+        "layers": {"camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 8.0, "ldme_capture_mode": 0.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        }},
+    },
+})
+
+DISPLAY_PROFILES.update({
+    "lcd_feature_phone_rgb565": {
+        "label": "早期手机 TFT 液晶屏",
+        "note": "2004–2008 功能机 176×208 / 240×320 65K 色 (RGB565 16-bit) TFT 面板：阶梯量化色带、28ms 慢速液晶响应拖影、窄视角伽马反相与方形像素晶格（无 CRT 扫描线）",
+        "layers": {"display": {
+            "enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 1.0,
+            "ldme_lcd_bits": 5.0, "ldme_lcd_response_ms": 28.0, "ldme_lcd_view_angle": 16.0,
+            "ldme_lcd_subpixel": 0.50, "ldme_flash_scale_mode": 0.0,
+        }},
+    },
+    "lcd_desktop_2007_tn": {
+        "label": "2007 桌面 TN 液晶显示器",
+        "note": "2007 年主流 17/19 寸 6-bit TN 液晶显示器 + Flash 播放器非整数倍窗口缩放：64 级灰阶 FRC 抖动、16ms 样本保持拖影、垂直视角伽马偏移、CCFL 冷白背光与 RGB 竖条子像素",
+        "layers": {"display": {
+            "enabled": 0.0, "ldme_display_enabled": 1.0, "ldme_display_device": 2.0,
+            "ldme_lcd_bits": 6.0, "ldme_lcd_response_ms": 16.0, "ldme_lcd_view_angle": 12.0,
+            "ldme_lcd_subpixel": 0.35, "ldme_lcd_ccfl": 0.28, "ldme_flash_scale_mode": 1.0, "ldme_net_throughput_kbps": 950.0,
+        }},
+    },
+})
+
+_CLEAN_ANALOG_BYPASS = {
+    "format": {"luma_bandwidth": 5.8, "chroma_bandwidth": 1.9, "cross_color": 0.0, "cross_luma": 0.0, "color_noise": 0.0},
+    "tape": {"tape_stability": 1.0, "line_jitter": 0.0, "walk_amplitude": 0.0, "micro_jitter": 0.0, "dropout_rate": 0.0, "noise_floor": 0.0, "wear": 0.0, "head_switching": 0.0},
+    "player": {"tbc_enabled": 1.0, "tbc_strength": 1.0, "transport_jitter": 0.0, "head_wear": 0.0},
+}
+
+# --- 测试一：同一场景，不同手机（纯净命名 · 单画面全幅输出） ---
+for _p_key, _p_id, _cap_m, _p_label, _p_note in (
+    ("ldme_nokia_6600", 1.0, 0.0, "Nokia 6600", "测试一（同一场景，不同手机）：2003 年 Nokia 6600 VGA 拍照管线，展现低像素空间采样限制、小塑胶镜头边缘模糊、AWB 微漂移与有损 JPEG 4:2:0 压缩"),
+    ("ldme_nokia_n73", 2.0, 0.0, "Nokia N73", "测试一（同一场景，不同手机）：2006 年 Nokia N73 320 万像素卡尔蔡司管线，展现 ISP 强降噪细节涂抹、USM 锐化边缘光晕与 4:2:0 块效应"),
+    ("ldme_nokia_n95", 3.0, 0.0, "Nokia N95", "测试一（同一场景，不同手机）：2007 年 Nokia N95 500 万像素卡尔蔡司管线，展现高饱和蔡司色彩矩阵与锐化过冲"),
+    ("ldme_nokia_5800_3gp", 4.0, 1.0, "Nokia 5800 XpressMusic", "测试一（同一场景，不同手机）：2008 年 Nokia 5800 3GP 动态视频录制管线 (`record()`)，展现 640×352 H.263 视频编码、帧率受限与卷帘快门"),
+    ("ldme_iphone_2007", 5.0, 0.0, "iPhone 2007", "测试一（同一场景，不同手机）：2007 年初代 iPhone 200 万像素定焦拍照管线 (`capture()`)，展现有限自动曝光高光硬削波与自然偏暖肤色还原"),
+    ("ldme_iphone_3g", 6.0, 0.0, "iPhone 3G", "测试一（同一场景，不同手机）：2008 年 iPhone 3G 200 万像素拍照管线，展现早期小型 CMOS 在暗部信噪比与固定焦距上的物理特征"),
+    ("ldme_iphone_3gs_video", 7.0, 1.0, "iPhone 3GS", "测试一（同一场景，不同手机）：2009 年 iPhone 3GS 独立 VGA 视频录制管线 (`record()`)，展现 640×480 @ 30fps H.264 编码、连续曝光阶跃与卷帘快门"),
+    ("ldme_iphone_4s", 8.0, 0.0, "iPhone 4S", "测试一（同一场景，不同手机）：2011 年 iPhone 4S 800 万像素背照式 BSI CMOS + A5 ISP 管线，展现显著提升的边缘解析力与高光宽容度"),
+):
+    FACTORY_PRESETS[_p_key] = {
+        "label": _p_label,
+        "note": _p_note,
+        "standard": "pal",
+        "layers": {
+            "camera": {
+                "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": _p_id, "ldme_capture_mode": _cap_m,
+                "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+            },
+            **_CLEAN_ANALOG_BYPASS,
+            "display": {"enabled": 0.0},
+        },
+    }
+
+# --- 测试二：同一视频，不同转码链 & 2006–2015 优酷/土豆平台流媒体阶段（纯净命名 · 单画面全幅输出） ---
+FACTORY_PRESETS["ldme_youku_2007_flv_single"] = {
+    "label": "早期优酷土豆 Flash 流畅档",
+    "note": "测试二（同一视频，不同转码链 · 阶段一 2006–2009）：FLV 容器 + Sorenson Spark (`flv1`) 320×240 @ 25fps、350kbps 视频与 48kbps MP3 音频的单次平台转码损伤",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {
+            "stream_enabled": 1.0, "stream_mode": 6.0, "stream_bitrate_kbps": 350.0,
+            "stream_gop_len": 15.0, "ldme_source_origin": 0.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["ldme_platform_2010_sd_h264"] = {
+    "label": "标清 H.264 视频档",
+    "note": "测试二（同一视频，不同转码链 · 阶段二 2009–2012）：高清源被平台下采样转码为 480×360 @ 25fps、700kbps H.264 标清档，体现环路去块滤波对 16×16 宏块边界的平滑与纹理柔化",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {
+            "stream_enabled": 1.0, "stream_mode": 7.0, "stream_bitrate_kbps": 700.0,
+            "stream_gop_len": 25.0, "ldme_source_origin": 0.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["ldme_mobile_2013_multiscreen"] = {
+    "label": "移动互联网多屏 H.264 档",
+    "note": "阶段三（2012–2015 移动互联网与多设备播放）：640×360 @ 25fps H.264 MP4/HLS 多终端适配流",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {
+            "stream_enabled": 1.0, "stream_mode": 8.0, "stream_bitrate_kbps": 600.0,
+            "stream_gop_len": 25.0, "ldme_source_origin": 0.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["ldme_multigen_nle_youku_reupload"] = {
+    "label": "多代剪辑导出与平台重传链",
+    "note": "测试二（同一视频，不同转码链）：模拟 V0 经桌面剪辑软件压缩为低码率 MP4 (V1)，上传优酷转码为 FLV (V2)，再被下载二次上传重压 (V3) 的非对齐宏块与运动预测误差累积",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {
+            "stream_enabled": 1.0, "stream_mode": 9.0,
+            "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 4.0,
+            "ldme_transfer_generations": 3.0, "stream_platform_generations": 3.0,
+            "stream_bitrate_kbps": 350.0, "ldme_source_origin": 1.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["ldme_lowfps_3gp_to_flv"] = {
+    "label": "低帧率 3GP 上传转码 FLV",
+    "note": "测试二（同一视频，不同转码链）：区分『原本就是手机 15fps 3GP 低清直传』与『高清源被降为低清』，展现低帧率时间采样顿挫与两次异构编码器块伪影叠加",
+    "standard": "pal",
+    "layers": {
+        "camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 4.0, "ldme_capture_mode": 1.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        },
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {
+            "stream_enabled": 1.0, "stream_mode": 6.0, "stream_bitrate_kbps": 320.0,
+            "stream_gop_len": 12.0, "ldme_source_origin": 1.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+FACTORY_PRESETS["ldme_mms_social_gateway"] = {
+    "label": "彩信与早期社交软件传图",
+    "note": "子系统 D（03 · 文件与传输）：模拟彩信 (MMS) 与早期社交软件对手机照片执行强制 320×240 缩放、高压缩比 JPEG 重编码并剥离全部 EXIF 元数据",
+    "standard": "pal",
+    "layers": {
+        "camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        },
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {
+            "stream_enabled": 1.0, "stream_mode": 9.0,
+            "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 3.0,
+            "ldme_mms_width": 320.0, "ldme_mms_quality": 50.0,
+        },
+        "display": {"enabled": 0.0},
+    },
+}
+
+# --- 测试三：同一文件，不同播放设备（纯净命名 · 单画面全幅输出） ---
+FACTORY_PRESETS["ldme_display_phone_tft_lcd"] = {
+    "label": "早期手机 TFT 液晶显示",
+    "note": "测试三（同一文件，不同播放设备）：固定同一份解码后的流媒体画面，输出到早期手机 16-bit RGB565 TFT 液晶屏（65K 色量化阶梯、28ms 液晶保持拖影、窄视角偏移与方形像素晶格）",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {"stream_enabled": 1.0, "stream_mode": 7.0, "stream_bitrate_kbps": 700.0},
+        **DISPLAY_PROFILES["lcd_feature_phone_rgb565"]["layers"],
+    },
+}
+
+FACTORY_PRESETS["ldme_display_desktop_tn_lcd"] = {
+    "label": "桌面 TN 液晶与 Flash 播放",
+    "note": "测试三（同一文件，不同播放设备）：固定同一份解码后的流媒体画面，经 Flash 播放器非整数倍窗口缩放后输出到 2007 年桌面 6-bit TN 液晶显示器（64 级 FRC 抖动、液晶拖影、视角伽马偏移与 CCFL 冷白背光）",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {"stream_enabled": 1.0, "stream_mode": 7.0, "stream_bitrate_kbps": 700.0},
+        **DISPLAY_PROFILES["lcd_desktop_2007_tn"]["layers"],
+    },
+}
+
+FACTORY_PRESETS["ldme_display_crt_monitor_ref"] = {
+    "label": "经典 CRT 监视器同源对照",
+    "note": "测试三（同一文件，不同播放设备）：固定同一份解码后的流媒体画面，输出到球面 CRT 监视器（扫描线、荧光粉非线性发光与孔阑荫罩），用于与手机/桌面 LCD 进行物理机制对照",
+    "standard": "pal",
+    "layers": {
+        "camera": {"sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0},
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {"stream_enabled": 1.0, "stream_mode": 7.0, "stream_bitrate_kbps": 700.0},
+        **DISPLAY_PROFILES["crt_consumer"]["layers"],
+    },
+}
+
+# --- 第九节终极全链路实验：场景 → Nokia N73 拍摄 → USB 导入 → 编辑软件导出低码率视频 → 优酷式转码 → Flash 缩放 → 旧 LCD 显示 ---
+FACTORY_PRESETS["ldme_n73_usb_nle_youku_flash_lcd"] = {
+    "label": "诺基亚拍摄经剪辑上传优酷全链路",
+    "note": "完整复现第九节终极考古实验：场景 → Nokia N73 拍摄 → USB 导入电脑 → 剪辑软件导出低码率视频 → 优酷式 FLV 转码 → Flash 播放器窗口缩放 → 2007 桌面 6-bit TN 液晶显示",
+    "standard": "pal",
+    "layers": {
+        "camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        },
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {
+            "stream_enabled": 1.0, "stream_mode": 9.0,
+            "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 4.0,
+            "ldme_transfer_generations": 2.0, "stream_platform_generations": 2.0,
+            "stream_bitrate_kbps": 350.0, "ldme_source_origin": 1.0,
+        },
+        **DISPLAY_PROFILES["lcd_desktop_2007_tn"]["layers"],
+    },
+}
+
+FACTORY_PRESETS["digicam_early_phone_flicker_tungsten"] = {
+    "label": "旧手机荧光灯频闪与钨丝灯白平衡失效",
+    "note": "物理建模旧手机实拍图片（image.jpg、image (1).jpg 与 b0ae5b91...jpg）：CMOS 卷帘快门 50Hz 工频荧光灯水平青绿/橙黄交替条纹 + 餐厅低色温钨丝灯/混光 AWB 蓝增益硬钳位芥末青黄偏色",
+    "standard": "pal",
+    "layers": {
+        "camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 2.0, "ldme_capture_mode": 0.0,
+            "ldme_flicker_enabled": 1.0, "ldme_flicker_mains_hz": 50.0, "ldme_flicker_depth": 0.45, "ldme_flicker_color_drift": 0.65, "ldme_flicker_num_bands": 5.2,
+            "ldme_tungsten_enabled": 1.0, "ldme_color_temp_k": 2700.0, "ldme_awb_mode": 2.0,
+            "sensor_noise": 0.04, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        },
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+        **DISPLAY_PROFILES["lcd_feature_phone_rgb565"]["layers"],
+    },
+}
+
+FACTORY_PRESETS["youku_tudou_multi_gen_jpeg_wear"] = {
+    "label": "早期优酷土豆多代 JPEG 磨损衰减",
+    "note": "2006–2009 优酷土豆视频截图与论坛搬运多代 JPEG 有损磨损：真实 2D 8×8 DCT 量化、4:2:0 色度衰减与跨代 8×8 网格错位双重蚊式振铃噪点",
+    "standard": "pal",
+    "layers": {
+        "camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 1.0, "ldme_capture_mode": 0.0,
+            "ldme_jpeg_decay_enabled": 1.0, "ldme_jpeg_decay_gens": 4.0, "ldme_jpeg_decay_quality": 45.0, "ldme_jpeg_decay_grid_shift": 3.0,
+            "sensor_noise": 0.0, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        },
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {
+            "stream_enabled": 0.0, "ldme_transfer_enabled": 1.0, "ldme_transfer_method": 5.0,
+            "ldme_transfer_generations": 4.0, "ldme_jpeg_decay_quality": 45.0, "ldme_jpeg_decay_grid_shift": 3.0,
+        },
+        **DISPLAY_PROFILES["lcd_desktop_2007_tn"]["layers"],
+    },
+}
+
+FACTORY_PRESETS["digicam_night_starburst_ccd"] = {
+    "label": "早期数码相机夜景车灯星芒与粗糙宏块",
+    "note": "物理建模旧相机夜景实拍（image_d61d18.png）：微型镜头夜景车灯星芒溢出、点光源垂直光柱、1/4 英寸 CCD 满井饱和硬削波与暗部深空粗糙 DCT 块效应",
+    "standard": "pal",
+    "layers": {
+        "camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 1.0, "ldme_capture_mode": 0.0,
+            "ldme_night_bloom": 1.25,
+            "ldme_jpeg_decay_enabled": 1.0, "ldme_jpeg_decay_gens": 2.0, "ldme_jpeg_decay_quality": 35.0,
+            "sensor_noise": 0.05, "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        },
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+        **DISPLAY_PROFILES["lcd_desktop_2007_tn"]["layers"],
+    },
+}
+
+FACTORY_PRESETS["digicam_y2k_ccd_sensor"] = {
+    "label": "千禧年 Y2K 卡片机 CCD 饱和与动态范围",
+    "note": "参考 digicamfx.com 经典小底数码卡片机：CCD 高饱和暖调肤色、小尺寸传感器动态范围硬截断与低像素微细节",
+    "standard": "pal",
+    "layers": {
+        "camera": {
+            "ldme_mobile_enabled": 1.0, "ldme_mobile_profile": 3.0, "ldme_capture_mode": 0.0,
+            "ldme_night_bloom": 0.40, "ldme_jpeg_quality": 68.0, "sensor_noise": 0.035,
+            "sharpness": 1.0, "halation": 0.0, "ccd_smear": 0.0,
+        },
+        **_CLEAN_ANALOG_BYPASS,
+        "codec": {"stream_enabled": 0.0, "dv_enabled": 0.0},
+        **DISPLAY_PROFILES["lcd_desktop_2007_tn"]["layers"],
+    },
+}

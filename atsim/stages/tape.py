@@ -1476,30 +1476,37 @@ class TapeStage(Stage):
             comp = comp * (1.0 - total) + carrier_snow * total
         return comp, total
 
-    def _apply_creases(self, comp: np.ndarray, frame_index: int
+    def _apply_creases(self, comp: np.ndarray, frame_index: int,
+                       precomputed_mask: np.ndarray | None = None
                        ) -> tuple[np.ndarray, np.ndarray]:
         plan = self.plan
         if not plan.creases:
             return comp, np.zeros(comp.shape, dtype=np.float32)
-        H, W = comp.shape
-        rows = np.arange(H, dtype=np.float32)[:, None]
-        cols = np.arange(W, dtype=np.float32)[None, :] / max(1.0, W)
-        total: np.ndarray | None = None
-        for cr in plan.creases:
-            t = frame_index / max(1e-6, cr.period_frames) + cr.phase
-            pos = (0.5 + 0.5 * np.sin(t * 2.0 * np.pi)) * (H + 2 * cr.width) \
-                - cr.width + cr.offset
-            centre = pos + np.tan(cr.angle) * cols * W
-            d = np.abs(rows - centre)
-            band = np.clip(1.0 - d / max(1.0, cr.width), 0.0, 1.0) ** 1.6
-            if total is None:
-                total = (band * cr.depth).astype(np.float32)
-            else:
-                np.maximum(total, (band * cr.depth).astype(np.float32), out=total)
+        if precomputed_mask is not None:
+            total = precomputed_mask
+        else:
+            H, W = comp.shape
+            rows = np.arange(H, dtype=np.float32)[:, None]
+            cols = np.arange(W, dtype=np.float32)[None, :] / max(1.0, W)
+            total = None
+            for cr in plan.creases:
+                t = frame_index / max(1e-6, cr.period_frames) + cr.phase
+                pos = (0.5 + 0.5 * np.sin(t * 2.0 * np.pi)) * (H + 2 * cr.width) \
+                    - cr.width + cr.offset
+                slope_w = float(np.tan(cr.angle)) * W
+                c_min = min(pos, pos + slope_w) - cr.width
+                c_max = max(pos, pos + slope_w) + cr.width
+                if c_max < 0.0 or c_min >= H:
+                    continue
+                centre = pos + slope_w * cols
+                d = np.abs(rows - centre)
+                band = np.clip(1.0 - d / max(1.0, cr.width), 0.0, 1.0) ** 1.6
+                if total is None:
+                    total = (band * cr.depth).astype(np.float32)
+                else:
+                    np.maximum(total, (band * cr.depth).astype(np.float32), out=total)
         if total is None or not np.any(total > 0.0):
-            return comp, np.zeros(comp.shape, dtype=np.float32)
-        # a crease reduces head-to-tape contact: the signal gets softer and
-        # weaker there rather than just noisier
+            return comp, (total if total is not None else np.zeros(comp.shape, dtype=np.float32))
         soft = lowpass(comp, 1.6)
         comp = comp * (1.0 - 0.55 * total) + soft * (0.55 * total)
         return comp, total
@@ -2676,8 +2683,8 @@ class TapeStage(Stage):
         #    A crease reduces head-to-tape contact, so it softens and weakens
         #    BOTH components -- it is not a chroma-only effect.
         y, crease_mask = self._apply_creases(y, frame_index)
-        i, _ = self._apply_creases(i, frame_index)
-        q, _ = self._apply_creases(q, frame_index)
+        i, _ = self._apply_creases(i, frame_index, precomputed_mask=crease_mask)
+        q, _ = self._apply_creases(q, frame_index, precomputed_mask=crease_mask)
 
         # 3. lost signal patches: the carrier is gone, so chroma goes with it
         y, dropout_mask = self._apply_dropouts(y, frame_index, rng)
